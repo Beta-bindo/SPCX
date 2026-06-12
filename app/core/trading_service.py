@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
+
+from app.core.models import GoldOrderMode, HedgeMode, Position, Side
+from app.core.order_mode import order_mode_log_label
+from app.core.symbols import find_preset
+from app.core.trade_result import HedgeTradeResult, LegResult
+
+if TYPE_CHECKING:
+    from app.connectors.binance_connector import BinanceConnector
+    from app.connectors.mt5_connector import MT5Connector
+
+ADD_SPREAD_MARGIN = 0.02
+
+
+def _mode_label(mode: str) -> str:
+    return "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
+
+
+def _position_for(
+    positions: list[Position], platform: str, symbol: str
+) -> Position | None:
+    for pos in positions:
+        if pos.platform == platform and pos.symbol == symbol and pos.quantity > 0:
+            return pos
+    return None
+
+
+def detect_hedge_mode(preset_id: str, positions: list[Position]) -> str | None:
+    """Return contraction/expansion when hedged, else None (no position)."""
+    preset = find_preset(preset_id)
+    ba_pos = _position_for(positions, "BA", preset.symbol_ba)
+    mt5_pos = _position_for(positions, "MT5", preset.symbol_mt5)
+    if not ba_pos and not mt5_pos:
+        return None
+    if ba_pos and mt5_pos:
+        if ba_pos.side == Side.SELL and mt5_pos.side == Side.BUY:
+            return HedgeMode.CONTRACTION.value
+        if ba_pos.side == Side.BUY and mt5_pos.side == Side.SELL:
+            return HedgeMode.EXPANSION.value
+    if ba_pos:
+        return (
+            HedgeMode.CONTRACTION.value
+            if ba_pos.side == Side.SELL
+            else HedgeMode.EXPANSION.value
+        )
+    if mt5_pos:
+        return (
+            HedgeMode.CONTRACTION.value
+            if mt5_pos.side == Side.BUY
+            else HedgeMode.EXPANSION.value
+        )
+    return None
+
+
+def hedge_mode_strategy_label(mode: str | None) -> str:
+    if mode == HedgeMode.CONTRACTION.value:
+        return "收缩策略"
+    if mode == HedgeMode.EXPANSION.value:
+        return "扩张策略"
+    return "--"
+
+
+def hedge_strategy_label_for_leg(platform: str, side: Side) -> str:
+    """Fallback: infer strategy from a single leg when hedge mode unknown."""
+    if side == Side.NONE:
+        return "--"
+    if platform == "BA":
+        return "收缩" if side == Side.SELL else "扩张"
+    return "扩张" if side == Side.BUY else "收缩"
+
+
+def hedge_strategy_label_for_platform(platform: str, hedge_mode: str | None) -> str:
+    """UI direction: BA shows order mode; Ex shows opposite hedge leg (收缩单→BA收缩/Ex扩张)."""
+    if hedge_mode is None:
+        return "--"
+    if hedge_mode == HedgeMode.CONTRACTION.value:
+        return "收缩" if platform == "BA" else "扩张"
+    if hedge_mode == HedgeMode.EXPANSION.value:
+        return "扩张" if platform == "BA" else "收缩"
+    return "--"
+
+
+def position_entry_spread(ba_pos: Position | None, mt5_pos: Position | None) -> float | None:
+    """持仓加权平均入场价差：BA 均价 − Exness 均价（多次加仓由交易所合并）。"""
+    if (
+        ba_pos
+        and mt5_pos
+        and ba_pos.entry_price > 0
+        and mt5_pos.entry_price > 0
+    ):
+        return round(ba_pos.entry_price - mt5_pos.entry_price, 3)
+    return None
+
+
+def spread_allows_add(
+    preset_id: str,
+    positions: list[Position],
+    spread: float,
+    mode: str,
+) -> tuple[bool, str | None]:
+    """已有对冲持仓时，仅当现价差不劣于持仓差价才允许加仓。"""
+    preset = find_preset(preset_id)
+    ba_pos = _position_for(positions, "BA", preset.symbol_ba)
+    mt5_pos = _position_for(positions, "MT5", preset.symbol_mt5)
+    if not ba_pos or not mt5_pos:
+        return True, None
+    entry = position_entry_spread(ba_pos, mt5_pos)
+    if entry is None:
+        return True, None
+    if mode == HedgeMode.CONTRACTION.value:
+        if spread + ADD_SPREAD_MARGIN < entry:
+            return (
+                False,
+                f"当前点差 {spread:+.3f} 低于持仓差价 {entry:+.3f}，暂不加仓",
+            )
+    elif mode == HedgeMode.EXPANSION.value:
+        if spread - ADD_SPREAD_MARGIN > entry:
+            return (
+                False,
+                f"当前点差 {spread:+.3f} 高于持仓差价 {entry:+.3f}，暂不加仓",
+            )
+    return True, None
+
+
+def _is_market_mode(order_mode: str) -> bool:
+    return order_mode == GoldOrderMode.MARKET.value
+
+
+def _rollback_needed(leg: LegResult) -> bool:
+    return leg.success or leg.needs_reconciliation
+
+
+def open_hedge(
+    binance: "BinanceConnector",
+    mt5: "MT5Connector",
+    preset_id: str,
+    mode: str = HedgeMode.CONTRACTION.value,
+    order_mode: str = GoldOrderMode.MAKER.value,
+) -> HedgeTradeResult:
+    preset = find_preset(preset_id)
+    had_position = (
+        _position_for(binance.get_positions(), "BA", preset.symbol_ba) is not None
+        or _position_for(mt5.get_positions(), "MT5", preset.symbol_mt5) is not None
+    )
+    if _is_market_mode(order_mode):
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge-open") as pool:
+            ba_f = pool.submit(binance.open_hedge_leg, preset_id, mode, order_mode)
+            mt5_f = pool.submit(mt5.open_hedge_leg, preset_id, mode, order_mode)
+            ba = ba_f.result()
+            mt5_leg = mt5_f.result()
+    else:
+        # Maker/限价为顺序执行：先等 BA 委托成交，成交后才下 EX 对冲；
+        # BA 未成交（含超时撤单）则不下 EX，避免单边敞口。
+        ba = binance.open_hedge_leg(preset_id, mode, order_mode)
+        if ba.success:
+            mt5_leg = mt5.open_hedge_leg(preset_id, mode, order_mode)
+        else:
+            mt5_leg = LegResult(
+                platform="MT5",
+                success=False,
+                message="BA 委托未成交，已跳过 Exness 对冲下单",
+            )
+    legs = [ba, mt5_leg]
+    success = all(leg.success for leg in legs)
+    if not success and _rollback_needed(ba):
+        rollback = binance.close_hedge_leg(
+            preset_id, GoldOrderMode.LIMIT.value, mode, close_all=True
+        )
+        ba.compensated = rollback.success
+        ba.compensation_message = rollback.message
+    if not success and _rollback_needed(mt5_leg):
+        rollback = mt5.close_hedge_leg(
+            preset_id, GoldOrderMode.LIMIT.value, mode, close_all=True
+        )
+        mt5_leg.compensated = rollback.success
+        mt5_leg.compensation_message = rollback.message
+    label = "黄金" if preset_id == "xau" else "白银"
+    mlabel = _mode_label(mode)
+    om_label = order_mode_log_label(preset_id, order_mode)
+    verb = "加仓" if had_position else "开仓"
+    if success:
+        message = f"{label}{verb}{mlabel}({om_label})完成"
+    elif any(_rollback_needed(leg) for leg in legs):
+        compensated = all(leg.compensated for leg in legs if _rollback_needed(leg))
+        if compensated:
+            message = f"⚠ {label}{verb}{mlabel}({om_label})部分成功，系统已尝试自动回滚"
+        else:
+            message = f"⚠ {label}{verb}{mlabel}({om_label})部分成功，自动回滚失败，请立即检查单边敞口"
+    else:
+        message = f"{label}{verb}{mlabel}({om_label})失败"
+    return HedgeTradeResult(action="open", success=success, legs=legs, message=message)
+
+
+def close_hedge(
+    binance: "BinanceConnector",
+    mt5: "MT5Connector",
+    preset_id: str,
+    mode: str = HedgeMode.CONTRACTION.value,
+    order_mode: str = GoldOrderMode.MAKER.value,
+) -> HedgeTradeResult:
+    if _is_market_mode(order_mode):
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge-close") as pool:
+            ba_f = pool.submit(binance.close_hedge_leg, preset_id, order_mode, mode)
+            mt5_f = pool.submit(mt5.close_hedge_leg, preset_id, order_mode, mode)
+            ba = ba_f.result()
+            mt5_leg = mt5_f.result()
+    else:
+        ba = binance.close_hedge_leg(preset_id, order_mode, mode)
+        mt5_leg = mt5.close_hedge_leg(preset_id, order_mode, mode)
+    legs = [ba, mt5_leg]
+    success = all(leg.success for leg in legs)
+    label = "黄金" if preset_id == "xau" else "白银"
+    mlabel = _mode_label(mode)
+    om_label = order_mode_log_label(preset_id, order_mode)
+    if success:
+        message = f"{label}平仓{mlabel}({om_label})完成"
+    elif any(leg.success for leg in legs):
+        message = f"⚠ {label}平仓{mlabel}({om_label})部分成功，请检查剩余持仓"
+    else:
+        message = f"{label}平仓{mlabel}({om_label})失败"
+    return HedgeTradeResult(action="close", success=success, legs=legs, message=message)

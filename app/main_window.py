@@ -1,0 +1,1268 @@
+from __future__ import annotations
+
+import threading
+import time
+
+from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtGui import QFontMetrics, QGuiApplication
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QStatusBar,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.core.branding import APP_NAME, app_icon_path
+from app.core.auto_trade import (
+    AutoTradeState,
+    collect_auto_close_progress,
+    collect_auto_trade_progress,
+    diagnose_auto_trade_block,
+    evaluate_auto_closes,
+    evaluate_auto_trades,
+)
+from app.core.license.client import LicenseError
+from app.core.license.service import LicenseService
+from app.core.build_config import LICENSE_REQUIRED
+from app.core.app_log import LogLevel, should_log
+from app.core.config import load_config, save_config, save_config_async
+from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, LayoutMode
+from app.core.network_status import NetworkStatus
+from app.core.spread_engine import SpreadEngine
+from app.core.theme import load_stylesheet, polish_widget, repolish_tree, ui_mono_font
+from app.core.trading_service import detect_hedge_mode
+from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
+from app.widgets.log_panel import LogPanel
+from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
+from app.widgets.spread_panel import SpreadPanel
+from app.widgets.symbol_trade_panel import BOOK_PANEL_WIDTH, SymbolActionStrip, SymbolTradePanel
+from app.widgets.trade_confirm_dialog import TradeConfirmDialog
+
+
+class StatusBadge(QFrame):
+    def __init__(self, name: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statusBadge")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 8, 3)
+        layout.setSpacing(6)
+        self.dot = QFrame()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setObjectName("statusDotDisconnected")
+        self.label = QLabel(f"{name} · 未连接")
+        self.label.setObjectName("statusText")
+        metrics = QFontMetrics(self.label.font())
+        self.label.setMinimumWidth(
+            metrics.horizontalAdvance(f"{name} · 模拟数据")
+        )
+        layout.addWidget(self.dot)
+        layout.addWidget(self.label)
+        self._dot_name = "statusDotDisconnected"
+        self._label_text = self.label.text()
+
+    def set_state(self, name: str, state: str) -> None:
+        mapping = {
+            "connected": ("statusDotConnected", "真实连接"),
+            "simulated": ("statusDotSimulated", "模拟数据"),
+            "connecting": ("statusDotDisconnected", "连接中"),
+            "disconnected": ("statusDotDisconnected", "未连接"),
+            "error": ("statusDotError", "异常"),
+        }
+        dot_name, text = mapping.get(state, mapping["disconnected"])
+        label_text = f"{name} · {text}"
+        if label_text != self._label_text:
+            self.label.setText(label_text)
+            self._label_text = label_text
+        if dot_name != self._dot_name:
+            self._dot_name = dot_name
+            self.dot.setObjectName(dot_name)
+            polish_widget(self.dot)
+
+
+class NetworkStatusBadge(QFrame):
+    _LATENCY_SAMPLE = ("BA 9999ms", "Ex 9999ms")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("networkStatusBadge")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 8, 2)
+        layout.setSpacing(5)
+        self.dot = QFrame()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setObjectName("statusDotDisconnected")
+        layout.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        latency_font = ui_mono_font(point_size=8)
+        metrics = QFontMetrics(latency_font)
+        line_w = max(metrics.horizontalAdvance(s) for s in self._LATENCY_SAMPLE)
+        line_h = metrics.height()
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(0)
+
+        self.ba_label = QLabel("BA ----ms")
+        self.ba_label.setObjectName("statusLatency")
+        self.ex_label = QLabel("Ex ----ms")
+        self.ex_label.setObjectName("statusLatency")
+        for lbl in (self.ba_label, self.ex_label):
+            lbl.setFont(latency_font)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            text_col.addWidget(lbl)
+
+        self._latency_wrap = QWidget()
+        self._latency_wrap.setLayout(text_col)
+
+        self._compact_label = QLabel("未启动")
+        self._compact_label.setObjectName("statusLatencyCompact")
+        compact_w = metrics.horizontalAdvance("网络 · 未启动")
+        content_w = max(line_w, compact_w)
+        self._latency_wrap.setFixedSize(content_w, line_h * 2)
+        for lbl in (self.ba_label, self.ex_label):
+            lbl.setFixedSize(content_w, line_h)
+        self._compact_label.setFixedSize(content_w, line_h * 2)
+        self._compact_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._compact_label.setVisible(False)
+        layout.addWidget(self._latency_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._compact_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.setFixedSize(6 + 8 + 5 + content_w + 8, line_h * 2 + 4)
+
+        self._dot_name = "statusDotDisconnected"
+        self._ba_text = self.ba_label.text()
+        self._ex_text = self.ex_label.text()
+        self._compact_text = ""
+
+    def update_status(self, status: NetworkStatus) -> None:
+        mapping = {
+            "ok": "statusDotConnected",
+            "slow": "statusDotSlow",
+            "offline": "statusDotError",
+        }
+        dot_name = mapping.get(status.level, "statusDotDisconnected")
+        compact = status.compact_text
+        if compact:
+            if compact != self._compact_text:
+                self._compact_label.setText(compact)
+                self._compact_text = compact
+            self._latency_wrap.setVisible(False)
+            self._compact_label.setVisible(True)
+        else:
+            ba_text = status.ba_latency_line()
+            ex_text = status.ex_latency_line()
+            if ba_text != self._ba_text:
+                self.ba_label.setText(ba_text)
+                self._ba_text = ba_text
+            if ex_text != self._ex_text:
+                self.ex_label.setText(ex_text)
+                self._ex_text = ex_text
+            self._compact_label.setVisible(False)
+            self._latency_wrap.setVisible(True)
+        if dot_name != self._dot_name:
+            self._dot_name = dot_name
+            self.dot.setObjectName(dot_name)
+            polish_widget(self.dot)
+
+
+class MainWindow(QMainWindow):
+    def __init__(
+        self,
+        license_service: LicenseService | None = None,
+        *,
+        demo_seed: bool = False,
+        demo_seed_mixed: bool = False,
+    ):
+        super().__init__()
+        self._demo_seed = demo_seed
+        self._demo_seed_mixed = demo_seed_mixed
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        self.setUpdatesEnabled(False)
+        self.license_service = license_service
+        self.setWindowTitle(APP_NAME)
+        self.resize(1400, 1080)
+        icon_path = app_icon_path()
+        if icon_path is not None:
+            from PySide6.QtGui import QIcon
+
+            self.setWindowIcon(QIcon(str(icon_path)))
+        self.setMinimumSize(640, 480)
+
+        self.config = load_config()
+        self.engine = SpreadEngine(self.config)
+        self._auto_trade_state = AutoTradeState()
+        self._auto_trade_hint_last: dict[str, float] = {}
+        self._pending_auto_trade: tuple[str, str, str, str] | None = None
+        self._manual_trade_notify = False
+        self._pending_status_preset: str | None = None
+        self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
+        self._monitor_buttons_on_header = True
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(12, 10, 12, 8)
+        root.setSpacing(8)
+
+        root.addLayout(self._build_header())
+
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._main_splitter.setObjectName("mainSplitter")
+        self._main_splitter.setHandleWidth(8)
+        self._main_splitter.setChildrenCollapsible(False)
+
+        self._columns_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._columns_splitter.setObjectName("columnsSplitter")
+        self._columns_splitter.setHandleWidth(6)
+        self._columns_splitter.setChildrenCollapsible(False)
+
+        self.gold_panel = SymbolTradePanel("xau", "黄金 · 币安盘口")
+        self.silver_panel = SymbolTradePanel("xag", "白银 · 币安盘口")
+        self.gold_actions = SymbolActionStrip("xau")
+        self.silver_actions = SymbolActionStrip("xag")
+        for strip in (self.gold_actions, self.silver_actions):
+            strip.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+            )
+            strip.setMinimumWidth(140)
+        self.spread_panel = SpreadPanel()
+        self.spread_panel.setMinimumWidth(120)
+        self.spread_panel.set_action_strips(self.gold_actions, self.silver_actions)
+        self.spread_panel.set_source_badge(self.source_badge)
+        for panel, min_w, stretch in (
+            (self.gold_panel, 72, 0),
+            (self.gold_actions, 140, 0),
+            (self.spread_panel, 120, 1),
+            (self.silver_panel, 72, 0),
+            (self.silver_actions, 140, 0),
+        ):
+            panel.setMinimumWidth(min_w)
+            panel.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self._columns_splitter.addWidget(panel)
+            self._columns_splitter.setStretchFactor(
+                self._columns_splitter.count() - 1, stretch
+            )
+        self._main_splitter.addWidget(self._columns_splitter)
+
+        self.log_panel = LogPanel()
+        self.log_panel.setMinimumHeight(48)
+        self.log_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._main_splitter.addWidget(self.log_panel)
+
+        self._columns_splitter.setMaximumHeight(16777215)
+        self._main_splitter.setStretchFactor(0, 1)
+        self._main_splitter.setStretchFactor(1, 0)
+        self._main_splitter.setSizes([680, 220])
+        root.addWidget(self._main_splitter, stretch=1)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("就绪 · 演示模式可直接启动")
+
+        self._book_timer = QTimer(self)
+        self._book_timer.timeout.connect(self._refresh_order_book)
+
+        self._wire_signals()
+        self.gold_actions.load_settings_from(self.config)
+        self.silver_actions.load_settings_from(self.config)
+        self._sync_theme_btn()
+        self._apply_theme(self.config.theme)
+        self._apply_layout_mode()
+
+        self._sync_ba_refresh_timers()
+
+        self._finalize_startup()
+        self._sync_monitor_buttons()
+
+    def _finalize_startup(self) -> None:
+        """在窗口显示前完成布局与演示连接，避免首屏闪烁。"""
+        self._sync_columns_sizes()
+        self._refresh_order_book()
+        if self._demo_seed or self._demo_seed_mixed:
+            self._load_demo_seed_positions()
+        if self.config.demo_mode and not self.engine.is_running:
+            self._on_start()
+        else:
+            from app.core.network_status import NetworkStatus
+
+            self._on_network_status(
+                NetworkStatus.from_engine(self.engine, self.engine.is_running)
+            )
+        if self._demo_seed or self._demo_seed_mixed:
+            QTimer.singleShot(500, self._refresh_demo_seed_positions)
+        self.setUpdatesEnabled(True)
+
+    def _load_demo_seed_positions(self) -> None:
+        if not self.config.demo_mode:
+            self._append_log(LogLevel.INFO, "演示持仓预览需使用演示模式")
+            return
+        from app.core.demo_seed import seed_hedge_alert_mixed, seed_hedge_alert_preview
+
+        if self._demo_seed_mixed:
+            summary = seed_hedge_alert_mixed(self.engine.binance, self.engine.mt5)
+        else:
+            summary = seed_hedge_alert_preview(self.engine.binance, self.engine.mt5)
+        for line in summary.splitlines():
+            self._append_log(LogLevel.INFO, f"[演示持仓] {line}")
+
+    def _refresh_demo_seed_positions(self) -> None:
+        self.engine.refresh_positions()
+        self.status_bar.showMessage("演示持仓已载入 · 请查看黄金/白银告警与「补对冲」", 12000)
+
+    def _sync_monitor_buttons(self) -> None:
+        running = self.engine.is_running
+        self.start_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
+        forbidden = Qt.CursorShape.ForbiddenCursor
+        hand = Qt.CursorShape.PointingHandCursor
+        self.start_btn.setCursor(hand if not running else forbidden)
+        self.stop_btn.setCursor(hand if running else forbidden)
+
+    def _build_header(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        brand = QVBoxLayout()
+        brand.setSpacing(0)
+        title = QLabel(APP_NAME)
+        title.setObjectName("appTitle")
+        self.subtitle_label = QLabel("Binance × Exness 跨平台点差 · 黄金 / 白银")
+        self.subtitle_label.setObjectName("appSubtitle")
+        subtitle_metrics = QFontMetrics(self.subtitle_label.font())
+        self.subtitle_label.setMinimumWidth(
+            max(
+                subtitle_metrics.horizontalAdvance(
+                    "Binance × Exness 跨平台点差 · 黄金 / 白银"
+                ),
+                subtitle_metrics.horizontalAdvance(
+                    "Binance × Exness · 单品种 · 黄金"
+                ),
+                subtitle_metrics.horizontalAdvance(
+                    "Binance × Exness · 单品种 · 白银"
+                ),
+            )
+        )
+        brand.addWidget(title)
+        brand.addWidget(self.subtitle_label)
+        row.addLayout(brand)
+        row.addSpacing(6)
+
+        self.ba_status = StatusBadge("币安")
+        self.mt5_status = StatusBadge("Exness")
+        self.network_status = NetworkStatusBadge()
+        row.addWidget(self.ba_status)
+        row.addWidget(self.mt5_status)
+        row.addWidget(self.network_status)
+        self.profit_btn = QPushButton("利润计算器")
+        self._style_toolbar_btn(self.profit_btn)
+        row.addWidget(self.profit_btn)
+        self.source_badge = QLabel("模拟")
+        self.source_badge.setObjectName("demoBadge")
+        row.addWidget(self.source_badge)
+        row.addStretch()
+
+        self.layout_mode_btn = QPushButton("单品种")
+        self._style_toolbar_btn(self.layout_mode_btn, checkable=True)
+        self.layout_mode_btn.clicked.connect(self._on_layout_mode_toggled)
+        row.addWidget(self.layout_mode_btn)
+
+        self.symbol_switch_btn = QPushButton("🥈 切换白银")
+        self._style_toolbar_btn(self.symbol_switch_btn)
+        self.symbol_switch_btn.clicked.connect(self._on_symbol_switch)
+        row.addWidget(self.symbol_switch_btn)
+
+        self.theme_btn = QPushButton("浅色")
+        self._style_toolbar_btn(self.theme_btn, checkable=True)
+        self.theme_btn.clicked.connect(self._on_theme_toggled)
+        row.addWidget(self.theme_btn)
+
+        self.settings_btn = QPushButton("设置")
+        self._style_toolbar_btn(self.settings_btn)
+        self.settings_btn.clicked.connect(self._open_settings)
+        row.addWidget(self.settings_btn)
+
+        self.save_btn = QPushButton("保存")
+        self._style_toolbar_btn(self.save_btn)
+        self.save_btn.clicked.connect(self._on_save)
+        row.addWidget(self.save_btn)
+
+        self.start_btn = QPushButton("启用监控")
+        self._style_toolbar_btn(self.start_btn, primary=True)
+        self.start_btn.clicked.connect(self._on_start)
+        row.addWidget(self.start_btn)
+
+        self.stop_btn = QPushButton("停止监控")
+        self._style_toolbar_btn(self.stop_btn, danger=True)
+        self.stop_btn.clicked.connect(self._on_stop)
+        row.addWidget(self.stop_btn)
+        self._header_row = row
+        return row
+
+    def _style_toolbar_btn(
+        self,
+        btn: QPushButton,
+        *,
+        primary: bool = False,
+        danger: bool = False,
+        checkable: bool = False,
+    ) -> None:
+        if primary:
+            btn.setObjectName("primaryButton")
+        elif danger:
+            btn.setObjectName("dangerButton")
+        else:
+            btn.setObjectName("ghostButton")
+        btn.setProperty("compact", True)
+        btn.setCheckable(checkable)
+        btn.setFixedHeight(28)
+        btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    def _sync_theme_btn(self) -> None:
+        dark = self.config.theme == "dark"
+        self.theme_btn.blockSignals(True)
+        self.theme_btn.setChecked(dark)
+        self.theme_btn.setText("深色" if dark else "浅色")
+        self.theme_btn.blockSignals(False)
+
+    def _apply_theme(self, theme: str) -> None:
+        app = QApplication.instance()
+        if app:
+            load_stylesheet(app, theme)
+        self.spread_panel.refresh_theme()
+        self.gold_actions.refresh_theme()
+        self.silver_actions.refresh_theme()
+        self.gold_panel.refresh_theme()
+        self.silver_panel.refresh_theme()
+        repolish_tree(self)
+
+    def _merge_config(self) -> AppConfig:
+        self.gold_actions.apply_settings_to(self.config)
+        self.silver_actions.apply_settings_to(self.config)
+        return self.config
+
+    def _relocate_monitor_buttons(self) -> None:
+        single = self.config.layout_mode == LayoutMode.SINGLE.value
+
+        if single:
+            preset = self.config.single_symbol_preset
+            target_strip = (
+                self.gold_actions if preset == "xau" else self.silver_actions
+            )
+            current_strip = self._monitor_buttons_on_strip()
+            if current_strip is target_strip and not self._monitor_buttons_on_header:
+                self._sync_monitor_buttons()
+                return
+            if self._header_row.indexOf(self.start_btn) >= 0:
+                self._header_row.removeWidget(self.start_btn)
+            if self._header_row.indexOf(self.stop_btn) >= 0:
+                self._header_row.removeWidget(self.stop_btn)
+            self.gold_actions.detach_monitor_buttons()
+            self.silver_actions.detach_monitor_buttons()
+            target_strip.attach_monitor_buttons(self.start_btn, self.stop_btn)
+            self._monitor_buttons_on_header = False
+        else:
+            if (
+                self._monitor_buttons_on_header
+                and self._header_row.indexOf(self.start_btn) >= 0
+            ):
+                self._sync_monitor_buttons()
+                return
+            self.gold_actions.detach_monitor_buttons()
+            self.silver_actions.detach_monitor_buttons()
+            if self._header_row.indexOf(self.start_btn) < 0:
+                self._header_row.addWidget(self.start_btn)
+            if self._header_row.indexOf(self.stop_btn) < 0:
+                self._header_row.addWidget(self.stop_btn)
+            self._monitor_buttons_on_header = True
+
+        self.start_btn.setVisible(True)
+        self.stop_btn.setVisible(True)
+        self._sync_monitor_buttons()
+
+    def _monitor_buttons_on_strip(self) -> SymbolActionStrip | None:
+        host = self.start_btn.parent()
+        for strip in (self.gold_actions, self.silver_actions):
+            if host is strip._monitor_host:
+                return strip
+        return None
+
+    def _sync_ba_refresh_timers(self) -> None:
+        timer = getattr(self, "_book_timer", None)
+        if timer is None:
+            return
+        ms = max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))
+        if timer.isActive():
+            timer.setInterval(ms)
+        else:
+            timer.start(ms)
+
+    def _open_settings(self) -> None:
+        dlg = ConnectionSettingsDialog(self.config, self)
+        if dlg.exec() != ConnectionSettingsDialog.DialogCode.Accepted:
+            return
+        dlg.apply_connection_to(self.config)
+        self.config = self._merge_config()
+        save_config(self.config)
+        self.engine.update_config(self.config)
+        if self.config.demo_mode and not self.engine.is_running:
+            self._on_start()
+        self._sync_ba_refresh_timers()
+        self._refresh_order_book()
+        interval = self.config.ba_refresh_interval_sec
+        msg = f"连接与参数已保存 · BA 刷新间隔 {interval:.1f}s"
+        if self.engine.is_running:
+            msg += "（监控已重启并生效）"
+        else:
+            msg += "（启用监控后生效）"
+        self._append_log(LogLevel.INFO, msg)
+        self.status_bar.showMessage(msg)
+
+    def _on_theme_toggled(self) -> None:
+        dark = self.theme_btn.isChecked()
+        theme = "dark" if dark else "light"
+        self.theme_btn.setText("深色" if dark else "浅色")
+        self.config.theme = theme
+        save_config(self.config)
+        self._apply_theme(theme)
+        self.status_bar.showMessage("已切换为深色主题" if dark else "已切换为浅色主题")
+
+    def _on_layout_mode_toggled(self) -> None:
+        single = self.layout_mode_btn.isChecked()
+        self.config.layout_mode = LayoutMode.SINGLE.value if single else LayoutMode.DUAL.value
+        if single and self.config.single_symbol_preset not in ("xau", "xag"):
+            self.config.single_symbol_preset = "xau"
+        save_config(self.config)
+        self._apply_layout_mode()
+        self.status_bar.showMessage("已切换为单品种模式" if single else "已切换为双品种模式")
+
+    def _on_symbol_switch(self) -> None:
+        if self.config.layout_mode != LayoutMode.SINGLE.value:
+            return
+        self.config.single_symbol_preset = (
+            "xag" if self.config.single_symbol_preset == "xau" else "xau"
+        )
+        save_config(self.config)
+        self._apply_layout_mode()
+        label = "黄金" if self.config.single_symbol_preset == "xau" else "白银"
+        self.status_bar.showMessage(f"单品种：{label}")
+
+    def _column_widgets_all(self) -> tuple[QWidget, ...]:
+        return (
+            self.gold_panel,
+            self.gold_actions,
+            self.spread_panel,
+            self.silver_panel,
+            self.silver_actions,
+        )
+
+    def _apply_column_visibility(self) -> None:
+        """固定五列 splitter，仅切换可见性，避免单/双模式重建控件。"""
+        single = self.config.layout_mode == LayoutMode.SINGLE.value
+        widgets = self._column_widgets_all()
+        if not single:
+            for widget in widgets:
+                widget.setVisible(True)
+                widget.setMaximumWidth(16777215)
+            return
+
+        show_xau = self.config.single_symbol_preset == "xau"
+        visibility = (
+            show_xau,
+            show_xau,
+            False,
+            not show_xau,
+            not show_xau,
+        )
+        for widget, visible in zip(widgets, visibility):
+            widget.setVisible(visible)
+            if visible:
+                widget.setMaximumWidth(16777215)
+            else:
+                widget.setMaximumWidth(0)
+
+    def _sync_columns_sizes(self) -> None:
+        """按实际内容宽度分配 splitter，订单簿列不撑出空白。"""
+        total = max(self._columns_splitter.width(), 1)
+        single = self.config.layout_mode == LayoutMode.SINGLE.value
+        if single:
+            show_xau = self.config.single_symbol_preset == "xau"
+            actions = self.gold_actions if show_xau else self.silver_actions
+            book_w = BOOK_PANEL_WIDTH
+            action_col_min = 280
+            act_w = max(actions.minimumSizeHint().width(), action_col_min)
+            rest_w = max(total - book_w - act_w, 0)
+            if show_xau:
+                sizes = [book_w, act_w + rest_w, 0, 0, 0]
+                stretch_at = 1
+            else:
+                sizes = [0, 0, 0, book_w, act_w + rest_w]
+                stretch_at = 4
+            for i in range(len(sizes)):
+                self._columns_splitter.setStretchFactor(i, 1 if i == stretch_at else 0)
+            self._columns_splitter.setSizes(sizes)
+            return
+
+        gold_w = BOOK_PANEL_WIDTH
+        action_col_min = 280
+        gold_act_w = max(self.gold_actions.minimumSizeHint().width(), action_col_min)
+        silver_act_w = max(self.silver_actions.minimumSizeHint().width(), action_col_min)
+        silver_w = BOOK_PANEL_WIDTH
+        mid_w = max(total - gold_w - gold_act_w - silver_act_w - silver_w, 120)
+        for panel in (self.gold_panel, self.silver_panel):
+            panel.setMaximumWidth(16777215)
+        sizes = (gold_w, gold_act_w, mid_w, silver_w, silver_act_w)
+        for i, _size in enumerate(sizes):
+            self._columns_splitter.setStretchFactor(i, 1 if i == 2 else 0)
+        self._columns_splitter.setSizes(list(sizes))
+
+    def _apply_layout_mode(self) -> None:
+        restore_updates = self.updatesEnabled()
+        central = self.centralWidget()
+        if central is not None:
+            central.setUpdatesEnabled(False)
+        self.setUpdatesEnabled(False)
+        self._columns_splitter.setUpdatesEnabled(False)
+        try:
+            single = self.config.layout_mode == LayoutMode.SINGLE.value
+            self.layout_mode_btn.blockSignals(True)
+            self.layout_mode_btn.setChecked(single)
+            self.layout_mode_btn.setText("双品种" if single else "单品种")
+            self.layout_mode_btn.blockSignals(False)
+            self.symbol_switch_btn.setVisible(single)
+
+            preset = self.config.single_symbol_preset
+            show_xau = not single or preset == "xau"
+            show_xag = not single or preset == "xag"
+            self.gold_panel.set_compact(single and show_xau)
+            self.silver_panel.set_compact(single and show_xag)
+            self.spread_panel.apply_layout_mode(single)
+            self._apply_column_visibility()
+
+            if single:
+                if preset == "xau":
+                    self.symbol_switch_btn.setText("🥈 切换白银")
+                    self.subtitle_label.setText(
+                        "Binance × Exness · 单品种 · 黄金"
+                    )
+                else:
+                    self.symbol_switch_btn.setText("🥇 切换黄金")
+                    self.subtitle_label.setText(
+                        "Binance × Exness · 单品种 · 白银"
+                    )
+            else:
+                self.subtitle_label.setText(
+                    "Binance × Exness 跨平台点差 · 黄金 / 白银"
+                )
+
+            self._relocate_monitor_buttons()
+            self._sync_columns_sizes()
+        finally:
+            self._columns_splitter.setUpdatesEnabled(True)
+            if central is not None:
+                central.setUpdatesEnabled(True)
+            if restore_updates:
+                self.setUpdatesEnabled(True)
+
+    def _wire_signals(self) -> None:
+        for strip in (self.gold_actions, self.silver_actions):
+            alerts = strip.alert_settings
+            for toggle in (alerts.spread_enabled, alerts.liq_enabled):
+                toggle.stateChanged.connect(self._on_alert_settings_changed)
+            for w in alerts.iter_watch_widgets():
+                if w in (alerts.spread_enabled, alerts.liq_enabled):
+                    continue
+                w.valueChanged.connect(self._on_alert_settings_changed)
+        self.profit_btn.clicked.connect(self._open_profit_calculator)
+        for strip in (self.gold_actions, self.silver_actions):
+            strip.section_layout_changed.connect(self._on_panel_sections_changed)
+        self._wire_trade_panel(self.gold_actions, "xau")
+        self._wire_trade_panel(self.silver_actions, "xag")
+        for strip in (self.gold_actions, self.silver_actions):
+            auto = strip.auto_trade_settings
+            for w in auto.iter_watch_widgets():
+                if isinstance(w, QCheckBox):
+                    w.toggled.connect(self._on_auto_trade_toggled)
+                else:
+                    w.valueChanged.connect(self._on_auto_trade_toggled)
+
+        self.engine.market_updated.connect(self._on_market)
+        self.engine.connection_changed.connect(self._on_connection)
+        self.engine.network_status_changed.connect(self._on_network_status)
+        self.engine.log_message.connect(self.log_panel.append)
+        self.engine.positions_updated.connect(self._on_positions)
+        self.engine.trade_started.connect(self._on_trade_started)
+        self.engine.trade_finished.connect(self._on_trade_finished)
+        self.engine.alert_triggered.connect(self._on_alert)
+        self.engine.trade_recorded.connect(self._on_trade_recorded)
+        if self.license_service and LICENSE_REQUIRED:
+            self.license_service.revoked.connect(self._on_license_revoked)
+            self.license_service.set_telemetry_provider(self._license_telemetry)
+        elif self.license_service:
+            self.license_service.set_telemetry_provider(self._license_telemetry)
+
+    def _append_log(self, level: LogLevel, message: str) -> None:
+        if should_log(self.config.log_level, level):
+            self.log_panel.append(message)
+
+    def _wire_trade_panel(self, panel: SymbolActionStrip, preset_id: str) -> None:
+        panel.trade_entry_btn.clicked.connect(lambda: self._open_trade_dialog(preset_id))
+        panel.position_refresh_requested.connect(self._on_refresh_positions)
+        panel.hedge_repair_requested.connect(self._on_hedge_repair_requested)
+
+    def _on_panel_sections_changed(self) -> None:
+        self.config = self._merge_config()
+        save_config(self.config)
+
+    def _on_hedge_repair_requested(self, preset_id: str, repair) -> None:
+        self._open_trade_dialog(
+            preset_id,
+            active_mode=repair.mode,
+            order_mode=repair.order_mode,
+        )
+
+    def _ensure_license(self, action: str = "此操作", *, fast: bool = False) -> bool:
+        if not LICENSE_REQUIRED or not self.license_service:
+            return True
+        try:
+            if fast:
+                self.license_service.ensure_approved_for_trade()
+            else:
+                self.license_service.ensure_approved()
+            return True
+        except LicenseError as exc:
+            from app.widgets.license_gate import LicenseGateDialog, _verify_with_server
+
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("未授权")
+            box.setText(f"{action}需要有效授权。\n{exc}")
+            box.setInformativeText("请在授权窗口提交申请，或刷新审核状态。")
+            open_btn = box.addButton("打开授权", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not open_btn:
+                return False
+            dlg = LicenseGateDialog(self.license_service, self)
+            dlg.exec()
+            if _verify_with_server(self.license_service):
+                return True
+            QMessageBox.warning(self, "未授权", "尚未通过授权，无法继续。")
+            return False
+
+    def _on_license_revoked(self, message: str) -> None:
+        if self.engine.is_running:
+            self.engine.stop()
+        self._sync_monitor_buttons()
+        self._append_log(LogLevel.INFO, f"授权已失效：{message}")
+        QMessageBox.warning(
+            self,
+            "授权已失效",
+            f"{message}\n\n监控已停止，请重新申请或联系管理员。",
+        )
+
+    def _on_trade_recorded(self, record) -> None:
+        if self.license_service:
+            self.license_service.upload_trade(record)
+
+    def _open_trade_dialog(
+        self,
+        preset_id: str,
+        *,
+        active_mode: str | None = None,
+        order_mode: str | None = None,
+    ) -> None:
+        if not self._ensure_license("手动交易"):
+            return
+        existing = self._trade_dialogs.get(preset_id)
+        if existing is not None and existing.isVisible():
+            if active_mode is not None:
+                existing.set_active_mode(active_mode)
+            if order_mode is not None:
+                existing.set_order_mode(order_mode)
+            existing.raise_()
+            existing.activateWindow()
+            if not existing.user_positioned():
+                self._position_trade_dialog(existing, preset_id)
+            return
+        self.engine.refresh_positions()
+        if active_mode is None:
+            active_mode = detect_hedge_mode(preset_id, self.engine.positions)
+        cfg = self._merge_config()
+        dlg = TradeConfirmDialog(preset_id, cfg, active_mode, self)
+        if order_mode is not None:
+            dlg.set_order_mode(order_mode)
+        self._trade_dialogs[preset_id] = dlg
+
+        def _drop_dialog(_=None, pid: str = preset_id, ref=dlg) -> None:
+            if self._trade_dialogs.get(pid) is ref:
+                self._trade_dialogs.pop(pid, None)
+
+        dlg.closed.connect(_drop_dialog)
+
+        def on_trade_requested(action: str, mode: str) -> None:
+            if not self._ensure_license("手动交易", fast=True):
+                dlg.set_actions_enabled(True)
+                return
+            order_mode = dlg.gold_order_mode()
+            dlg.apply_ratio_to(self.config)
+            sym = "黄金" if preset_id == "xau" else "白银"
+            self.status_bar.showMessage(f"正在提交{sym}{action}...")
+            self.engine.sync_config(self.config)
+            self._manual_trade_notify = True
+            if action == "开仓":
+                self.engine.open_hedge(preset_id, mode, order_mode)
+            else:
+                self.engine.close_hedge(preset_id, mode, order_mode)
+            if self.engine.is_trading:
+                def _persist_config() -> None:
+                    self.config = self._merge_config()
+                    dlg.apply_ratio_to(self.config)
+                    save_config_async(self.config)
+
+                threading.Thread(
+                    target=_persist_config, daemon=True, name="persist-trade-config"
+                ).start()
+            else:
+                self._manual_trade_notify = False
+                dlg.set_actions_enabled(True)
+
+        dlg.trade_requested.connect(on_trade_requested)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        dlg.set_position_callback(lambda d=dlg, pid=preset_id: self._position_trade_dialog(d, pid))
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dlg._fit_size()
+        self._position_trade_dialog(dlg, preset_id)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+        dlg.show()
+        for other in self._trade_dialogs.values():
+            if other.isVisible():
+                other.raise_()
+        self._refresh_trade_dialog_pnl(dlg)
+
+    def _license_telemetry(self) -> dict[str, str]:
+        from app.core.license.telemetry import build_license_telemetry
+
+        return build_license_telemetry(self.config, self.engine.positions)
+
+    def _refresh_trade_dialog_pnl(self, dlg: TradeConfirmDialog | None = None) -> None:
+        positions = self.engine.positions
+        ba_q = self.engine.ba_quotes
+        mt5_q = self.engine.mt5_quotes
+        cfg = self.config
+        targets = [dlg] if dlg is not None else list(self._trade_dialogs.values())
+        for dialog in targets:
+            if dialog is not None and dialog.isVisible():
+                dialog.update_pnl(positions, ba_q, mt5_q, cfg)
+
+    def _position_trade_dialog(self, dlg: TradeConfirmDialog, preset_id: str) -> None:
+        if dlg.user_positioned():
+            return
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        dlg.adjustSize()
+        dlg_w = dlg.width()
+        dlg_h = dlg.height()
+        btn = strip.trade_entry_btn
+        btn_origin = btn.mapToGlobal(QPoint(0, btn.height()))
+        if preset_id == "xau":
+            x = strip.mapToGlobal(QPoint(0, 0)).x()
+        else:
+            x = strip.mapToGlobal(QPoint(strip.width(), 0)).x() - dlg_w
+        y = btn_origin.y() + 8
+        screen = QGuiApplication.screenAt(btn_origin)
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            x = max(avail.left(), min(x, avail.right() - dlg_w))
+            y = max(avail.top(), min(y, avail.bottom() - dlg_h))
+        dlg.set_auto_positioning(True)
+        dlg.move(x, y)
+        dlg.set_auto_positioning(False)
+
+    def _any_auto_trade_enabled(self) -> bool:
+        return (
+            self.gold_actions.auto_trade_settings.any_enabled()
+            or self.silver_actions.auto_trade_settings.any_enabled()
+        )
+
+    def _auto_trade_hint(self, message: str) -> None:
+        now = time.time()
+        if self._auto_trade_hint_last.get(message, 0.0) + 15.0 > now:
+            return
+        self._auto_trade_hint_last[message] = now
+        self._append_log(LogLevel.INFO, message)
+        for strip in (self.gold_actions, self.silver_actions):
+            if strip.auto_trade_settings.any_enabled():
+                strip.auto_trade_settings.set_status(message)
+
+    def _update_auto_trade_progress(self, progress) -> None:
+        for strip in (self.gold_actions, self.silver_actions):
+            if not strip.auto_trade_settings.any_enabled():
+                strip.auto_trade_settings.set_status("")
+        if progress is None:
+            return
+        strip = self.gold_actions if progress.preset_id == "xau" else self.silver_actions
+        text = f"计时中 {progress.elapsed_sec:.0f}/{progress.hold_sec:.0f}s · {progress.label}"
+        strip.auto_trade_settings.set_status(text)
+        kind = "自动平仓" if "平仓" in progress.label else "自动开仓"
+        self.status_bar.showMessage(f"{kind} · {text}")
+
+    def _on_auto_trade_toggled(self) -> None:
+        self.config = self._merge_config()
+        save_config(self.config)
+        if not self.engine.is_running and self._any_auto_trade_enabled():
+            self._on_start()
+            self._append_log(LogLevel.INFO, "自动下单已开启，监控已启动")
+
+    def _execute_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
+        if not self._ensure_license("自动下单", fast=True):
+            return
+        self.config = self._merge_config()
+        self.engine.sync_config(self.config)
+        if self.engine.is_trading:
+            self._append_log(LogLevel.INFO, "自动下单：上一笔交易尚未完成，已跳过")
+            return
+        self._pending_auto_trade = ("open", preset_id, mode, order_mode)
+        self.engine.open_hedge(preset_id, mode, order_mode)
+        if self.engine.is_trading:
+            save_config_async(self.config)
+
+    def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
+        if not self._ensure_license("自动平仓", fast=True):
+            return
+        self.config = self._merge_config()
+        self.engine.sync_config(self.config)
+        if self.engine.is_trading:
+            self._append_log(LogLevel.INFO, "自动平仓：上一笔交易尚未完成，已跳过")
+            return
+        self.engine.close_hedge(preset_id, mode, order_mode)
+
+    def _disable_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
+        from app.core.auto_trade import _reset_lane_open_timers
+        from app.core.order_mode import auto_trade_lane
+
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        auto = strip.auto_trade_settings
+        is_market = order_mode == GoldOrderMode.MARKET.value
+        if is_market:
+            checkbox = (
+                auto.market_contraction_enabled
+                if mode == HedgeMode.CONTRACTION.value
+                else auto.market_expansion_enabled
+            )
+        else:
+            checkbox = (
+                auto.contraction_enabled
+                if mode == HedgeMode.CONTRACTION.value
+                else auto.expansion_enabled
+            )
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+        auto.apply_position_lock(mode)
+        _reset_lane_open_timers(
+            self._auto_trade_state, preset_id, auto_trade_lane(preset_id, order_mode)
+        )
+        self.config = self._merge_config()
+        save_config(self.config)
+        sym = "黄金" if preset_id == "xau" else "白银"
+        mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
+        lane = "市价" if is_market else "Maker"
+        self._append_log(
+            LogLevel.INFO,
+            f"自动开仓{mlabel}({lane})已成功，已取消{sym}对应勾选，可手动重新开启",
+        )
+
+    def _sync_auto_trade_locks(self, positions) -> None:
+        changed = False
+        for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
+            mode = detect_hedge_mode(preset_id, positions)
+            auto = strip.auto_trade_settings
+            before = auto.snapshot_lock_state()
+            auto.apply_position_lock(mode)
+            if auto.snapshot_lock_state() != before:
+                changed = True
+        if changed:
+            self.config = self._merge_config()
+            save_config(self.config)
+
+    def _maybe_auto_trade(self, update) -> None:
+        cfg = self._merge_config()
+        self.engine.sync_config(cfg)
+        now = time.time()
+        single = self.config.layout_mode == LayoutMode.SINGLE.value
+        preset_ids: tuple[str, ...] = ("xau", "xag")
+        if single:
+            preset_ids = (self.config.single_symbol_preset,)
+
+        if not self.engine.is_running:
+            reason = diagnose_auto_trade_block(
+                cfg, update.spreads, self.engine.positions, preset_ids=preset_ids, engine_running=False
+            )
+            if reason:
+                self._auto_trade_hint(reason)
+            return
+
+        progress = collect_auto_close_progress(
+            cfg,
+            update.spreads,
+            self.engine.positions,
+            now,
+            self._auto_trade_state,
+            preset_ids=preset_ids,
+        )
+        if progress is None:
+            progress = collect_auto_trade_progress(
+                cfg,
+                update.spreads,
+                self.engine.positions,
+                now,
+                self._auto_trade_state,
+                preset_ids=preset_ids,
+            )
+        self._update_auto_trade_progress(progress)
+
+        closes = evaluate_auto_closes(
+            cfg,
+            update.spreads,
+            self.engine.positions,
+            now,
+            self._auto_trade_state,
+            preset_ids=preset_ids,
+        )
+        if closes:
+            for strip in (self.gold_actions, self.silver_actions):
+                strip.auto_trade_settings.set_status("")
+            for preset_id, mode, order_mode, message in closes:
+                self._append_log(LogLevel.INFO, message)
+                self._execute_auto_close(preset_id, mode, order_mode)
+            return
+
+        orders = evaluate_auto_trades(
+            cfg,
+            update.spreads,
+            self.engine.positions,
+            now,
+            self._auto_trade_state,
+            preset_ids=preset_ids,
+        )
+        if orders:
+            for strip in (self.gold_actions, self.silver_actions):
+                strip.auto_trade_settings.set_status("")
+        for preset_id, mode, order_mode, message in orders:
+            self._append_log(LogLevel.INFO, message)
+            self._execute_auto_open(preset_id, mode, order_mode)
+            return
+
+        if progress is None:
+            reason = diagnose_auto_trade_block(
+                cfg,
+                update.spreads,
+                self.engine.positions,
+                preset_ids=preset_ids,
+                engine_running=True,
+            )
+            if reason:
+                self._auto_trade_hint(reason)
+
+    def _mode_label(self) -> str:
+        labels = {
+            ConnectionMode.DEMO.value: "演示模式",
+            ConnectionMode.LIVE_BOTH.value: "实盘双端",
+            ConnectionMode.LIVE_BA.value: "仅 BA 实盘",
+            ConnectionMode.LIVE_MT5.value: "仅 Exness 实盘",
+        }
+        return labels.get(self.config.connection_mode, "未知")
+
+    def _on_save(self) -> None:
+        self.config = self._merge_config()
+        save_config(self.config)
+        self.engine.update_config(self.config)
+        self._append_log(LogLevel.INFO, "参数已保存")
+        self.status_bar.showMessage("参数已保存")
+
+    def _on_start(self) -> None:
+        if not self._ensure_license("启用监控"):
+            return
+        self.config = self._merge_config()
+        save_config(self.config)
+        self.engine.update_config(self.config)
+        self.engine.start()
+        self._sync_monitor_buttons()
+        self._sync_ba_refresh_timers()
+        self._refresh_order_book()
+        self.status_bar.showMessage(f"监控运行中 · {self._mode_label()}")
+
+    def _on_stop(self) -> None:
+        self.engine.stop()
+        self._sync_monitor_buttons()
+        self.status_bar.showMessage("监控已停止")
+
+    def _on_alert_settings_changed(self) -> None:
+        self.config = self._merge_config()
+        self.engine.config = self.config
+        sender = self.sender()
+        if isinstance(sender, QCheckBox) and not sender.isChecked():
+            self.engine.alerts.stop()
+        if not self.config.any_alert_sound_enabled():
+            self.engine.alerts.stop()
+            self.status_bar.showMessage("声音告警已关闭")
+            return
+        self.engine.reevaluate_alerts()
+
+    def _on_refresh_positions(self) -> None:
+        self.engine.refresh_positions()
+        self._append_log(LogLevel.INFO, "已刷新持仓与盈亏")
+
+    def _open_profit_calculator(self) -> None:
+        dlg = ProfitCalculatorDialog(self)
+        dlg.exec()
+
+    def _on_positions(self, positions, summary) -> None:
+        self.gold_actions.update_positions(positions, summary, self.config)
+        self.silver_actions.update_positions(positions, summary, self.config)
+        self._sync_auto_trade_locks(positions)
+        ba_q = self.engine.ba_quotes
+        mt5_q = self.engine.mt5_quotes
+        cfg = self.config
+        self.gold_actions.update_pnl(positions, ba_q, mt5_q, cfg)
+        self.silver_actions.update_pnl(positions, ba_q, mt5_q, cfg)
+        self.spread_panel.update_pnl(positions, ba_q, mt5_q, cfg)
+        for preset_id, dlg in list(self._trade_dialogs.items()):
+            if dlg.isVisible():
+                mode = detect_hedge_mode(preset_id, positions)
+                dlg.set_active_mode(mode)
+        self._refresh_trade_dialog_pnl()
+        pending = self._pending_status_preset
+        if pending:
+            self._pending_status_preset = None
+            self.status_bar.showMessage(self._format_position_status(pending), 12000)
+
+    def _on_trade_started(self, action: str, preset_id: str, order_mode: str) -> None:
+        from app.core.order_mode import order_mode_log_label
+
+        self._last_trade_preset_id = preset_id
+        label = "开仓" if action == "open" else "平仓"
+        sym = "黄金" if preset_id == "xau" else "白银"
+        om = order_mode_log_label(preset_id, order_mode)
+        self.gold_actions.set_trade_buttons_enabled(False)
+        self.silver_actions.set_trade_buttons_enabled(False)
+        for dlg in self._trade_dialogs.values():
+            if dlg.isVisible():
+                dlg.set_actions_enabled(False)
+        self.status_bar.showMessage(f"正在{sym}{label} · {om}...")
+        self._append_log(LogLevel.TRADE, f"正在{sym}{label} · {om}")
+
+    def _format_position_status(self, preset_id: str) -> str:
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        return strip.position_status.text()
+
+    def _on_trade_finished(self, result) -> None:
+        self.gold_actions.set_trade_buttons_enabled(True)
+        self.silver_actions.set_trade_buttons_enabled(True)
+        for dlg in self._trade_dialogs.values():
+            if dlg.isVisible():
+                dlg.set_actions_enabled(True)
+        pending = self._pending_auto_trade
+        self._pending_auto_trade = None
+        if pending and result.success:
+            action, preset_id, mode, order_mode = pending
+            if action == "open":
+                self._disable_auto_open(preset_id, mode, order_mode)
+        self._manual_trade_notify = False
+        preset_id = getattr(self, "_last_trade_preset_id", "xau")
+        if result.partial:
+            box = QMessageBox(QMessageBox.Icon.Warning, "部分成交", result.message, parent=self)
+            box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+            box.exec()
+            self.engine.refresh_positions()
+            self.status_bar.showMessage(result.message, 10000)
+        elif not result.success:
+            box = QMessageBox(QMessageBox.Icon.Critical, "交易失败", result.message, parent=self)
+            box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+            box.exec()
+            self.engine.refresh_positions()
+            self.status_bar.showMessage(result.message, 10000)
+        else:
+            self._pending_status_preset = preset_id
+            self.engine.refresh_positions()
+            self.status_bar.showMessage(result.message, 5000)
+
+    def _on_market(self, update) -> None:
+        self.spread_panel.update_market(update)
+        risk = update.risk
+        self.spread_panel.update_risk(
+            risk.xau_ba_liq,
+            risk.xau_mt5_liq,
+            risk.xag_ba_liq,
+            risk.xag_mt5_liq,
+        )
+        self.gold_actions.update_risk(risk.xau_ba_liq, risk.xau_mt5_liq)
+        self.silver_actions.update_risk(risk.xag_ba_liq, risk.xag_mt5_liq)
+        positions = self.engine.positions
+        ba_q = self.engine.ba_quotes
+        mt5_q = self.engine.mt5_quotes
+        cfg = self.config
+        self.gold_actions.update_pnl(positions, ba_q, mt5_q, cfg)
+        self.silver_actions.update_pnl(positions, ba_q, mt5_q, cfg)
+        self.spread_panel.update_pnl(positions, ba_q, mt5_q, cfg)
+        self._refresh_trade_dialog_pnl()
+        self.gold_actions.update_spread(update.spreads.get("xau"))
+        self.silver_actions.update_spread(update.spreads.get("xag"))
+        xau = update.spreads.get("xau")
+        xag = update.spreads.get("xag")
+        self.gold_panel.update_ba_mid(xau.ba_mid if xau else None)
+        self.silver_panel.update_ba_mid(xag.ba_mid if xag else None)
+        self._maybe_auto_trade(update)
+        self._refresh_order_book()
+
+    def _on_alert(self, message: str) -> None:
+        self.status_bar.showMessage(f"⚠ 告警：{message}")
+
+    def _on_connection(self, platform: str, state: str) -> None:
+        if platform == "BA":
+            self.ba_status.set_state("币安", state)
+        else:
+            self.mt5_status.set_state("Exness", state)
+
+    def _on_network_status(self, status: NetworkStatus) -> None:
+        self.network_status.update_status(status)
+
+    def _refresh_order_book(self) -> None:
+        from app.core.models import OrderBook
+        from app.core.symbols import resolve_symbols
+
+        books = self.engine.ba_order_books
+        ba_xau, _, _ = resolve_symbols("xau", self.config.symbol_ba, self.config.symbol_mt5)
+        ba_xag, _, _ = resolve_symbols("xag", self.config.symbol_ba, self.config.symbol_mt5)
+        single = self.config.layout_mode == LayoutMode.SINGLE.value
+        if single:
+            if self.config.single_symbol_preset == "xau":
+                self.gold_panel.update_book(books.get(ba_xau, OrderBook()))
+            else:
+                self.silver_panel.update_book(books.get(ba_xag, OrderBook()))
+            return
+        self.gold_panel.update_book(books.get(ba_xau, OrderBook()))
+        self.silver_panel.update_book(books.get(ba_xag, OrderBook()))
+
+    def closeEvent(self, event) -> None:
+        self.engine.stop()
+        super().closeEvent(event)

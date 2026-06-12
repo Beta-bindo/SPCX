@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from app.config import settings
+
+ONLINE_WINDOW_SEC = 900  # 15 分钟内视为在线
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def init_db() -> None:
+    path = Path(settings.db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with get_conn() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL DEFAULT '',
+                contact TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                approved_at TEXT,
+                last_seen_at TEXT,
+                reject_reason TEXT NOT NULL DEFAULT '',
+                expires_at TEXT,
+                ba_account TEXT NOT NULL DEFAULT '',
+                mt5_account TEXT NOT NULL DEFAULT '',
+                position_summary TEXT NOT NULL DEFAULT '',
+                xau_position TEXT NOT NULL DEFAULT '',
+                xag_position TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                settled_at TEXT NOT NULL,
+                preset_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'close',
+                spread REAL NOT NULL DEFAULT 0,
+                ba_price REAL NOT NULL DEFAULT 0,
+                ex_price REAL NOT NULL DEFAULT 0,
+                ba_quantity REAL NOT NULL DEFAULT 0,
+                mt5_quantity REAL NOT NULL DEFAULT 0,
+                ba_side TEXT NOT NULL DEFAULT '',
+                mt5_side TEXT NOT NULL DEFAULT '',
+                direction TEXT NOT NULL DEFAULT '',
+                ba_pnl REAL NOT NULL DEFAULT 0,
+                mt5_pnl REAL NOT NULL DEFAULT 0,
+                ba_fee REAL NOT NULL DEFAULT 0,
+                mt5_fee REAL NOT NULL DEFAULT 0,
+                net_pnl REAL NOT NULL DEFAULT 0,
+                uploaded_at TEXT NOT NULL,
+                UNIQUE(device_id, settled_at, preset_id, mode, action)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+            CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id);
+            """
+        )
+        _migrate_devices(conn)
+        _migrate_trades(conn)
+
+
+def _migrate_trades(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
+    if not cols:
+        return
+    for name, ddl in (
+        ("action", "ALTER TABLE trades ADD COLUMN action TEXT NOT NULL DEFAULT 'close'"),
+        ("spread", "ALTER TABLE trades ADD COLUMN spread REAL NOT NULL DEFAULT 0"),
+        ("ba_price", "ALTER TABLE trades ADD COLUMN ba_price REAL NOT NULL DEFAULT 0"),
+        ("ex_price", "ALTER TABLE trades ADD COLUMN ex_price REAL NOT NULL DEFAULT 0"),
+        ("ba_quantity", "ALTER TABLE trades ADD COLUMN ba_quantity REAL NOT NULL DEFAULT 0"),
+        ("mt5_quantity", "ALTER TABLE trades ADD COLUMN mt5_quantity REAL NOT NULL DEFAULT 0"),
+        ("ba_side", "ALTER TABLE trades ADD COLUMN ba_side TEXT NOT NULL DEFAULT ''"),
+        ("mt5_side", "ALTER TABLE trades ADD COLUMN mt5_side TEXT NOT NULL DEFAULT ''"),
+        ("direction", "ALTER TABLE trades ADD COLUMN direction TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in cols:
+            conn.execute(ddl)
+
+    index_rows = conn.execute("PRAGMA index_list(trades)").fetchall()
+    has_action_unique = False
+    for index_row in index_rows:
+        index_name = index_row[1]
+        if not index_name.startswith("sqlite_autoindex"):
+            continue
+        info = conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+        col_names = [row[2] for row in info]
+        if col_names == ["device_id", "settled_at", "preset_id", "mode", "action"]:
+            has_action_unique = True
+            break
+        if col_names == ["device_id", "settled_at", "preset_id", "mode"]:
+            conn.executescript(
+                """
+                CREATE TABLE trades_migrated (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL,
+                    settled_at TEXT NOT NULL,
+                    preset_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    action TEXT NOT NULL DEFAULT 'close',
+                    spread REAL NOT NULL DEFAULT 0,
+                    ba_price REAL NOT NULL DEFAULT 0,
+                    ex_price REAL NOT NULL DEFAULT 0,
+                    ba_quantity REAL NOT NULL DEFAULT 0,
+                    mt5_quantity REAL NOT NULL DEFAULT 0,
+                    ba_side TEXT NOT NULL DEFAULT '',
+                    mt5_side TEXT NOT NULL DEFAULT '',
+                    direction TEXT NOT NULL DEFAULT '',
+                    ba_pnl REAL NOT NULL DEFAULT 0,
+                    mt5_pnl REAL NOT NULL DEFAULT 0,
+                    ba_fee REAL NOT NULL DEFAULT 0,
+                    mt5_fee REAL NOT NULL DEFAULT 0,
+                    net_pnl REAL NOT NULL DEFAULT 0,
+                    uploaded_at TEXT NOT NULL,
+                    UNIQUE(device_id, settled_at, preset_id, mode, action)
+                );
+                INSERT INTO trades_migrated (
+                    id, device_id, settled_at, preset_id, mode, action,
+                    spread, ba_price, ex_price, ba_quantity, mt5_quantity,
+                    ba_side, mt5_side, direction,
+                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, net_pnl, uploaded_at
+                )
+                SELECT
+                    id, device_id, settled_at, preset_id, mode, 'close',
+                    COALESCE(spread, 0), COALESCE(ba_price, 0), COALESCE(ex_price, 0),
+                    COALESCE(ba_quantity, 0), COALESCE(mt5_quantity, 0),
+                    COALESCE(ba_side, ''), COALESCE(mt5_side, ''), COALESCE(direction, ''),
+                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, net_pnl, uploaded_at
+                FROM trades;
+                DROP TABLE trades;
+                ALTER TABLE trades_migrated RENAME TO trades;
+                CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id);
+                """
+            )
+            return
+    if not has_action_unique:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_event "
+            "ON trades(device_id, settled_at, preset_id, mode, action)"
+        )
+
+
+def _migrate_devices(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+    for name, ddl in (
+        ("expires_at", "ALTER TABLE devices ADD COLUMN expires_at TEXT"),
+        ("ba_account", "ALTER TABLE devices ADD COLUMN ba_account TEXT NOT NULL DEFAULT ''"),
+        ("mt5_account", "ALTER TABLE devices ADD COLUMN mt5_account TEXT NOT NULL DEFAULT ''"),
+        (
+            "position_summary",
+            "ALTER TABLE devices ADD COLUMN position_summary TEXT NOT NULL DEFAULT ''",
+        ),
+        ("xau_position", "ALTER TABLE devices ADD COLUMN xau_position TEXT NOT NULL DEFAULT ''"),
+        ("xag_position", "ALTER TABLE devices ADD COLUMN xag_position TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in cols:
+            conn.execute(ddl)
+
+
+def parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def device_is_online(last_seen_at: str | None, *, now: datetime | None = None) -> bool:
+    seen = parse_iso(last_seen_at)
+    if seen is None:
+        return False
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - seen).total_seconds() <= ONLINE_WINDOW_SEC
+
+
+def device_is_expired(expires_at: str | None, *, now: datetime | None = None) -> bool:
+    exp = parse_iso(expires_at)
+    if exp is None:
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return now >= exp
+
+
+def normalize_expires_at(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        if "T" in raw:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(raw.replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(microsecond=0).isoformat()
+    except ValueError:
+        return raw
+
+
+def enrich_device(row: sqlite3.Row | dict | None) -> dict | None:
+    device = row_to_dict(row) if not isinstance(row, dict) else dict(row)
+    if device is None:
+        return None
+    device["online"] = device_is_online(device.get("last_seen_at"))
+    device["expired"] = device_is_expired(device.get("expires_at"))
+    return device
+
+
+@contextmanager
+def get_conn():
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    return dict(row)

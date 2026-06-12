@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>交易助手 · 授权管理</title>
+  <link rel="stylesheet" href="/static/admin_common.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>交易助手 · 授权管理</h1>
+    <p class="sub">审核用户申请、停用或删除设备</p>
+
+    <div id="loginCard" class="card">
+      <p class="sub">管理员密码由 <code>server\.env</code> 中的 <code>TA_ADMIN_PASSWORD_HASH</code> 配置</p>
+      <div class="row">
+        <input id="adminPassword" type="password" placeholder="管理员密码" style="min-width:220px" />
+        <button onclick="login()">登录</button>
+      </div>
+      <p id="loginErr" class="err hidden"></p>
+    </div>
+
+    <div id="panel" class="hidden">
+      <div class="topnav">
+        <div class="topnav-links">
+          <a href="/admin" class="active">授权管理</a>
+          <a href="/admin/trades">交易明细</a>
+          <a href="/admin/positions">持仓列表</a>
+        </div>
+        <div class="topnav-actions">
+          <button class="secondary" onclick="openChangePasswordDialog(adminToken)">修改密码</button>
+          <button class="secondary" onclick="logout()">退出</button>
+        </div>
+      </div>
+
+      <div class="card stats" id="stats"></div>
+
+      <div class="card filter-bar">
+        <label>筛选
+          <select id="statusFilter" onchange="loadDevices(1)">
+            <option value="" selected>全部</option>
+            <option value="pending">待审核</option>
+            <option value="approved">已通过</option>
+            <option value="rejected">已拒绝</option>
+            <option value="disabled">已停用</option>
+          </select>
+        </label>
+        <div class="filter-actions">
+          <button class="secondary" onclick="loadDevices(devicePage)">刷新</button>
+          <button class="secondary" onclick="resetFilters()">重置</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>昵称</th><th>联系方式</th><th>BA账号</th><th>MT5账号</th><th>在线</th><th>授权到期</th><th>机器码</th><th>状态</th><th>最后在线</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="deviceRows"></tbody>
+        </table>
+        <div class="pager">
+          <button class="secondary" id="prevBtn" onclick="loadDevices(devicePage - 1)">上一页</button>
+          <span id="pageInfo" class="sub"></span>
+          <button class="secondary" id="nextBtn" onclick="loadDevices(devicePage + 1)">下一页</button>
+          <label class="pager-size">每页
+            <select id="pageSize" onchange="loadDevices(1)">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="/static/admin_common.js?v=3"></script>
+<script>
+let adminToken = localStorage.getItem('ta_admin_token') || '';
+let devicePage = 1;
+
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
+async function login() {
+  const password = document.getElementById('adminPassword').value;
+  const res = await fetch('/api/v1/admin/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  if (!res.ok) { showErr('loginErr', '密码错误'); return; }
+  const data = await res.json();
+  adminToken = data.access_token;
+  localStorage.setItem('ta_admin_token', adminToken);
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('panel').classList.remove('hidden');
+  await refreshAll();
+}
+
+function logout() {
+  adminToken = '';
+  localStorage.removeItem('ta_admin_token');
+  location.reload();
+}
+
+function resetFilters() {
+  document.getElementById('statusFilter').value = '';
+  document.getElementById('pageSize').value = '20';
+  loadDevices(1);
+}
+
+async function refreshAll() {
+  await loadStats();
+  await loadDevices(1);
+}
+
+async function loadStats() {
+  const res = await fetch('/api/v1/admin/stats', { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  const data = await res.json();
+  const by = data.devices_by_status || {};
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><span class="sub">待审核</span><b>${by.pending||0}</b></div>
+    <div class="stat"><span class="sub">已通过</span><b>${by.approved||0}</b></div>
+    <div class="stat"><span class="sub">已拒绝</span><b>${by.rejected||0}</b></div>
+    <div class="stat"><span class="sub">已停用</span><b>${by.disabled||0}</b></div>
+    <div class="stat"><span class="sub">交易笔数</span><b>${data.trade_count||0}</b></div>
+    <div class="stat"><span class="sub">累计净利</span><b>$${data.total_net_pnl||0}</b></div>
+  `;
+}
+
+function onlineLabel(device) {
+  return onlineDot(device);
+}
+
+function expiresLabel(device) {
+  if (!device.expires_at) return '永久';
+  const text = fmtBeijing(device.expires_at);
+  if (device.expired) return `<span class="err">${esc(text)} 已到期</span>`;
+  return esc(text);
+}
+
+async function updateDevice(deviceId, payload) {
+  const res = await fetch(deviceApiPath(deviceId, 'update'), {
+    method: 'POST',
+    headers: authHeaders(adminToken),
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 401) return logout();
+  if (!res.ok) {
+    alert(await readError(res) || '更新失败');
+    return null;
+  }
+  const data = await res.json();
+  return data.device || null;
+}
+
+async function editDisplayName(deviceId, current) {
+  const name = await openDisplayNameDialog({
+    title: '修改昵称',
+    currentValue: current || '',
+  });
+  if (name === null) return;
+  const updated = await updateDevice(deviceId, { display_name: name });
+  if (updated) await loadDevices(devicePage);
+}
+
+async function editExpiresAt(deviceId, current) {
+  const value = await openExpiresAtDialog({
+    title: '设置授权到期时间',
+    currentValue: current || '',
+    defaultPermanent: !current,
+  });
+  if (value === null) return;
+  const updated = await updateDevice(deviceId, { expires_at: value });
+  if (updated) await loadDevices(devicePage);
+}
+
+async function loadDevices(page) {
+  const status = document.getElementById('statusFilter').value;
+  const pageSize = document.getElementById('pageSize').value;
+  devicePage = Math.max(1, page);
+  let url = `/api/v1/admin/devices?page=${devicePage}&page_size=${pageSize}`;
+  if (status) url += `&status=${encodeURIComponent(status)}`;
+  const res = await fetch(url, { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  const data = await res.json();
+  devicePage = data.page || devicePage;
+  const tbody = document.getElementById('deviceRows');
+  tbody.innerHTML = '';
+  for (const d of data.devices || []) {
+    const tr = document.createElement('tr');
+    const id = d.device_id;
+    tr.innerHTML = `
+      <td>
+        <div class="cell-title">${esc(d.display_name)}</div>
+        <div class="sub cell-note">${esc(d.note || '无备注')}</div>
+        <div class="cell-actions">
+          <button class="btn-inline secondary" type="button" data-action="rename">改昵称</button>
+        </div>
+      </td>
+      <td>${esc(d.contact||'-')}</td>
+      <td><code>${esc(d.ba_account||'-')}</code></td>
+      <td><code>${esc(d.mt5_account||'-')}</code></td>
+      <td>${onlineLabel(d)}</td>
+      <td>
+        <div class="cell-title">${expiresLabel(d)}</div>
+        <div class="cell-actions">
+          <button class="btn-inline secondary" type="button" data-action="expires">设到期</button>
+        </div>
+      </td>
+      <td><code>${esc(d.device_id.slice(0,12))}…</code></td>
+      <td><span class="badge ${d.status}">${statusLabel(d.status)}</span></td>
+      <td>${esc(fmtBeijing(d.last_seen_at))}</td>
+      <td>${actionButtons(d)}</td>`;
+    tr.querySelector('[data-action="rename"]')?.addEventListener('click', () => {
+      editDisplayName(id, d.display_name || '');
+    });
+    tr.querySelector('[data-action="expires"]')?.addEventListener('click', () => {
+      editExpiresAt(id, d.expires_at || '');
+    });
+    tbody.appendChild(tr);
+  }
+  const pages = data.pages || 1;
+  document.getElementById('pageInfo').textContent = `第 ${devicePage} / ${pages} 页 · 共 ${data.total||0} 条`;
+  document.getElementById('prevBtn').disabled = devicePage <= 1;
+  document.getElementById('nextBtn').disabled = devicePage >= pages;
+}
+
+function actionButtons(d) {
+  const id = d.device_id;
+  let html = '';
+  if (d.status === 'pending') {
+    html += `<button class="ok" onclick="act('${id}','approve')">通过</button> `;
+    html += `<button class="danger" onclick="reject('${id}')">拒绝</button> `;
+  }
+  if (d.status === 'approved') {
+    html += `<button class="danger" onclick="act('${id}','disable')">停用</button> `;
+  }
+  if (d.status === 'disabled' || d.status === 'rejected') {
+    html += `<button class="ok" onclick="act('${id}','approve')">重新通过</button> `;
+  }
+  html += `<button class="danger" onclick="removeDevice('${id}')">删除</button>`;
+  return html;
+}
+
+async function act(deviceId, action) {
+  let body = {};
+  if (action === 'approve') {
+    const expiresAt = await openExpiresAtDialog({
+      title: '通过授权 · 设置到期时间',
+      defaultPermanent: true,
+    });
+    if (expiresAt === null) return;
+    body.expires_at = expiresAt;
+  }
+  const res = await fetch(deviceApiPath(deviceId, action), {
+    method: 'POST', headers: authHeaders(adminToken), body: JSON.stringify(body)
+  });
+  if (!res.ok) { alert('操作失败'); return; }
+  await refreshAll();
+}
+
+async function reject(deviceId) {
+  const reason = prompt('拒绝原因（可选）') || '管理员拒绝';
+  const res = await fetch(deviceApiPath(deviceId, 'reject'), {
+    method: 'POST', headers: authHeaders(adminToken), body: JSON.stringify({ reason })
+  });
+  if (!res.ok) { alert('操作失败'); return; }
+  await refreshAll();
+}
+
+async function removeDevice(deviceId) {
+  if (!confirm('确定删除该设备？其上报的交易记录也会一并删除。')) return;
+  const res = await fetch(deviceApiPath(deviceId), {
+    method: 'DELETE', headers: authHeaders(adminToken)
+  });
+  if (!res.ok) { alert('删除失败'); return; }
+  await refreshAll();
+}
+
+if (adminToken) {
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('panel').classList.remove('hidden');
+  refreshAll();
+}
+</script>
+</body>
+</html>

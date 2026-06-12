@@ -1,0 +1,232 @@
+"""Tests for trade reporting fields and offline resilience."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import requests
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app.core.license.client import LicenseClient, LicenseError
+from app.core.license.pending_trades import clear_pending, enqueue_trades, load_pending
+from app.core.license.service import LicenseService
+from app.core.license.store import LicenseState, load_license, save_license
+from app.core.trade_ledger import TradeRecord, record_trade, trade_record_to_payload
+
+
+class TradeReportingTests(unittest.TestCase):
+    def test_trade_record_payload_includes_order_fields(self):
+        rec = TradeRecord(
+            settled_at="2026-06-10T12:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="open",
+            spread=3.125,
+            ba_price=2650.5,
+            ex_price=2647.375,
+            ba_quantity=500.0,
+            mt5_quantity=1.0,
+            ba_side="SELL",
+            mt5_side="BUY",
+        )
+        payload = trade_record_to_payload(rec)
+        self.assertEqual(payload["action"], "open")
+        self.assertEqual(payload["spread"], 3.125)
+        self.assertEqual(payload["ba_price"], 2650.5)
+        self.assertEqual(payload["ex_price"], 2647.375)
+        self.assertEqual(payload["ba_quantity"], 500.0)
+        self.assertEqual(payload["mt5_quantity"], 1.0)
+        self.assertEqual(payload["direction"], "BA SELL / Ex BUY")
+
+    def test_record_trade_persists_open_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_file = Path(tmp) / "trade_ledger.json"
+            with patch("app.core.trade_ledger.ledger_path", lambda: ledger_file):
+                rec = record_trade(
+                    "xag",
+                    "expansion",
+                    "open",
+                    spread=-2.5,
+                    ba_price=30.1,
+                    ex_price=30.125,
+                    ba_quantity=1000.0,
+                    mt5_quantity=0.5,
+                )
+                self.assertEqual(rec.ba_side, "BUY")
+                saved = json.loads(ledger_file.read_text(encoding="utf-8"))
+                self.assertEqual(saved["records"][0]["spread"], -2.5)
+
+    def test_pending_queue_keeps_open_and_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pending_trades.json"
+            with patch("app.core.license.pending_trades._path", lambda: path):
+                clear_pending()
+                base = {
+                    "settled_at": "2026-06-10T12:00:00",
+                    "preset_id": "xau",
+                    "mode": "contraction",
+                    "spread": 1.0,
+                    "ba_price": 1.0,
+                    "ex_price": 1.0,
+                    "ba_quantity": 500.0,
+                    "mt5_quantity": 1.0,
+                    "ba_side": "SELL",
+                    "mt5_side": "BUY",
+                    "direction": "BA SELL / Ex BUY",
+                    "ba_pnl": 0.0,
+                    "mt5_pnl": 0.0,
+                    "ba_fee": 0.0,
+                    "mt5_fee": 0.0,
+                    "net_pnl": 0.0,
+                }
+                enqueue_trades([{**base, "action": "open"}, {**base, "action": "close"}])
+                self.assertEqual(len(load_pending()), 2)
+
+    def test_flush_pending_replays_offline_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            license_file = tmp_path / "license.json"
+            pending_path = tmp_path / "pending_trades.json"
+            with patch("app.core.license.store.license_path", lambda: license_file), patch(
+                "app.core.license.pending_trades._path", lambda: pending_path
+            ):
+                save_license(
+                    LicenseState(
+                        device_id="dev-offline",
+                        status="approved",
+                        access_token="token",
+                        server_url="http://127.0.0.1:8787",
+                    )
+                )
+                trade = trade_record_to_payload(
+                    TradeRecord(
+                        settled_at="2026-06-10T12:00:00",
+                        preset_id="xau",
+                        mode="contraction",
+                        action="open",
+                        spread=3.0,
+                        ba_price=100.0,
+                        ex_price=97.0,
+                        ba_quantity=500.0,
+                        mt5_quantity=1.0,
+                        ba_side="SELL",
+                        mt5_side="BUY",
+                    )
+                )
+                enqueue_trades([trade])
+                client = LicenseClient()
+                posted: list[dict] = []
+
+                class _Resp:
+                    def raise_for_status(self):
+                        return None
+
+                def _post(url, json=None, headers=None, timeout=None):
+                    posted.append(json)
+                    return _Resp()
+
+                with patch("app.core.license.client.requests.post", side_effect=_post):
+                    count = client.flush_pending_trades()
+                self.assertEqual(count, 1)
+                self.assertEqual(load_pending(), [])
+                self.assertEqual(posted[0]["trades"][0]["spread"], 3.0)
+
+    def test_ensure_approved_allows_cached_token_when_server_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-1",
+                        status="approved",
+                        access_token="token",
+                        server_url="http://127.0.0.1:8787",
+                    )
+                )
+                service = LicenseService()
+                with patch.dict("os.environ", {"TA_LICENSE_SKIP": ""}, clear=False):
+                    with patch(
+                        "app.core.license.client.requests.post",
+                        side_effect=requests.ConnectionError("offline"),
+                    ):
+                        service.ensure_approved()
+
+    def test_ensure_approved_blocks_when_never_approved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-1",
+                        status="pending",
+                        access_token="",
+                        server_url="http://127.0.0.1:8787",
+                    )
+                )
+                service = LicenseService()
+                with patch.dict("os.environ", {"TA_LICENSE_SKIP": ""}, clear=False):
+                    with patch(
+                        "app.core.license.client.requests.post",
+                        side_effect=requests.ConnectionError("offline"),
+                    ):
+                        with self.assertRaises(LicenseError):
+                            service.ensure_approved()
+
+
+    def test_nolicense_client_keeps_pending_token_for_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-nolicense",
+                        status="pending",
+                        access_token="pending-token",
+                        server_url="http://127.0.0.1:8787",
+                    )
+                )
+                client = LicenseClient()
+                with patch("app.core.build_config.LICENSE_REQUIRED", False):
+                    self.assertTrue(client.can_upload_trades)
+
+    def test_nolicense_ensure_reporting_upgrades_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-pending",
+                        status="pending",
+                        access_token="",
+                        server_url="http://127.0.0.1:8787",
+                    )
+                )
+                service = LicenseService()
+
+                def _register(name, contact, note):
+                    return service.client._save_check(
+                        display_name=name,
+                        contact=contact,
+                        note=note,
+                        status="approved",
+                        access_token="approved-token",
+                    )
+
+                with patch.object(service.client, "register", side_effect=_register), patch.object(
+                    service.client, "heartbeat", side_effect=LicenseError("offline")
+                ), patch("app.core.build_config.LICENSE_REQUIRED", False):
+                    service.ensure_reporting_ready()
+                state = load_license()
+                self.assertEqual(state.status, "approved")
+                self.assertEqual(state.access_token, "approved-token")
+
+
+if __name__ == "__main__":
+    unittest.main()

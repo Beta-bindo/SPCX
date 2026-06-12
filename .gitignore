@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec.bak
+installer_output/
+.DS_Store
+*.log
+server/.env
+dist/**/config.json
+dist/**/license.json
+dist/**/.env

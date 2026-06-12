@@ -1,0 +1,165 @@
+"""Server-side trade API field tests."""
+
+from __future__ import annotations
+
+import sqlite3
+import sys
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+from app.auth import create_device_token
+from app.database import get_conn, init_db
+from app.routes.client import register, upload_trades
+from app.schemas import RegisterRequest, TradeBatchRequest, TradeItem
+
+
+class ServerTradeApiTests(unittest.TestCase):
+    def test_trade_upload_persists_order_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            from app import config as cfg_mod
+
+            patched = replace(cfg_mod.settings, db_path=str(db_path))
+            with patch.object(cfg_mod, "settings", patched), patch(
+                "app.database.settings", patched
+            ):
+                init_db()
+
+                device_id = "test-device-fields"
+                token = create_device_token(device_id, "approved")
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO devices (device_id, display_name, contact, note, status, created_at, last_seen_at)
+                        VALUES (?, '测试', '13800138000', '', 'approved', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                        """,
+                        (device_id,),
+                    )
+
+                body = TradeBatchRequest(
+                    trades=[
+                        TradeItem(
+                            settled_at="2026-06-10T12:00:00",
+                            preset_id="xau",
+                            mode="contraction",
+                            action="open",
+                            spread=3.125,
+                            ba_price=2650.5,
+                            ex_price=2647.375,
+                            ba_quantity=500.0,
+                            mt5_quantity=1.0,
+                            ba_side="SELL",
+                            mt5_side="BUY",
+                            direction="BA SELL / Ex BUY",
+                        )
+                    ]
+                )
+                result = upload_trades(body, authorization=f"Bearer {token}")
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["inserted"], 1)
+
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT * FROM trades WHERE device_id = ?", (device_id,)
+                    ).fetchone()
+                data = dict(row)
+                self.assertEqual(data["action"], "open")
+                self.assertEqual(data["spread"], 3.125)
+                self.assertEqual(data["ba_price"], 2650.5)
+                self.assertEqual(data["ex_price"], 2647.375)
+                self.assertEqual(data["ba_quantity"], 500.0)
+                self.assertEqual(data["mt5_quantity"], 1.0)
+                self.assertEqual(data["direction"], "BA SELL / Ex BUY")
+
+    def test_trade_migration_adds_new_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "legacy.db"
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    contact TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    approved_at TEXT,
+                    last_seen_at TEXT,
+                    reject_reason TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT
+                );
+                CREATE TABLE trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL,
+                    settled_at TEXT NOT NULL,
+                    preset_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    ba_pnl REAL NOT NULL DEFAULT 0,
+                    mt5_pnl REAL NOT NULL DEFAULT 0,
+                    ba_fee REAL NOT NULL DEFAULT 0,
+                    mt5_fee REAL NOT NULL DEFAULT 0,
+                    net_pnl REAL NOT NULL DEFAULT 0,
+                    uploaded_at TEXT NOT NULL,
+                    UNIQUE(device_id, settled_at, preset_id, mode)
+                );
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            from app import config as cfg_mod
+
+            patched = replace(cfg_mod.settings, db_path=str(db_path))
+            with patch.object(cfg_mod, "settings", patched), patch(
+                "app.database.settings", patched
+            ):
+                init_db()
+                with get_conn() as conn:
+                    cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
+            self.assertIn("action", cols)
+            self.assertIn("spread", cols)
+            self.assertIn("ba_price", cols)
+
+
+    def test_nolicense_register_auto_approves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            from app import config as cfg_mod
+            from app.routes.client import register
+            from app.schemas import RegisterRequest
+
+            patched = replace(cfg_mod.settings, db_path=str(db_path))
+            with patch.object(cfg_mod, "settings", patched), patch(
+                "app.database.settings", patched
+            ):
+                init_db()
+                result = register(
+                    RegisterRequest(
+                        device_id="nolicense-dev-1",
+                        display_name="免授权用户",
+                        contact="13800138000",
+                        note="免授权版自动注册",
+                        app_version="1.0.0",
+                    )
+                )
+                self.assertEqual(result["status"], "approved")
+                self.assertTrue(result["access_token"])
+
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT status FROM devices WHERE device_id = ?",
+                        ("nolicense-dev-1",),
+                    ).fetchone()
+                self.assertEqual(dict(row)["status"], "approved")
+
+
+if __name__ == "__main__":
+    unittest.main()

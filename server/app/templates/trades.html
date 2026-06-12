@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>交易助手 · 交易明细</title>
+  <link rel="stylesheet" href="/static/admin_common.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>交易助手 · 交易明细</h1>
+    <p class="sub">查看各用户上报的开仓与平仓明细（含下单时点差、双端价格、数量与方向）</p>
+
+    <div id="loginCard" class="card">
+      <div class="row">
+        <input id="adminPassword" type="password" placeholder="管理员密码" style="min-width:220px" />
+        <button onclick="login()">登录</button>
+      </div>
+      <p id="loginErr" class="err hidden"></p>
+    </div>
+
+    <div id="panel" class="hidden">
+      <div class="topnav">
+        <div class="topnav-links">
+          <a href="/admin">授权管理</a>
+          <a href="/admin/trades" class="active">交易明细</a>
+          <a href="/admin/positions">持仓列表</a>
+        </div>
+        <div class="topnav-actions">
+          <button class="secondary" onclick="openChangePasswordDialog(adminToken)">修改密码</button>
+          <button class="secondary" onclick="logout()">退出</button>
+        </div>
+      </div>
+
+      <div class="card filter-bar">
+        <label>用户
+          <select id="deviceFilter" onchange="loadTrades(1)">
+            <option value="">全部用户</option>
+          </select>
+        </label>
+        <label>品种
+          <select id="presetFilter" onchange="loadTrades(1)">
+            <option value="">全部品种</option>
+            <option value="xau">黄金 XAU</option>
+            <option value="xag">白银 XAG</option>
+          </select>
+        </label>
+        <label>模式
+          <select id="modeFilter" onchange="loadTrades(1)">
+            <option value="">全部模式</option>
+            <option value="contraction">收缩</option>
+            <option value="expansion">扩张</option>
+          </select>
+        </label>
+        <label class="date-field">开始日期
+          <input id="dateFrom" class="dt-input date-input" type="date" />
+        </label>
+        <label class="date-field">结束日期
+          <input id="dateTo" class="dt-input date-input" type="date" />
+        </label>
+        <label>盈亏
+          <select id="pnlFilter" onchange="loadTrades(1)">
+            <option value="">全部</option>
+            <option value="profit">盈利</option>
+            <option value="loss">亏损</option>
+            <option value="flat">持平</option>
+          </select>
+        </label>
+        <div class="filter-actions">
+          <button class="secondary" onclick="loadTrades(tradePage)">刷新</button>
+          <button class="secondary" onclick="resetFilters()">重置</button>
+          <button onclick="exportTrades()">导出 CSV</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="tradeSummary" class="summary-grid"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>用户</th><th>机器码</th><th>类型</th><th>品种</th><th>模式</th><th>时间</th>
+              <th>点差</th><th>BA价</th><th>Ex价</th><th>BA量</th><th>Ex量</th><th>方向</th>
+              <th>BA盈亏</th><th>Ex盈亏</th><th>净利</th><th>上报时间</th>
+            </tr>
+          </thead>
+          <tbody id="tradeRows"></tbody>
+        </table>
+        <div class="pager">
+          <button class="secondary" id="prevBtn" onclick="loadTrades(tradePage - 1)">上一页</button>
+          <span id="pageInfo" class="sub"></span>
+          <button class="secondary" id="nextBtn" onclick="loadTrades(tradePage + 1)">下一页</button>
+          <label class="pager-size">每页
+            <select id="pageSize" onchange="loadTrades(1)">
+              <option value="20">20</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="/static/admin_common.js?v=4"></script>
+<script>
+let adminToken = localStorage.getItem('ta_admin_token') || '';
+let tradePage = 1;
+
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
+function initFilters() {
+  try {
+    initTradeDateFilters(() => loadTrades(1));
+  } catch (err) {
+    console.error(err);
+    showErr('loginErr', '筛选控件初始化失败，请刷新页面重试');
+  }
+}
+
+async function login() {
+  const password = document.getElementById('adminPassword').value;
+  const res = await fetch('/api/v1/admin/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  if (!res.ok) {
+    showErr('loginErr', await readError(res) || '登录失败');
+    return;
+  }
+  adminToken = (await res.json()).access_token;
+  localStorage.setItem('ta_admin_token', adminToken);
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('panel').classList.remove('hidden');
+  initFilters();
+  await loadDeviceOptions();
+  await loadTrades(1);
+}
+
+function logout() {
+  adminToken = '';
+  localStorage.removeItem('ta_admin_token');
+  location.reload();
+}
+
+function resetFilters() {
+  document.getElementById('deviceFilter').value = '';
+  document.getElementById('presetFilter').value = '';
+  document.getElementById('modeFilter').value = '';
+  document.getElementById('pnlFilter').value = '';
+  document.getElementById('pageSize').value = '50';
+  resetTradeDateDefaults();
+  loadTrades(1);
+}
+
+async function loadDeviceOptions() {
+  const res = await fetch('/api/v1/admin/devices?page=1&page_size=500', { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  if (!res.ok) { showErr('loginErr', await readError(res) || '加载用户失败'); return; }
+  const data = await res.json();
+  const sel = document.getElementById('deviceFilter');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">全部用户</option>';
+  for (const d of data.devices || []) {
+    const opt = document.createElement('option');
+    opt.value = d.device_id;
+    opt.textContent = `${d.display_name || d.device_id.slice(0, 8)} (${statusLabel(d.status)})`;
+    sel.appendChild(opt);
+  }
+  sel.value = current;
+}
+
+async function loadTrades(page) {
+  const pageSize = document.getElementById('pageSize').value;
+  tradePage = Math.max(1, page);
+  let url = `/api/v1/admin/trades?page=${tradePage}&page_size=${pageSize}&${buildTradeQuery()}`;
+  const res = await fetch(url, { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  if (!res.ok) { alert(await readError(res) || '加载交易明细失败'); return; }
+  const data = await res.json();
+  tradePage = data.page || tradePage;
+  const summary = data.summary || {};
+  const net = Number(summary.net_pnl || 0);
+  document.getElementById('tradeSummary').innerHTML = `
+    <div class="summary-item"><span class="sub">筛选笔数</span><b>${summary.count || data.total || 0}</b></div>
+    <div class="summary-item"><span class="sub">BA 盈亏合计</span><b class="${Number(summary.ba_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.ba_pnl)}</b></div>
+    <div class="summary-item"><span class="sub">EX 盈亏合计</span><b class="${Number(summary.mt5_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.mt5_pnl)}</b></div>
+    <div class="summary-item"><span class="sub">净利合计</span><b class="${net>=0?'pos':'neg'}">${fmtMoney(summary.net_pnl)}</b></div>
+  `;
+  const tbody = document.getElementById('tradeRows');
+  tbody.innerHTML = '';
+  const rows = data.trades || [];
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="16" class="sub" style="text-align:center;padding:24px">暂无数据。请点「重置」扩大日期范围，或确认用户筛选为「全部用户」。</td>`;
+    tbody.appendChild(tr);
+  }
+  for (const t of rows) {
+    const rowNet = t.net_pnl || 0;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(t.display_name||'-')}</td>
+      <td><code>${esc((t.device_id||'').slice(0,12))}…</code></td>
+      <td>${esc(actionLabel(t.action))}</td>
+      <td>${esc(presetLabel(t.preset_id))}</td>
+      <td>${esc(modeLabel(t.mode))}</td>
+      <td>${esc(fmtBeijing(t.settled_at))}</td>
+      <td>${fmtSpread(t.spread)}</td>
+      <td>${fmtPrice(t.ba_price)}</td>
+      <td>${fmtPrice(t.ex_price)}</td>
+      <td>${fmtQty(t.ba_quantity)}</td>
+      <td>${fmtQty(t.mt5_quantity)}</td>
+      <td>${esc(t.direction || '-')}</td>
+      <td>${fmtTradePnl(t.action, t.ba_pnl)}</td>
+      <td>${fmtTradePnl(t.action, t.mt5_pnl)}</td>
+      <td class="${rowNet>=0?'pos':'neg'}">${fmtTradePnl(t.action, rowNet)}</td>
+      <td>${esc(fmtBeijing(t.uploaded_at))}</td>`;
+    tbody.appendChild(tr);
+  }
+  const pages = data.pages || 1;
+  document.getElementById('pageInfo').textContent = `第 ${tradePage} / ${pages} 页 · 共 ${data.total||0} 条`;
+  document.getElementById('prevBtn').disabled = tradePage <= 1;
+  document.getElementById('nextBtn').disabled = tradePage >= pages;
+}
+
+function buildTradeQuery() {
+  const params = new URLSearchParams();
+  const deviceId = document.getElementById('deviceFilter').value;
+  const presetId = document.getElementById('presetFilter').value;
+  const mode = document.getElementById('modeFilter').value;
+  const pnl = document.getElementById('pnlFilter').value;
+  const dateFrom = getTradeDateFilterValue('dateFrom', 'start');
+  const dateTo = getTradeDateFilterValue('dateTo', 'end');
+  if (deviceId) params.set('device_id', deviceId);
+  if (presetId) params.set('preset_id', presetId);
+  if (mode) params.set('mode', mode);
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+  if (pnl) params.set('pnl', pnl);
+  return params.toString();
+}
+
+function exportTrades() {
+  if (!adminToken) return;
+  const url = `/api/v1/admin/trades/export?${buildTradeQuery()}`;
+  fetch(url, { headers: authHeaders(adminToken) })
+    .then(async res => {
+      if (res.status === 401) return logout();
+      if (!res.ok) throw new Error(await readError(res) || '导出失败');
+      return res.blob();
+    })
+    .then(blob => {
+      if (!blob) return;
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = URL.createObjectURL(blob);
+      a.download = `trades-${stamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    })
+    .catch(err => alert(err.message || '导出失败'));
+}
+
+async function bootPanel() {
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('panel').classList.remove('hidden');
+  initFilters();
+  await loadDeviceOptions();
+  await loadTrades(1);
+}
+
+if (adminToken) {
+  bootPanel().catch((err) => {
+    console.error(err);
+    showErr('loginErr', err.message || '页面加载失败，请重新登录');
+    document.getElementById('loginCard').classList.remove('hidden');
+    document.getElementById('panel').classList.add('hidden');
+  });
+}
+</script>
+</body>
+</html>
