@@ -432,9 +432,8 @@ class AppConfig:
         return self.xau_auto_expansion_threshold
 
     def auto_trade_hold_sec(self, preset_id: str) -> float:
-        if preset_id == "xag":
-            return self.xag_auto_trade_hold_sec
-        return self.xau_auto_trade_hold_sec
+        # 自动开/平仓改为满足阈值且已勾选后立即执行；旧配置字段保留但不再参与判断。
+        return 0.0
 
     def auto_close_contraction_on(self, preset_id: str) -> bool:
         if preset_id == "xag":

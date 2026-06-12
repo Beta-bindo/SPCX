@@ -34,12 +34,12 @@ from app.core.trading_service import detect_hedge_mode, hedge_strategy_label_for
 
 # 实时盈亏表格各列像素宽（含爆仓/强平/杠杆列）
 _COL_WIDTHS = {
-    "pnl": 68,
-    "qty": 52,
-    "side": 44,
-    "liq": 58,
-    "buf": 44,
-    "lev": 36,
+    "pnl": 76,
+    "qty": 58,
+    "side": 50,
+    "liq": 64,
+    "buf": 50,
+    "lev": 42,
 }
 
 # 弹窗中精简版表格的列宽（不含爆仓/强平列）
@@ -84,13 +84,14 @@ class PnlDetailPanel(QFrame):
         root.setSpacing(4)
 
         header = QHBoxLayout()
-        title = QLabel("盈利情况")
-        title.setObjectName("settingsBlockTitle")
         self.total_label = QLabel("实时净盈亏：$0.00")
         self.total_label.setObjectName("pnlTotal")
-        header.addWidget(title)
-        header.addStretch()
+        _total_font = self.total_label.font()
+        _total_font.setPointSizeF(_total_font.pointSizeF() + 2)
+        _total_font.setBold(True)
+        self.total_label.setFont(_total_font)
         header.addWidget(self.total_label)
+        header.addStretch()
         root.addLayout(header)
 
         alert_row = QHBoxLayout()
@@ -122,7 +123,8 @@ class PnlDetailPanel(QFrame):
         grid.setVerticalSpacing(0)
         col_titles = ["", "盈亏", "持仓", "方向"]
         if show_liq_buf:
-            col_titles.extend(["爆", "强"])
+            # 强=爆仓价位（liq），爆=距爆仓的资金缓冲（buf，账户还能亏多少钱）
+            col_titles.extend(["强", "爆"])
         col_titles.append("杠")
         for col, text in enumerate(col_titles):
             lbl = QLabel(text)
@@ -141,12 +143,18 @@ class PnlDetailPanel(QFrame):
             plat.setObjectName("platformTag")
             plat.setAlignment(Qt.AlignmentFlag.AlignCenter)
             plat.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            _plat_font = plat.font()
+            _plat_font.setPointSizeF(_plat_font.pointSizeF() + 1)
+            plat.setFont(_plat_font)
             grid.addWidget(plat, row, 0)
             cells: dict[str, QLabel] = {}
             for col, field in enumerate(self._fields, start=1):
                 cell = QLabel("--")
                 cell.setObjectName("positionValue")
                 cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                _cell_font = cell.font()
+                _cell_font.setPointSizeF(_cell_font.pointSizeF() + 1)
+                cell.setFont(_cell_font)
                 cell.setFixedWidth(col_widths[field])
                 cell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 grid.addWidget(cell, row, col)

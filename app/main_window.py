@@ -98,6 +98,48 @@ class StatusBadge(QFrame):
             polish_widget(self.dot)
 
 
+class WsStatusBadge(QFrame):
+    """BA 行情通道徽标：WebSocket 实时推流 / REST 兜底 / 连接中。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statusBadge")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 8, 3)
+        layout.setSpacing(6)
+        self.dot = QFrame()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setObjectName("statusDotDisconnected")
+        self.label = QLabel("行情 · 关闭")
+        self.label.setObjectName("statusText")
+        metrics = QFontMetrics(self.label.font())
+        self.label.setMinimumWidth(metrics.horizontalAdvance("行情 · REST 兜底"))
+        layout.addWidget(self.dot)
+        layout.addWidget(self.label)
+        self._dot_name = "statusDotDisconnected"
+        self._label_text = self.label.text()
+
+    def set_mode(self, mode: str, *, live_ba: bool) -> None:
+        if not live_ba:
+            dot_name, text = "statusDotSimulated", "行情 · 关闭"
+        else:
+            mapping = {
+                "streaming": ("statusDotConnected", "行情 · WS 已连"),
+                "rest": ("statusDotSlow", "行情 · REST 兜底"),
+                "connecting": ("statusDotDisconnected", "行情 · WS 连接中"),
+                "off": ("statusDotDisconnected", "行情 · 关闭"),
+            }
+            dot_name, text = mapping.get(mode, mapping["off"])
+        if text != self._label_text:
+            self.label.setText(text)
+            self._label_text = text
+        if dot_name != self._dot_name:
+            self._dot_name = dot_name
+            self.dot.setObjectName(dot_name)
+            polish_widget(self.dot)
+
+
 class NetworkStatusBadge(QFrame):
     """网络状态徽标：展示 BA/Ex 行情延迟，或离线/未启动等精简文案。"""
 
@@ -254,16 +296,15 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
             )
             strip.setMinimumWidth(140)
+        # 中间「盈利·告警」面板已下线，仅保留对象用于"模拟/真实"行情徽标更新（不加入布局）
         self.spread_panel = SpreadPanel()
-        self.spread_panel.setMinimumWidth(120)
         self.spread_panel.set_action_strips(self.gold_actions, self.silver_actions)
         self.spread_panel.set_source_badge(self.source_badge)
         for panel, min_w, stretch in (
             (self.gold_panel, 72, 0),
-            (self.gold_actions, 140, 0),
-            (self.spread_panel, 120, 1),
+            (self.gold_actions, 140, 1),
             (self.silver_panel, 72, 0),
-            (self.silver_actions, 140, 0),
+            (self.silver_actions, 140, 1),
         ):
             panel.setMinimumWidth(min_w)
             panel.setSizePolicy(
@@ -315,6 +356,7 @@ class MainWindow(QMainWindow):
 
     def _finish_ui_bootstrap(self) -> None:
         self._ui_bootstrapping = False
+        self._sync_ws_status()
         if self._pending_demo_start and not self._demo_start_scheduled:
             self._pending_demo_start = False
             self._demo_start_scheduled = True
@@ -398,9 +440,11 @@ class MainWindow(QMainWindow):
         self.ba_status = StatusBadge("币安")
         self.mt5_status = StatusBadge("Exness")
         self.network_status = NetworkStatusBadge()
+        self.ws_status = WsStatusBadge()
         row.addWidget(self.ba_status)
         row.addWidget(self.mt5_status)
         row.addWidget(self.network_status)
+        row.addWidget(self.ws_status)
         self.profit_btn = QPushButton("利润计算器")
         self._style_toolbar_btn(self.profit_btn)
         row.addWidget(self.profit_btn)
@@ -554,6 +598,10 @@ class MainWindow(QMainWindow):
         dlg.apply_connection_to(self.config)
         self.config = self._merge_config()
         save_config(self.config)
+        QTimer.singleShot(0, self._apply_connection_settings)
+
+    def _apply_connection_settings(self) -> None:
+        """设置保存后异步重启连接，避免阻塞对话框关闭。"""
         self.engine.update_config(self.config)
         if self.config.demo_mode and not self.engine.is_running:
             self._on_start()
@@ -601,7 +649,6 @@ class MainWindow(QMainWindow):
         return (
             self.gold_panel,
             self.gold_actions,
-            self.spread_panel,
             self.silver_panel,
             self.silver_actions,
         )
@@ -620,7 +667,6 @@ class MainWindow(QMainWindow):
         visibility = (
             show_xau,
             show_xau,
-            False,
             not show_xau,
             not show_xau,
         )
@@ -643,11 +689,11 @@ class MainWindow(QMainWindow):
             act_w = max(actions.minimumSizeHint().width(), action_col_min)
             rest_w = max(total - book_w - act_w, 0)
             if show_xau:
-                sizes = [book_w, act_w + rest_w, 0, 0, 0]
+                sizes = [book_w, act_w + rest_w, 0, 0]
                 stretch_at = 1
             else:
-                sizes = [0, 0, 0, book_w, act_w + rest_w]
-                stretch_at = 4
+                sizes = [0, 0, book_w, act_w + rest_w]
+                stretch_at = 3
             for i in range(len(sizes)):
                 self._columns_splitter.setStretchFactor(i, 1 if i == stretch_at else 0)
             self._columns_splitter.setSizes(sizes)
@@ -658,12 +704,17 @@ class MainWindow(QMainWindow):
         gold_act_w = max(self.gold_actions.minimumSizeHint().width(), action_col_min)
         silver_act_w = max(self.silver_actions.minimumSizeHint().width(), action_col_min)
         silver_w = BOOK_PANEL_WIDTH
-        mid_w = max(total - gold_w - gold_act_w - silver_act_w - silver_w, 120)
+        extra = max(total - gold_w - gold_act_w - silver_act_w - silver_w, 0)
         for panel in (self.gold_panel, self.silver_panel):
             panel.setMaximumWidth(16777215)
-        sizes = (gold_w, gold_act_w, mid_w, silver_w, silver_act_w)
+        sizes = (
+            gold_w,
+            gold_act_w + extra // 2,
+            silver_w,
+            silver_act_w + extra - extra // 2,
+        )
         for i, _size in enumerate(sizes):
-            self._columns_splitter.setStretchFactor(i, 1 if i == 2 else 0)
+            self._columns_splitter.setStretchFactor(i, 1 if i in (1, 3) else 0)
         self._columns_splitter.setSizes(list(sizes))
 
     def _apply_layout_mode(self) -> None:
@@ -739,6 +790,7 @@ class MainWindow(QMainWindow):
         self.engine.market_updated.connect(self._on_market)
         self.engine.connection_changed.connect(self._on_connection)
         self.engine.network_status_changed.connect(self._on_network_status)
+        self.engine.binance.ws_state_changed.connect(self._on_ws_state)
         self.engine.log_message.connect(self.log_panel.append)
         self.engine.positions_updated.connect(self._on_positions)
         self.engine.trade_started.connect(self._on_trade_started)
@@ -831,7 +883,8 @@ class MainWindow(QMainWindow):
         active_mode: str | None = None,
         order_mode: str | None = None,
     ) -> None:
-        if not self._ensure_license("手动交易"):
+        # 打开交易弹窗属于点击热路径：只做本地快速授权判断，避免网络心跳卡住 UI。
+        if not self._ensure_license("手动交易", fast=True):
             return
         existing = self._trade_dialogs.get(preset_id)
         if existing is not None and existing.isVisible():
@@ -844,7 +897,6 @@ class MainWindow(QMainWindow):
             if not existing.user_positioned():
                 self._position_trade_dialog(existing, preset_id)
             return
-        self.engine.refresh_positions()
         if active_mode is None:
             active_mode = detect_hedge_mode(preset_id, self.engine.positions)
         cfg = self._merge_config()
@@ -899,6 +951,7 @@ class MainWindow(QMainWindow):
             if other.isVisible():
                 other.raise_()
         self._refresh_trade_dialog_pnl(dlg)
+        QTimer.singleShot(0, self.engine.refresh_positions)
 
     def _license_telemetry(self) -> dict[str, str]:
         from app.core.license.telemetry import build_license_telemetry
@@ -960,7 +1013,7 @@ class MainWindow(QMainWindow):
         for strip in (self.gold_actions, self.silver_actions):
             if not strip.auto_trade_settings.any_enabled():
                 strip.auto_trade_settings.set_status("")
-        if progress is None:
+        if progress is None or progress.hold_sec <= 0:
             return
         strip = self.gold_actions if progress.preset_id == "xau" else self.silver_actions
         text = f"计时中 {progress.elapsed_sec:.1f}/{progress.hold_sec:g}s · {progress.label}"
@@ -971,6 +1024,11 @@ class MainWindow(QMainWindow):
     def _on_auto_trade_toggled(self) -> None:
         self.config = self._merge_config()
         save_config(self.config)
+        # 人工调整勾选/阈值视为显式意图：清掉冷却与计时，满足条件即可立即触发
+        self._auto_trade_state.last_fire.clear()
+        self._auto_trade_state.last_close_fire.clear()
+        self._auto_trade_state.since.clear()
+        self._auto_trade_state.close_since.clear()
         if not self.engine.is_running and self._any_auto_trade_enabled():
             self._on_start()
             self._append_log(LogLevel.INFO, "自动下单已开启，监控已启动")
@@ -1151,12 +1209,14 @@ class MainWindow(QMainWindow):
         self.engine.start()
         self._sync_monitor_buttons()
         self._sync_ba_refresh_timers()
+        self._sync_ws_status()
         self._refresh_order_book()
         self.status_bar.showMessage(f"监控运行中 · {self._mode_label()}")
 
     def _on_stop(self) -> None:
         self.engine.stop()
         self._sync_monitor_buttons()
+        self._sync_ws_status()
         self.status_bar.showMessage("监控已停止")
 
     def _on_alert_settings_changed(self) -> None:
@@ -1274,8 +1334,16 @@ class MainWindow(QMainWindow):
         self.silver_actions.update_spread(update.spreads.get("xag"))
         xau = update.spreads.get("xau")
         xag = update.spreads.get("xag")
-        self.gold_panel.update_ba_mid(xau.ba_mid if xau else None)
-        self.silver_panel.update_ba_mid(xag.ba_mid if xag else None)
+        from app.core.symbols import find_preset
+
+        xau_ba = update.ba_quotes.get(find_preset("xau").symbol_ba)
+        xag_ba = update.ba_quotes.get(find_preset("xag").symbol_ba)
+        self.gold_panel.update_ba_mid(
+            xau.ba_mid if xau else (xau_ba.mid if xau_ba and xau_ba.bid > 0 else None)
+        )
+        self.silver_panel.update_ba_mid(
+            xag.ba_mid if xag else (xag_ba.mid if xag_ba and xag_ba.bid > 0 else None)
+        )
         self._maybe_auto_trade(update)
         self._refresh_order_book()
 
@@ -1292,6 +1360,17 @@ class MainWindow(QMainWindow):
 
     def _on_network_status(self, status: NetworkStatus) -> None:
         self.network_status.update_status(status)
+
+    def _on_ws_state(self, mode: str) -> None:
+        if self._ui_bootstrapping:
+            return
+        self.ws_status.set_mode(mode, live_ba=self.config.use_live_ba)
+
+    def _sync_ws_status(self) -> None:
+        self.ws_status.set_mode(
+            self.engine.binance.ws_mode,
+            live_ba=self.config.use_live_ba,
+        )
 
     def _refresh_order_book(self) -> None:
         from app.core.models import OrderBook

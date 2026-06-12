@@ -17,7 +17,7 @@ import threading
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.core.alerts import AlertService
-from app.core.demo_market import spread_is_sane
+from app.core.demo_market import align_sim_mt5_to_ba, spread_is_sane
 from app.core.models import (
     AppConfig,
     ConnectionMode,
@@ -33,6 +33,7 @@ from app.core.risk import build_risk_snapshot
 from app.core.symbols import WATCHED_PRESETS, find_preset, watched_ba_symbols
 from app.core.app_log import LogLevel, hedge_mode_word, should_log
 from app.core.trade_ledger import hedge_sides, record_close_settlement, record_trade
+from app.core.trade_result import HedgeTradeResult
 from app.core.trading_service import close_hedge, open_hedge, position_entry_spread
 from app.core.order_mode import order_mode_log_label
 from app.connectors.binance_connector import BinanceConnector
@@ -209,6 +210,7 @@ class SpreadEngine(QObject):
 
     def _run_open(self, preset_id: str, mode: str, order_mode: str) -> None:
         """后台线程：执行开仓、记录成交、刷新持仓，并发出相应信号。"""
+        finished = False
         try:
             om = order_mode_log_label(preset_id, order_mode)
             self._log(
@@ -239,6 +241,12 @@ class SpreadEngine(QObject):
             self._log(LogLevel.TRADE, result.message)
             if result.success:
                 self._spread_log(preset_id, "成交后")
+                ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
+                mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
+                actual_ba_qty = ba_leg.filled_quantity if ba_leg and ba_leg.filled_quantity > 0 else ba_qty
+                actual_mt5_qty = (
+                    mt5_leg.filled_quantity if mt5_leg and mt5_leg.filled_quantity > 0 else mt5_qty
+                )
                 rec = record_trade(
                     preset_id,
                     mode,
@@ -246,8 +254,8 @@ class SpreadEngine(QObject):
                     spread=spread,
                     ba_price=ba_price,
                     ex_price=ex_price,
-                    ba_quantity=ba_qty,
-                    mt5_quantity=mt5_qty,
+                    ba_quantity=actual_ba_qty,
+                    mt5_quantity=actual_mt5_qty,
                     ba_side=ba_side,
                     mt5_side=mt5_side,
                 )
@@ -280,12 +288,20 @@ class SpreadEngine(QObject):
                 if entry_spread is not None:
                     self._log(LogLevel.TRADE, f"持仓入场点差指数 {entry_spread:+.3f}")
             self.trade_finished.emit(result)
+            finished = True
             self.refresh_positions()
+        except Exception as exc:  # noqa: BLE001 — 兜底：异常也要让 UI 解锁
+            self._log(LogLevel.ERROR, f"开仓异常：{exc}")
         finally:
             self._trading = False
+            if not finished:
+                self.trade_finished.emit(
+                    HedgeTradeResult(action="open", success=False, message="开仓异常")
+                )
 
     def _run_close(self, preset_id: str, mode: str, order_mode: str) -> None:
         """后台线程：执行平仓、按平仓比例结算盈亏并记账，最后刷新持仓。"""
+        finished = False
         try:
             om = order_mode_log_label(preset_id, order_mode)
             self._log(
@@ -345,9 +361,16 @@ class SpreadEngine(QObject):
                 self._log(LogLevel.TRADE, f"【结算】{label} 平仓{mlabel} · 净利 {rec.net_pnl:+.2f}")
                 self.trade_recorded.emit(rec)
             self.trade_finished.emit(result)
+            finished = True
             self.refresh_positions()
+        except Exception as exc:  # noqa: BLE001 — 兜底：异常也要让 UI 解锁
+            self._log(LogLevel.ERROR, f"平仓异常：{exc}")
         finally:
             self._trading = False
+            if not finished:
+                self.trade_finished.emit(
+                    HedgeTradeResult(action="close", success=False, message="平仓异常")
+                )
 
     def _position_poll_ms(self) -> int:
         """持仓轮询间隔（毫秒），随报价刷新间隔联动，但不低于 4 秒。"""
@@ -539,6 +562,14 @@ class SpreadEngine(QObject):
             ba = self._ba_quotes.get(preset.symbol_ba)
             mt5 = self._mt5_quotes.get(preset.symbol_mt5)
             if ba and mt5:
+                mt5 = align_sim_mt5_to_ba(
+                    ba,
+                    mt5,
+                    preset_id,
+                    interval_sec=self.config.ba_refresh_interval_sec,
+                )
+                if mt5 is not self._mt5_quotes.get(preset.symbol_mt5):
+                    self._mt5_quotes[preset.symbol_mt5] = mt5
                 snap = build_spread_snapshot(ba, mt5, preset_id)
                 if snap and spread_is_sane(preset_id, snap.mid_spread):
                     self._spreads[preset_id] = snap

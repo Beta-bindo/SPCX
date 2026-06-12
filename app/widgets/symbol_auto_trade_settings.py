@@ -20,11 +20,11 @@ from app.widgets.symbol_alert_settings import _settings_int_spin, _settings_spin
 
 
 def _hold_spin(value: float):
-    """构造"持续秒数"用的小数输入框（0.01~120，步长 0.01）。"""
+    """构造"持续秒数"用的小数输入框（0~120，步长 0.01）；0 表示满足即下单。"""
     return _settings_spin(
-        max(0.01, float(value)),
+        max(0.0, float(value)),
         decimals=2,
-        minimum=0.01,
+        minimum=0.0,
         maximum=120.0,
         step=0.01,
     )
@@ -47,8 +47,9 @@ class SymbolAutoTradeSettings(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(2)
 
-        # 全局触发条件放最上面：条件连续满足 N 秒后才执行
-        root.addLayout(self._build_hold_row())
+        # 自动交易满足阈值后立即触发；保留隐藏控件仅兼容旧配置读写路径。
+        self.hold_sec = _hold_spin(0)
+        self.hold_sec.setVisible(False)
 
         if preset_id == "xau":
             root.addLayout(self._build_trade_block("Maker自动开仓", "Maker自动平仓", "maker"))
@@ -238,7 +239,6 @@ class SymbolAutoTradeSettings(QFrame):
         for lane in ("maker", "market"):
             for widget in self._lane_widgets(lane):
                 yield widget
-        yield self.hold_sec
         if self.preset_id == "xau":
             yield self.maker_timeout_sec
 
@@ -263,7 +263,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_expansion_enabled.setChecked(config.xau_auto_close_expansion_enabled)
             self.close_contraction_threshold.setValue(config.xau_auto_close_contraction_threshold)
             self.close_expansion_threshold.setValue(config.xau_auto_close_expansion_threshold)
-            self.hold_sec.setValue(max(0.01, float(config.xau_auto_trade_hold_sec)))
+            self.hold_sec.setValue(0.0)
             self.market_contraction_enabled.setChecked(config.xau_auto_market_contraction_enabled)
             self.market_expansion_enabled.setChecked(config.xau_auto_market_expansion_enabled)
             self.market_contraction_threshold.setValue(config.xau_auto_market_contraction_threshold)
@@ -292,7 +292,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_expansion_enabled.setChecked(config.xag_auto_close_expansion_enabled)
             self.close_contraction_threshold.setValue(config.xag_auto_close_contraction_threshold)
             self.close_expansion_threshold.setValue(config.xag_auto_close_expansion_threshold)
-            self.hold_sec.setValue(max(0.01, float(config.xag_auto_trade_hold_sec)))
+            self.hold_sec.setValue(0.0)
 
     def apply_to(self, config: AppConfig) -> None:
         """把控件值写回配置。"""
@@ -305,7 +305,7 @@ class SymbolAutoTradeSettings(QFrame):
             config.xau_auto_close_expansion_enabled = self.close_expansion_enabled.isChecked()
             config.xau_auto_close_contraction_threshold = self.close_contraction_threshold.value()
             config.xau_auto_close_expansion_threshold = self.close_expansion_threshold.value()
-            config.xau_auto_trade_hold_sec = float(self.hold_sec.value())
+            config.xau_auto_trade_hold_sec = 0.0
             config.xau_auto_market_contraction_enabled = self.market_contraction_enabled.isChecked()
             config.xau_auto_market_expansion_enabled = self.market_expansion_enabled.isChecked()
             config.xau_auto_market_contraction_threshold = self.market_contraction_threshold.value()
@@ -332,7 +332,7 @@ class SymbolAutoTradeSettings(QFrame):
             config.xag_auto_close_expansion_enabled = self.close_expansion_enabled.isChecked()
             config.xag_auto_close_contraction_threshold = self.close_contraction_threshold.value()
             config.xag_auto_close_expansion_threshold = self.close_expansion_threshold.value()
-            config.xag_auto_trade_hold_sec = float(self.hold_sec.value())
+            config.xag_auto_trade_hold_sec = 0.0
 
     def any_enabled(self) -> bool:
         """是否存在任一已启用的自动开/平仓条件。"""

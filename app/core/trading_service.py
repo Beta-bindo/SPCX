@@ -6,8 +6,8 @@
 
 两腿执行策略：
 - 市价（Market）：两腿并发下单，最大化成交速度；
-- Maker / 限价：顺序执行，先等 BA 成交再下 Exness，避免单边敞口；
-  任一腿失败时对已成交腿做自动回滚（reconciliation）。
+- Maker / 限价：先挂 BA，按 BA 实际新增成交量分批用 Exness 市价补对冲；
+  BA 超时撤单后会再检查取消前最后成交量，避免漏补。
 """
 
 from __future__ import annotations
@@ -146,6 +146,13 @@ def _is_market_mode(order_mode: str) -> bool:
     return order_mode == GoldOrderMode.MARKET.value
 
 
+def _mt5_lots_for_ba_fill(config, preset_id: str, ba_filled_qty: float) -> float:
+    """把 BA 实际成交量按配置比例换算成本次 Exness 对冲手数。"""
+    ba_cfg = max(float(config.ba_quantity_for(preset_id)), 1e-9)
+    mt5_cfg = float(config.mt5_lot_for(preset_id))
+    return max(0.0, mt5_cfg * float(ba_filled_qty) / ba_cfg)
+
+
 def _rollback_needed(leg: LegResult) -> bool:
     """该腿是否需要回滚：已成交，或状态未知需对账（防止漏掉真实成交）。"""
     return leg.success or leg.needs_reconciliation
@@ -180,17 +187,53 @@ def open_hedge(
             ba = ba_f.result()
             mt5_leg = mt5_f.result()
     else:
-        # Maker/限价为顺序执行：先等 BA 委托成交，成交后才下 EX 对冲；
-        # BA 未成交（含超时撤单）则不下 EX，避免单边敞口。
-        ba = binance.open_hedge_leg(preset_id, mode, order_mode)
-        if ba.success:
-            mt5_leg = mt5.open_hedge_leg(preset_id, mode, order_mode)
+        mt5_legs: list[LegResult] = []
+        mt5_failed = False
+
+        def hedge_ba_fill(ba_delta: float) -> bool:
+            nonlocal mt5_failed
+            lots = _mt5_lots_for_ba_fill(binance.config, preset_id, ba_delta)
+            if lots <= 0:
+                return True
+            leg = mt5.open_hedge_leg(
+                preset_id,
+                mode,
+                GoldOrderMode.MARKET.value,
+                lots_override=lots,
+            )
+            mt5_legs.append(leg)
+            mt5_failed = mt5_failed or not leg.success
+            return leg.success
+
+        # Maker/限价按 BA 实际成交量驱动 EX：等待期间每新增成交就补一笔；
+        # 超时撤单后 BA 连接器会再读一次最终成交量，补上取消前最后成交。
+        ba = binance.open_hedge_leg(
+            preset_id,
+            mode,
+            order_mode,
+            on_fill_delta=hedge_ba_fill,
+        )
+        if mt5_legs:
+            mt5_success = all(leg.success for leg in mt5_legs)
+            mt5_leg = LegResult(
+                platform="MT5",
+                success=mt5_success,
+                message=(
+                    f"Exness 已按 BA 实际成交分批补 {sum(leg.filled_quantity for leg in mt5_legs):g} 手"
+                    if mt5_success
+                    else "Exness 分批补对冲失败，请立即检查单边敞口"
+                ),
+                filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
+                needs_reconciliation=not mt5_success,
+            )
         else:
             mt5_leg = LegResult(
                 platform="MT5",
                 success=False,
                 message="BA 委托未成交，已跳过 Exness 对冲下单",
             )
+        if mt5_failed:
+            ba.needs_reconciliation = True
     legs = [ba, mt5_leg]
     success = all(leg.success for leg in legs)
     if not success and _rollback_needed(ba):

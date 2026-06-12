@@ -16,6 +16,7 @@ class LegResult:
     compensated: bool = False           # 失败时是否已成功回滚该腿
     compensation_message: str = ""
     needs_reconciliation: bool = False  # 状态未知、需人工/后续对账（防止漏判真实成交）
+    filled_quantity: float = 0.0        # 实际成交量：BA 为合约/币数，MT5 为手数
 
 
 @dataclass

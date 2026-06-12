@@ -1,8 +1,7 @@
-"""自动交易引擎：当点差持续满足阈值时自动开/平对冲仓。
+"""自动交易引擎：当点差满足阈值时自动开/平对冲仓。
 
-核心是一个基于时间的状态机：
-- 点差满足阈值后开始计时（state.since / close_since 记录起始时刻）；
-- 持续满足达到 hold_sec 才真正触发下单，避免瞬时抖动误触发；
+核心是一个基于阈值的状态机：
+- 点差满足阈值且对应方向已勾选时立即触发；
 - 点差回落超过 RESET_MARGIN（迟滞）则重置计时；
 - 触发后进入 COOLDOWN_SEC 冷却，防止连续重复下单。
 
@@ -36,7 +35,7 @@ class AutoTradeState:
 
 @dataclass
 class AutoTradeProgress:
-    """自动交易倒计时进度，供 UI 展示"已满足 N/hold_sec 秒"。"""
+    """自动交易进度（保留给 UI 兼容；即时触发后通常不会展示倒计时）。"""
 
     preset_id: str
     mode: str
@@ -170,7 +169,6 @@ def collect_auto_trade_progress(
         if snap is None:
             continue
         spread = snap.mid_spread
-        hold_sec = config.auto_trade_hold_sec(preset_id)
         label = "黄金" if preset_id == "xau" else "白银"
         for lane in _lanes_for_preset(preset_id):
             if active is not None:
@@ -363,13 +361,8 @@ def evaluate_auto_trades(
 
             for mode in modes:
                 key = (preset_id, mode, lane)
-                started = state.since.get(key)
-                if started is None:
-                    # 首次满足：开始计时，本轮不触发
+                if state.since.get(key) is None:
                     state.since[key] = now
-                    continue
-                if now - started < hold_sec:
-                    continue  # 持续时间不足，继续等待
                 if not _mode_satisfied(config, preset_id, mode, spread, lane):
                     state.since[key] = None
                     continue
@@ -396,7 +389,7 @@ def evaluate_auto_trades(
                         order_mode,
                         (
                             f"[自动下单] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
-                            f"连续 {hold_sec:g}s 满足 · {mlabel}开仓{mode_text}"
+                            f"已满足 · {mlabel}开仓{mode_text}"
                         ),
                     )
                 )
@@ -459,7 +452,6 @@ def collect_auto_close_progress(
         snap = spreads.get(preset_id)
         if snap is None:
             continue
-        hold_sec = config.auto_trade_hold_sec(preset_id)
         label = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         for lane in _lanes_for_preset(preset_id):
@@ -497,7 +489,7 @@ def evaluate_auto_closes(
 ) -> list[tuple[str, str, str, str]]:
     """评估并产出本轮应自动平仓的下单意图列表（结构同 evaluate_auto_trades）。
 
-    仅对已存在对冲持仓的品种生效；同样遵循 hold_sec 持续判定、迟滞重置与冷却。
+    仅对已存在对冲持仓的品种生效；同样遵循即时触发、迟滞重置与冷却。
     """
     orders: list[tuple[str, str, str, str]] = []
 
@@ -514,7 +506,6 @@ def evaluate_auto_closes(
             continue
 
         spread = snap.mid_spread
-        hold_sec = config.auto_trade_hold_sec(preset_id)
 
         for lane in _lanes_for_preset(preset_id):
             if not _close_mode_enabled(config, preset_id, mode, lane):
@@ -536,12 +527,8 @@ def evaluate_auto_closes(
             if last is not None and now - last < COOLDOWN_SEC:
                 continue
 
-            started = state.close_since.get(key)
-            if started is None:
+            if state.close_since.get(key) is None:
                 state.close_since[key] = now
-                continue
-            if now - started < hold_sec:
-                continue
 
             mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
             if mode == HedgeMode.CONTRACTION.value:
@@ -560,7 +547,7 @@ def evaluate_auto_closes(
                     order_mode,
                     (
                         f"[自动平仓] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
-                        f"连续 {hold_sec:g}s 满足 · {mlabel}平仓{mode_text}"
+                        f"已满足 · {mlabel}平仓{mode_text}"
                     ),
                 )
             )

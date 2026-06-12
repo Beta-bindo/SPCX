@@ -64,3 +64,28 @@ def generate_all_demo_pairs(t: float) -> dict[str, tuple[Quote, Quote]]:
 def spread_is_sane(preset_id: str, mid_spread: float) -> bool:
     limit = SANITY_MAX_SPREAD.get(preset_id, 50.0)
     return abs(mid_spread) <= limit
+
+
+def align_sim_mt5_to_ba(ba: Quote, mt5: Quote, preset_id: str, *, interval_sec: float = 0.8) -> Quote:
+    """混合模式：实盘 BA + 模拟 MT5 时，将 MT5 演示价锚定到 BA 现价，避免基数偏差。"""
+    if ba.is_simulated or not mt5.is_simulated:
+        return mt5
+    if ba.bid <= 0 or ba.ask <= 0:
+        return mt5
+    t = demo_tick_time(time.time(), interval_sec)
+    spread = target_demo_spread(preset_id, t)
+    ba_mid = (ba.bid + ba.ask) / 2
+    mt5_mid = ba_mid - spread
+    if mt5.ask > mt5.bid > 0:
+        mt5_half = (mt5.ask - mt5.bid) / 2
+    elif preset_id == "xau":
+        mt5_half = 0.20
+    else:
+        mt5_half = 0.008
+    return Quote(
+        symbol=mt5.symbol,
+        bid=mt5_mid - mt5_half,
+        ask=mt5_mid + mt5_half,
+        timestamp=t,
+        is_simulated=True,
+    )

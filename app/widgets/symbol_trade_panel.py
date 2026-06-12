@@ -47,7 +47,11 @@ from app.core.hedge_health import (
     format_position_status,
     suggest_hedge_repair,
 )
-from app.core.trading_service import detect_hedge_mode, hedge_mode_strategy_label
+from app.core.trading_service import (
+    detect_hedge_mode,
+    hedge_mode_strategy_label,
+    position_entry_spread,
+)
 from app.widgets.spread_value_label import SpreadValueLabel
 from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox, ClickToEditSpinBox
 from app.widgets.symbol_alert_settings import SymbolAlertSettings
@@ -522,9 +526,10 @@ class SymbolActionStrip(QFrame):
         if health.is_ok and health.code == "hedged":
             mode = detect_hedge_mode(self.preset_id, positions)
             strategy = hedge_mode_strategy_label(mode)
-            live = self._last_spread.mid_spread if self._last_spread is not None else None
-            if live is not None:
-                text = f"当前持仓：{strategy}（{live:+.3f}）"
+            # 入场点差均值（BA 均价 − Ex 均价），随加仓加权平均、不随行情浮动
+            entry = position_entry_spread(ba, mt5)
+            if entry is not None:
+                text = f"当前持仓：{strategy}（{entry:+.3f}）"
             else:
                 text = f"当前持仓：{strategy}"
         else:

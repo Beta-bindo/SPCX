@@ -14,10 +14,11 @@ import math
 import random
 import threading
 import time
+from collections.abc import Callable
 from typing import Optional
 
 import requests
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QMetaObject, QObject, Qt, QTimer, Signal, Slot
 
 from app.core.api_client import ApiClient
 from app.core.http_session import (
@@ -39,6 +40,7 @@ from app.core.order_mode import resolve_execution_flags
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
 from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_ba_symbols
 from app.core.trade_result import LegResult
+from app.connectors.binance_ws_stream import BinanceWsStream, WS_STALE_SEC
 from app.core.app_log import (
     LogLevel,
     hedge_action_label,
@@ -92,6 +94,7 @@ class BinanceConnector(QObject):
 
     quote_received = Signal(object)   # 收到新报价（Quote）
     state_changed = Signal(str)       # 连接状态变化
+    ws_state_changed = Signal(str)    # WS 行情：streaming / rest / connecting / off
     latency_updated = Signal(float)   # 接口往返延迟（ms）
     log = Signal(str)                 # 日志行
 
@@ -117,6 +120,21 @@ class BinanceConnector(QObject):
         self._positions_fetch_lock = threading.Lock()       # 持仓拉取单飞锁
         self._positions_inflight: threading.Event | None = None
         self._quote_poll_count = 0
+        self._ws_stream: BinanceWsStream | None = None
+        self._ws_mode = "off"
+        self._ws_mode_lock = threading.Lock()
+        self._ws_pending_lock = threading.Lock()
+        self._ws_pending_quotes: dict[str, Quote] = {}
+        self._ws_coalesce_timer = QTimer(self)
+        self._ws_coalesce_timer.setSingleShot(True)
+        self._ws_coalesce_timer.setInterval(50)
+        self._ws_coalesce_timer.timeout.connect(self._flush_ws_coalesce)
+        self._ws_latency_emit_at = 0.0
+
+    @property
+    def ws_mode(self) -> str:
+        with self._ws_mode_lock:
+            return self._ws_mode
 
     @property
     def order_books(self) -> dict[str, OrderBook]:
@@ -171,7 +189,7 @@ class BinanceConnector(QObject):
         """启动连接：实盘且有密钥时拉起后台轮询线程，否则退化为模拟行情。"""
         if self._poll_thread is not None and self._poll_thread.is_alive():
             return
-        self._stop_event.clear()
+        self._stop_event = threading.Event()
         if not self.config.use_live_ba or not self.config.ba_api_key:
             self._start_demo()
             return
@@ -186,6 +204,10 @@ class BinanceConnector(QObject):
     def stop(self) -> None:
         """停止轮询/模拟、等待线程退出并清空缓存。"""
         self._stop_event.set()
+        self._ws_coalesce_timer.stop()
+        with self._ws_pending_lock:
+            self._ws_pending_quotes.clear()
+        self._stop_ws_stream()
         if self._demo_timer:
             self._demo_timer.stop()
             self._demo_timer = None
@@ -195,8 +217,9 @@ class BinanceConnector(QObject):
             and thread.is_alive()
             and threading.current_thread() is not thread
         ):
-            thread.join(timeout=2.0)
+            thread.join(timeout=0.5)
         self._poll_thread = None
+        self._emit_ws_mode("off")
         self._quotes.clear()
         self._order_books.clear()
         self._set_state(ConnectionState.DISCONNECTED)
@@ -288,6 +311,44 @@ class BinanceConnector(QObject):
                 pass
             time.sleep(poll_sec)
         return False
+
+    def _fetch_order_status(self, symbol: str, order_id: str) -> dict:
+        """读取单个 BA 委托状态；调用方需在 BA API 执行上下文中使用。"""
+        return self._client.futures_get_order(symbol=symbol, orderId=int(order_id))
+
+    def _wait_for_limit_order_fills(
+        self,
+        symbol: str,
+        order_id: str,
+        *,
+        target_qty: float,
+        on_fill_delta: Callable[[float], bool] | None = None,
+    ) -> tuple[bool, float]:
+        """轮询 Maker/限价委托，按新增成交量回调；返回(是否全成, 总成交量)。"""
+        timeout = self._maker_timeout_sec()
+        poll_sec = self._maker_poll_sec()
+        deadline = time.monotonic() + timeout
+        last_executed = 0.0
+        status = ""
+        while time.monotonic() < deadline:
+            try:
+                order = self._fetch_order_status(symbol, order_id)
+            except Exception:
+                time.sleep(poll_sec)
+                continue
+            status = str(order.get("status", "")).upper()
+            executed = float(order.get("executedQty", 0) or 0)
+            delta = max(0.0, executed - last_executed)
+            if delta > 1e-9:
+                if on_fill_delta is not None and not on_fill_delta(delta):
+                    return False, executed
+                last_executed = executed
+            if status == "FILLED" or executed + 1e-9 >= target_qty:
+                return True, executed
+            if status in ("CANCELED", "REJECTED", "EXPIRED"):
+                return False, executed
+            time.sleep(poll_sec)
+        return False, last_executed
 
     def _position_cache_ttl(self) -> float:
         """仅用于合并同一时刻的重复 force 请求，不替代定时拉取。"""
@@ -526,7 +587,12 @@ class BinanceConnector(QObject):
                     self._symbol_leverage[pos.symbol] = int(pos.leverage)
 
     def open_hedge_leg(
-        self, preset_id: str, mode: str = "contraction", order_mode: str = GoldOrderMode.LIMIT.value
+        self,
+        preset_id: str,
+        mode: str = "contraction",
+        order_mode: str = GoldOrderMode.LIMIT.value,
+        *,
+        on_fill_delta: Callable[[float], bool] | None = None,
     ) -> LegResult:
         """在 BA 端开/加一腿对冲仓。
 
@@ -589,7 +655,13 @@ class BinanceConnector(QObject):
                 ),
             )
             msg = "演示加仓成功" if adding else "演示开仓成功"
-            return LegResult(platform="BA", success=True, message=msg, order_id="demo-ba")
+            return LegResult(
+                platform="BA",
+                success=True,
+                message=msg,
+                order_id="demo-ba",
+                filled_quantity=float(qty),
+            )
 
         if not self._client:
             return LegResult(platform="BA", success=False, message="BA 未连接")
@@ -631,25 +703,44 @@ class BinanceConnector(QObject):
                     newOrderRespType="RESULT",
                 )
             oid = str(order.get("orderId", ""))
+            filled_qty = 0.0
             if use_limit:
-                confirmed = self._wait_for_limit_order(
+                confirmed, filled_qty = self._wait_for_limit_order_fills(
                     symbol_ba,
                     oid,
-                    min_executed=float(quantity),
+                    target_qty=float(quantity),
+                    on_fill_delta=on_fill_delta,
                 )
                 if not confirmed:
                     self._try_cancel_order(symbol_ba, oid)
                     try:
+                        order = self._fetch_order_status(symbol_ba, oid)
+                        executed_after_cancel = float(order.get("executedQty", 0) or 0)
+                    except Exception:
+                        executed_after_cancel = filled_qty
+                    final_delta = max(0.0, executed_after_cancel - filled_qty)
+                    if final_delta > 1e-9:
+                        if on_fill_delta is not None and not on_fill_delta(final_delta):
+                            return LegResult(
+                                platform="BA",
+                                success=False,
+                                message=f"BA Maker 部分成交 #{oid}，Exness 补对冲失败",
+                                order_id=oid,
+                                filled_quantity=executed_after_cancel,
+                                needs_reconciliation=True,
+                            )
+                        filled_qty = executed_after_cancel
+                    try:
                         self.get_positions(force=True)
                     except Exception:
                         pass
-                    if self._position_from_cache(symbol_ba, ba_side, target_qty) is not None:
+                    if filled_qty > 1e-9:
                         return LegResult(
                             platform="BA",
-                            success=False,
-                            message=f"BA Maker 部分成交 #{oid}，请检查持仓",
+                            success=True,
+                            message=f"BA Maker 部分成交 {filled_qty:g}/{quantity}，已按成交量补 Exness",
                             order_id=oid,
-                            needs_reconciliation=True,
+                            filled_quantity=filled_qty,
                         )
                     return LegResult(
                         platform="BA",
@@ -665,8 +756,10 @@ class BinanceConnector(QObject):
                 status = str(order.get("status", "")).upper()
                 if executed + 1e-9 >= float(quantity) or status == "FILLED":
                     confirmed = True
+                    filled_qty = executed or float(quantity)
                 elif cum_quote > 0 and executed > 0:
                     confirmed = True
+                    filled_qty = executed
                 else:
                     confirmed = self._wait_for_live_position(
                         symbol_ba,
@@ -675,6 +768,7 @@ class BinanceConnector(QObject):
                         timeout=2.0,
                         poll_sec=0.08,
                     )
+                    filled_qty = float(quantity) if confirmed else 0.0
             if not confirmed:
                 return LegResult(
                     platform="BA",
@@ -708,6 +802,7 @@ class BinanceConnector(QObject):
                 success=True,
                 message=f"{'加仓' if adding else '开仓'}{hedge_mode_word(mode)}成功",
                 order_id=oid,
+                filled_quantity=filled_qty or float(quantity),
             )
 
         try:
@@ -912,6 +1007,7 @@ class BinanceConnector(QObject):
 
     def _start_demo(self) -> None:
         """启动模拟行情：用定时器周期性生成黄金/白银的虚拟报价与盘口。"""
+        self._emit_ws_mode("off")
         self._set_state(ConnectionState.SIMULATED)
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
@@ -939,6 +1035,92 @@ class BinanceConnector(QObject):
         """全深度订单簿刷新频率：约每 3 秒一次，减轻限频。"""
         return max(3, int(round(3.0 / max(0.3, self.config.ba_refresh_interval_sec))))
 
+    def _emit_ws_mode(self, mode: str) -> None:
+        with self._ws_mode_lock:
+            if self._ws_mode == mode:
+                return
+            self._ws_mode = mode
+        self.ws_state_changed.emit(mode)
+
+    @Slot()
+    def _arm_ws_coalesce_timer(self) -> None:
+        """主线程：合并 WS 高频推送，避免事件队列打满导致 UI 卡死。"""
+        if not self._ws_coalesce_timer.isActive():
+            self._ws_coalesce_timer.start(50)
+
+    @Slot()
+    def _flush_ws_coalesce(self) -> None:
+        with self._ws_pending_lock:
+            pending = list(self._ws_pending_quotes.values())
+            self._ws_pending_quotes.clear()
+        if not pending:
+            return
+        for q in pending:
+            self.quote_received.emit(q)
+        now = time.monotonic()
+        if now - self._ws_latency_emit_at >= 0.5:
+            self._ws_latency_emit_at = now
+            self._record_latency(5.0)
+        if self._ws_stream is not None and self._ws_stream.is_live():
+            self._emit_ws_mode("streaming")
+
+    def _queue_ws_quote(self, q: Quote) -> None:
+        with self._ws_pending_lock:
+            self._ws_pending_quotes[q.symbol] = q
+        QMetaObject.invokeMethod(
+            self,
+            "_arm_ws_coalesce_timer",
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    def _stop_ws_stream(self) -> None:
+        stream = self._ws_stream
+        self._ws_stream = None
+        if stream is not None:
+            stream.stop()
+
+    def _start_ws_stream(self, symbols: list[str]) -> None:
+        self._stop_ws_stream()
+        self._emit_ws_mode("connecting")
+
+        def _on_quote(symbol: str, bid: float, ask: float) -> None:
+            self._update_top_of_book(symbol, bid, ask)
+            q = Quote(
+                symbol=symbol,
+                bid=bid,
+                ask=ask,
+                timestamp=time.time(),
+                is_simulated=False,
+            )
+            self._quotes[symbol] = q
+            self._queue_ws_quote(q)
+
+        def _on_state(_state: str) -> None:
+            if self._stop_event.is_set():
+                return
+            if self._ws_stream is not None and self._ws_stream.is_live():
+                self._emit_ws_mode("streaming")
+            elif _state == "connecting":
+                self._emit_ws_mode("connecting")
+
+        self._ws_stream = BinanceWsStream(
+            symbols,
+            use_proxy=bool(self.config.use_proxy),
+            proxy_host=self.config.proxy_host,
+            proxy_port=self.config.proxy_port,
+            on_quote=_on_quote,
+            on_state=_on_state,
+        )
+        self._ws_stream.start()
+
+    def _ws_quotes_live(self) -> bool:
+        stream = self._ws_stream
+        return stream is not None and stream.is_live(stale_sec=WS_STALE_SEC)
+
+    def _rest_quote_fallback_interval(self) -> float:
+        """WS 可用时不轮询；兜底时按配置间隔拉 REST。"""
+        return self.config.ba_refresh_interval_sec
+
     def _update_top_of_book(self, symbol: str, bid: float, ask: float) -> None:
         """用最新买卖一价更新盘口首档（深度未刷新时也能保持顶档准确）。"""
         book = self._order_books.get(symbol)
@@ -954,15 +1136,12 @@ class BinanceConnector(QObject):
         )
 
     def _fetch_watched_quotes(self, watched: set[str]) -> list[Quote]:
-        """一次 bookTicker 拉取全市场，本地筛选黄金/白银。"""
-        raw = self._client.futures_orderbook_ticker()
-        rows = raw if isinstance(raw, list) else [raw]
+        """按 symbol 拉 bookTicker（兜底路径，权重低于全市场）。"""
         now = time.time()
         out: list[Quote] = []
-        for item in rows:
-            symbol = str(item.get("symbol", ""))
-            if symbol not in watched:
-                continue
+        for symbol in sorted(watched):
+            raw = self._client.futures_orderbook_ticker(symbol=symbol)
+            item = raw if isinstance(raw, dict) else {}
             bid = float(item.get("bidPrice", 0) or 0)
             ask = float(item.get("askPrice", 0) or 0)
             if bid <= 0 or ask <= 0:
@@ -1054,9 +1233,9 @@ class BinanceConnector(QObject):
             watched = set(symbols)
             self._log(
                 LogLevel.INFO,
-                f"BA 已连接 · {', '.join(symbols)} · 刷新间隔 "
-                f"{self.config.ba_refresh_interval_sec:.1f}s · 行情合并 bookTicker",
+                f"BA 已连接 · {', '.join(symbols)} · 行情 WebSocket 推流 + REST 兜底",
             )
+            self._start_ws_stream(symbols)
             for sym in symbols:
                 try:
                     self._run_ba_api(
@@ -1082,17 +1261,25 @@ class BinanceConnector(QObject):
                 except Exception:
                     pass
             depth_every = self._depth_refresh_every()
+            rest_sleep = self._rest_quote_fallback_interval()
             while not self._stop_event.is_set():
+                ws_live = False
                 try:
-                    def _poll_quotes() -> list[Quote]:
-                        self._quote_poll_count += 1
-                        return self._fetch_watched_quotes(watched)
+                    self._quote_poll_count += 1
+                    ws_live = self._ws_quotes_live()
+                    if ws_live:
+                        self._emit_ws_mode("streaming")
+                    else:
+                        self._emit_ws_mode("rest")
+                        def _poll_quotes() -> list[Quote]:
+                            return self._fetch_watched_quotes(watched)
 
-                    started = time.perf_counter()
-                    quotes = self._run_ba_api(_poll_quotes, log_failures=False)
-                    self._record_latency((time.perf_counter() - started) * 1000)
-                    for q in quotes:
-                        self.quote_received.emit(q)
+                        started = time.perf_counter()
+                        quotes = self._run_ba_api(_poll_quotes, log_failures=False)
+                        self._record_latency((time.perf_counter() - started) * 1000)
+                        for q in quotes:
+                            self.quote_received.emit(q)
+                        rest_sleep = self._rest_quote_fallback_interval()
                     need_depth = (
                         not self._order_books
                         or self._quote_poll_count % depth_every == 1
@@ -1112,7 +1299,8 @@ class BinanceConnector(QObject):
                     if getattr(exc, "code", None) in (-1003, 418):
                         self._log(
                             LogLevel.ERROR,
-                            f"BA 限频 code={exc.code}，请加大行情刷新间隔(建议≥1.0s)",
+                            f"BA 限频 code={exc.code}，行情已优先 WebSocket；"
+                            "若仍限频请加大 REST 兜底间隔或避免多开客户端",
                         )
                     else:
                         self._log(LogLevel.ERROR, f"BA API 错误: {exc.message}")
@@ -1120,7 +1308,10 @@ class BinanceConnector(QObject):
                 except Exception as exc:
                     self._log(LogLevel.ERROR, f"BA 连接异常: {exc}")
                     self._set_state(ConnectionState.ERROR)
-                time.sleep(self.config.ba_refresh_interval_sec)
+                if ws_live:
+                    time.sleep(max(1.0, rest_sleep))
+                else:
+                    time.sleep(rest_sleep)
         except Exception as exc:
             self._log(LogLevel.ERROR, _format_ba_connection_error(exc, self.config))
             self._set_state(ConnectionState.ERROR)

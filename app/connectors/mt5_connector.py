@@ -387,7 +387,12 @@ class MT5Connector(QObject):
         self._demo_positions = {p.symbol: p for p in positions}
 
     def open_hedge_leg(
-        self, preset_id: str, mode: str = "contraction", order_mode: str = GoldOrderMode.LIMIT.value
+        self,
+        preset_id: str,
+        mode: str = "contraction",
+        order_mode: str = GoldOrderMode.LIMIT.value,
+        *,
+        lots_override: float | None = None,
     ) -> LegResult:
         """在 MT5 端开/加一腿对冲仓。
 
@@ -400,6 +405,10 @@ class MT5Connector(QObject):
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
         lots = self.config.mt5_lot_for(preset_id)
+        if lots_override is not None:
+            lots = max(0.0, float(lots_override))
+        if lots <= 0:
+            return LegResult(platform="MT5", success=False, message="Exness 下单手数为 0")
         quote = self._quotes.get(symbol_mt5, Quote(symbol=symbol_mt5))
         use_limit, maker_only = resolve_execution_flags(preset_id, order_mode)
         mt5_side = Side.BUY if mode == HedgeMode.CONTRACTION.value else Side.SELL
@@ -449,7 +458,13 @@ class MT5Connector(QObject):
                 ),
             )
             msg = "演示加仓成功" if adding else "演示开仓成功"
-            return LegResult(platform="MT5", success=True, message=msg, order_id="demo-mt5")
+            return LegResult(
+                platform="MT5",
+                success=True,
+                message=msg,
+                order_id="demo-mt5",
+                filled_quantity=float(lots),
+            )
 
         if not self._connected:
             return LegResult(platform="MT5", success=False, message="Exness 未连接")
@@ -550,6 +565,7 @@ class MT5Connector(QObject):
                 success=True,
                 message=f"{'加仓' if adding else '开仓'}{hedge_mode_word(mode)}成功",
                 order_id=oid,
+                filled_quantity=float(lots),
             )
 
         try:
