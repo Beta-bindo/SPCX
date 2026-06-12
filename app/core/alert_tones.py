@@ -24,7 +24,15 @@ def _generate_tone_wav(
     *,
     volume: float = 0.5,
     sharp: bool = False,
+    tremolo_hz: float = 0.0,
+    tremolo_depth: float = 0.0,
 ) -> bytes:
+    """生成单声道 16bit WAV。
+
+    sharp=True 为短促衰减“叮”声；sharp=False 为无缝循环的持续音。
+    tremolo_hz>0 时叠加振幅颤音（保持连贯无空隙，仅做强弱起伏，听感急促但不断续）。
+    为保证无限循环时首尾无缝，颤音相位与首尾包络都在零点收敛。
+    """
     sample_rate = 44100
     sample_count = max(1, int(sample_rate * duration_ms / 1000))
     buf = io.BytesIO()
@@ -48,6 +56,12 @@ def _generate_tone_wav(
                 envelope = min(attack, release)
                 wave_val = math.sin(2 * math.pi * frequency * t)
                 wave_val += 0.3 * math.sin(2 * math.pi * frequency * 2 * t)
+            if tremolo_hz > 0.0 and tremolo_depth > 0.0:
+                # (1-cos) 形颤音：首尾都落在波谷，循环衔接处无突变
+                trem = 1.0 - tremolo_depth * (
+                    0.5 - 0.5 * math.cos(2 * math.pi * tremolo_hz * t)
+                )
+                envelope *= trem
             sample = int(max(-32767, min(32767, volume * 32767 * wave_val * envelope)))
             frames.extend(struct.pack("<h", sample))
         wf.writeframes(bytes(frames))
@@ -75,11 +89,20 @@ class AlertTonePlayer:
             return
         spread_path = _tone_cache_path(
             "alert_spread_loud",
-            _generate_tone_wav(_SPREAD_HZ, 600, volume=0.7, sharp=False),
+            _generate_tone_wav(_SPREAD_HZ, 600, volume=0.6, sharp=False),
         )
+        # 爆仓：连贯不断续的持续音 + 急促颤音（12.5Hz×0.48s=6 个整周期，循环无缝），
+        # 音量调到接近满幅，听感比点差更响更紧迫。
         liq_path = _tone_cache_path(
-            "alert_liq_loud",
-            _generate_tone_wav(_LIQ_HZ, 130, volume=0.7, sharp=True),
+            "alert_liq_loud_v2",
+            _generate_tone_wav(
+                _LIQ_HZ,
+                480,
+                volume=0.85,
+                sharp=False,
+                tremolo_hz=12.5,
+                tremolo_depth=0.6,
+            ),
         )
         self._spread = QSoundEffect()
         self._liq = QSoundEffect()

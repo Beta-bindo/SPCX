@@ -63,6 +63,7 @@ class SpreadEngine(QObject):
         self._ba_quotes: dict[str, Quote] = {}
         self._mt5_quotes: dict[str, Quote] = {}
         self._spreads: dict[str, SpreadSnapshot] = {}
+        self._last_market_update = None   # 最近一次行情快照，供勾选后立即评估自动交易
 
         self.binance = BinanceConnector(config)
         self.mt5 = MT5Connector(config)
@@ -589,7 +590,13 @@ class SpreadEngine(QObject):
             spreads=dict(self._spreads),
             risk=risk,
         )
+        self._last_market_update = update
         self.market_updated.emit(update)
+
+    @property
+    def last_market_update(self):
+        """最近一次行情快照（无则 None）；供勾选自动交易后立即评估一次。"""
+        return self._last_market_update
 
     def _emit_network_status(self) -> None:
         self.network_status_changed.emit(NetworkStatus.from_engine(self, self._running))

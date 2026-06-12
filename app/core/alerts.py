@@ -130,20 +130,25 @@ class AlertService(QObject):
         return True
 
     def _ensure_beep(self, kind: AlertSoundKind) -> None:
-        """启动/维持周期蜂鸣，直到 stop()。爆仓告警可抢占点差告警的节奏。"""
+        """启动/维持周期蜂鸣，直到 stop()。
+
+        kind 已由 evaluate 做过优先级裁决（两端同时告警时恒为 LIQ），这里只负责
+        忠实切换到该音色：切换时停掉另一路再播新的一路，保证两种声音不会同时响、
+        也不会出现“爆仓解除后仍卡在爆仓音”的串音。
+        """
         kind_changed = self._active_kind != kind
-        if kind == AlertSoundKind.LIQ or self._active_kind != AlertSoundKind.LIQ:
-            self._active_kind = kind
-            interval = (
-                self.LIQ_INTERVAL_MS
-                if kind == AlertSoundKind.LIQ
-                else self.SPREAD_INTERVAL_MS
-            )
+        self._active_kind = kind
+        interval = (
+            self.LIQ_INTERVAL_MS
+            if kind == AlertSoundKind.LIQ
+            else self.SPREAD_INTERVAL_MS
+        )
+        if self._beep_timer.interval() != interval:
             self._beep_timer.setInterval(interval)
         was_ringing = self._ringing
         self._ringing = True
         if not self._beep_timer.isActive():
-            self._beep_timer.start(self._beep_timer.interval())
+            self._beep_timer.start(interval)
         if not was_ringing or kind_changed:
             self._play_active_tone()
 

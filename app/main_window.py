@@ -1033,6 +1033,11 @@ class MainWindow(QMainWindow):
         if not self.engine.is_running and self._any_auto_trade_enabled():
             self._on_start()
             self._append_log(LogLevel.INFO, "自动下单已开启，监控已启动")
+            return
+        # 监控已在运行：勾选后立即用最近行情评估一次，避免要等下一拍/点差再次穿越才触发
+        update = self.engine.last_market_update
+        if update is not None:
+            self._maybe_auto_trade(update)
 
     def _execute_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动下单", fast=True):
