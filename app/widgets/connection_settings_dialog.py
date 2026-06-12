@@ -1,3 +1,5 @@
+"""连接与参数设置对话框：内嵌 ConfigPanel，保存时回写连接相关配置。"""
+
 from __future__ import annotations
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout
@@ -7,7 +9,7 @@ from app.widgets.config_panel import ConfigPanel
 
 
 class ConnectionSettingsDialog(QDialog):
-    """连接与参数：账号、品种、手续费等。"""
+    """连接与参数：账号、品种、手续费、杠杆、代理等。"""
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -40,6 +42,7 @@ class ConnectionSettingsDialog(QDialog):
         root.addWidget(buttons)
 
     def apply_connection_to(self, config: AppConfig) -> None:
+        """把面板上的连接/参数项回写到给定 config（不动告警/自动交易等其他字段）。"""
         panel_cfg = self._panel.to_config()
         config.ba_api_key = panel_cfg.ba_api_key
         config.ba_api_secret = panel_cfg.ba_api_secret

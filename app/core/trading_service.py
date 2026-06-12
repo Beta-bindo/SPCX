@@ -1,3 +1,15 @@
+"""对冲交易的纯业务逻辑层。
+
+封装"开仓 / 加仓 / 平仓"两腿（BA + Exness/MT5）的下单编排，以及对冲方向
+（收缩 / 扩张）、加仓点差校验等判定。本层不直接触碰 UI，只通过两个连接器
+对象操作交易所，便于单元测试。
+
+两腿执行策略：
+- 市价（Market）：两腿并发下单，最大化成交速度；
+- Maker / 限价：顺序执行，先等 BA 成交再下 Exness，避免单边敞口；
+  任一腿失败时对已成交腿做自动回滚（reconciliation）。
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -12,16 +24,19 @@ if TYPE_CHECKING:
     from app.connectors.binance_connector import BinanceConnector
     from app.connectors.mt5_connector import MT5Connector
 
+# 加仓点差容差：当前点差与持仓差价相差在此范围内仍允许加仓，避免临界抖动误判
 ADD_SPREAD_MARGIN = 0.02
 
 
 def _mode_label(mode: str) -> str:
+    """对冲模式 → 中文标签（收缩 / 扩张）。"""
     return "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
 
 
 def _position_for(
     positions: list[Position], platform: str, symbol: str
 ) -> Position | None:
+    """在持仓列表中查找指定平台 + 交易对、且数量大于 0 的持仓。"""
     for pos in positions:
         if pos.platform == platform and pos.symbol == symbol and pos.quantity > 0:
             return pos
@@ -56,6 +71,7 @@ def detect_hedge_mode(preset_id: str, positions: list[Position]) -> str | None:
 
 
 def hedge_mode_strategy_label(mode: str | None) -> str:
+    """对冲模式 → 策略全称标签（用于面板展示）。"""
     if mode == HedgeMode.CONTRACTION.value:
         return "收缩策略"
     if mode == HedgeMode.EXPANSION.value:
@@ -126,10 +142,12 @@ def spread_allows_add(
 
 
 def _is_market_mode(order_mode: str) -> bool:
+    """是否市价单（决定两腿并发还是顺序执行）。"""
     return order_mode == GoldOrderMode.MARKET.value
 
 
 def _rollback_needed(leg: LegResult) -> bool:
+    """该腿是否需要回滚：已成交，或状态未知需对账（防止漏掉真实成交）。"""
     return leg.success or leg.needs_reconciliation
 
 
@@ -139,12 +157,22 @@ def open_hedge(
     preset_id: str,
     mode: str = HedgeMode.CONTRACTION.value,
     order_mode: str = GoldOrderMode.MAKER.value,
+    *,
+    had_position: bool | None = None,
 ) -> HedgeTradeResult:
+    """开（加）对冲仓：BA 与 Exness 各下一腿，失败时自动回滚已成交腿。
+
+    had_position 表示下单前是否已有持仓（仅用于日志区分"开仓/加仓"）；
+    调用方应传入缓存值以避免热路径上的实时持仓拉取。
+    """
     preset = find_preset(preset_id)
-    had_position = (
-        _position_for(binance.get_positions(), "BA", preset.symbol_ba) is not None
-        or _position_for(mt5.get_positions(), "MT5", preset.symbol_mt5) is not None
-    )
+    # had_position 仅用于日志区分「开仓/加仓」。下单热路径上调用方应传入
+    # 已缓存的持仓判断，避免在点击下单瞬间做一次实时 MT5 持仓拉取（IPC 阻塞）。
+    if had_position is None:
+        had_position = (
+            _position_for(binance.get_positions(), "BA", preset.symbol_ba) is not None
+            or _position_for(mt5.get_positions(), "MT5", preset.symbol_mt5) is not None
+        )
     if _is_market_mode(order_mode):
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge-open") as pool:
             ba_f = pool.submit(binance.open_hedge_leg, preset_id, mode, order_mode)
@@ -201,6 +229,7 @@ def close_hedge(
     mode: str = HedgeMode.CONTRACTION.value,
     order_mode: str = GoldOrderMode.MAKER.value,
 ) -> HedgeTradeResult:
+    """平对冲仓：两腿同时平仓（市价并发 / 其他顺序）。部分成功会提示检查剩余持仓。"""
     if _is_market_mode(order_mode):
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge-close") as pool:
             ba_f = pool.submit(binance.close_hedge_leg, preset_id, order_mode, mode)

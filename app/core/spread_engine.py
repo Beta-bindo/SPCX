@@ -1,3 +1,15 @@
+"""点差引擎：连接两端、计算点差/盈亏/风险、编排下单并向 UI 发信号。
+
+SpreadEngine 是整个应用的核心枢纽，职责：
+- 持有 Binance 与 MT5 两个连接器，订阅其报价并实时重建点差快照；
+- 周期性轮询持仓、计算盈亏与风险，驱动告警；
+- 提供对冲开/平仓入口（在后台线程执行，避免阻塞 UI）；
+- 通过 Qt 信号把行情、持仓、交易结果、网络状态推送给界面。
+
+线程模型：报价回调与定时器跑在 Qt 主线程；下单和持仓刷新放到守护线程，
+结果通过信号（_positions_refresh_ready 等）切回主线程，保证线程安全。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -28,16 +40,18 @@ from app.connectors.mt5_connector import MT5Connector
 
 
 class SpreadEngine(QObject):
-    market_updated = Signal(object)
-    connection_changed = Signal(str, str)
-    network_status_changed = Signal(object)
-    log_message = Signal(str)
-    positions_updated = Signal(list, object)
-    trade_finished = Signal(object)
-    trade_started = Signal(str, str, str)
-    alert_triggered = Signal(str)
-    trade_recorded = Signal(object)
-    _positions_refresh_ready = Signal(list, object, object)
+    """行情/交易编排引擎，对外通过下列信号与 UI 通信。"""
+
+    market_updated = Signal(object)            # 行情刷新（MarketUpdate）
+    connection_changed = Signal(str, str)      # (平台, 新状态)
+    network_status_changed = Signal(object)    # 网络状态快照
+    log_message = Signal(str)                  # 日志行
+    positions_updated = Signal(list, object)   # (持仓列表, 盈亏汇总)
+    trade_finished = Signal(object)            # 交易完成结果
+    trade_started = Signal(str, str, str)      # (动作, 品种, 下单模式)
+    alert_triggered = Signal(str)              # 告警文字
+    trade_recorded = Signal(object)            # 成交/结算记录
+    _positions_refresh_ready = Signal(list, object, object)  # 内部：后台刷新结果回主线程
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -76,16 +90,19 @@ class SpreadEngine(QObject):
         self._spread_rebuild_timer.timeout.connect(self._rebuild_spreads_now)
 
     def _log(self, level: LogLevel, message: str) -> None:
+        """按当前日志级别过滤后发出日志信号。"""
         if should_log(self.config.log_level, level):
             self.log_message.emit(message)
 
     def _seed_trade_positions_cache(self) -> None:
+        """下单前把已知 BA 持仓预置进连接器缓存，减少热路径上的实时拉取。"""
         ba_positions = [p for p in self._positions if p.platform == "BA"]
         self.binance.seed_positions_cache(ba_positions)
 
     def open_hedge(
         self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
     ) -> None:
+        """对外的开仓入口：前置校验通过后，在后台线程执行开仓。"""
         if self._trading:
             self._log(LogLevel.INFO, "交易进行中，请稍候")
             return
@@ -103,6 +120,7 @@ class SpreadEngine(QObject):
     def close_hedge(
         self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
     ) -> None:
+        """对外的平仓入口：前置校验通过后，在后台线程执行平仓。"""
         if self._trading:
             self._log(LogLevel.INFO, "交易进行中，请稍候")
             return
@@ -118,6 +136,11 @@ class SpreadEngine(QObject):
         ).start()
 
     def _trade_preflight_error(self, preset_id: str) -> str | None:
+        """实盘下单前置校验，返回拦截原因；通过则返回 None。
+
+        实盘要求：连接模式为"实盘双端"、两端均已真实连接、且有非模拟的最新双端报价，
+        以杜绝单边敞口与实盘/模拟混合下单。模拟模式直接放行。
+        """
         if self.config.demo_mode:
             return None
         if self.config.connection_mode != ConnectionMode.LIVE_BOTH.value:
@@ -158,11 +181,13 @@ class SpreadEngine(QObject):
     def _settlement_positions(
         self, preset_id: str
     ) -> tuple[Position | None, Position | None]:
-        """用接口持仓快照 + 本地行情 mark 计算平仓前盈亏（不重复拉持仓）。"""
+        """用最近一次轮询的持仓快照 + 本地行情 mark 计算平仓前盈亏。
+
+        复用引擎已缓存的 self._positions，避免在点击平仓瞬间做一次实时
+        MT5 持仓拉取（IPC 阻塞），保证下单不卡顿。
+        """
         preset = find_preset(preset_id)
-        raw: list[Position] = []
-        raw.extend(self.binance.get_positions())
-        raw.extend(self.mt5.get_positions())
+        raw: list[Position] = list(self._positions)
         if not raw:
             return None, None
         updated, _ = calculate_pnl(
@@ -183,6 +208,7 @@ class SpreadEngine(QObject):
         return ba_pos, mt5_pos
 
     def _run_open(self, preset_id: str, mode: str, order_mode: str) -> None:
+        """后台线程：执行开仓、记录成交、刷新持仓，并发出相应信号。"""
         try:
             om = order_mode_log_label(preset_id, order_mode)
             self._log(
@@ -193,7 +219,23 @@ class SpreadEngine(QObject):
             spread, ba_price, ex_price = self._order_snapshot(preset_id)
             ba_qty, mt5_qty = self._order_quantities(preset_id)
             ba_side, mt5_side = hedge_sides(mode)
-            result = open_hedge(self.binance, self.mt5, preset_id, mode, order_mode)
+            preset = find_preset(preset_id)
+            had_position = any(
+                p.quantity > 0
+                and (
+                    (p.platform == "BA" and p.symbol == preset.symbol_ba)
+                    or (p.platform == "MT5" and p.symbol == preset.symbol_mt5)
+                )
+                for p in self._positions
+            )
+            result = open_hedge(
+                self.binance,
+                self.mt5,
+                preset_id,
+                mode,
+                order_mode,
+                had_position=had_position,
+            )
             self._log(LogLevel.TRADE, result.message)
             if result.success:
                 self._spread_log(preset_id, "成交后")
@@ -243,6 +285,7 @@ class SpreadEngine(QObject):
             self._trading = False
 
     def _run_close(self, preset_id: str, mode: str, order_mode: str) -> None:
+        """后台线程：执行平仓、按平仓比例结算盈亏并记账，最后刷新持仓。"""
         try:
             om = order_mode_log_label(preset_id, order_mode)
             self._log(
@@ -271,6 +314,7 @@ class SpreadEngine(QObject):
                 )
 
                 def _scaled(pos: Position | None, close_qty: float) -> tuple[float, float]:
+                    # 部分平仓时按平仓比例折算应结算的盈亏与手续费
                     if not pos or pos.quantity <= 0 or close_qty <= 0:
                         return 0.0, 0.0
                     ratio = min(1.0, close_qty / pos.quantity)
@@ -306,9 +350,11 @@ class SpreadEngine(QObject):
             self._trading = False
 
     def _position_poll_ms(self) -> int:
+        """持仓轮询间隔（毫秒），随报价刷新间隔联动，但不低于 4 秒。"""
         return max(4000, int(round(self.config.ba_refresh_interval_sec * 4000)))
 
     def start(self) -> None:
+        """启动两端连接、持仓轮询与网络监控，并延迟同步平台杠杆。"""
         if self._running:
             return
         self._running = True
@@ -330,6 +376,7 @@ class SpreadEngine(QObject):
         QTimer.singleShot(3000, self._sync_platform_leverage)
 
     def _sync_platform_leverage(self) -> None:
+        """从交易所读取实际杠杆并回写配置，使风险估算更贴近真实。"""
         if not self._running:
             return
         changed = False
@@ -358,6 +405,7 @@ class SpreadEngine(QObject):
             )
 
     def stop(self) -> None:
+        """停止连接与所有定时器，清空缓存并静音告警。"""
         if not self._running:
             return
         self._running = False
@@ -381,6 +429,7 @@ class SpreadEngine(QObject):
         return self._running
 
     def reevaluate_alerts(self) -> None:
+        """配置变更后立即按当前行情重判告警（无需等下一轮）。"""
         if not self._running:
             return
         risk = build_risk_snapshot(
@@ -389,6 +438,7 @@ class SpreadEngine(QObject):
         self.alerts.evaluate(self.config, self._spreads, risk)
 
     def sync_config(self, config: AppConfig) -> None:
+        """热更新配置：不重启连接，仅同步连接器参数与轮询间隔。"""
         self.config = config
         self.binance.update_config(config)
         self.mt5.update_config(config)
@@ -396,6 +446,7 @@ class SpreadEngine(QObject):
             self._poll_timer.setInterval(self._position_poll_ms())
 
     def update_config(self, config: AppConfig) -> None:
+        """重型更新配置：若在运行则先停后启，使连接参数完全生效。"""
         was_running = self._running
         if was_running:
             self.stop()
@@ -406,6 +457,7 @@ class SpreadEngine(QObject):
             self.start()
 
     def refresh_positions(self) -> None:
+        """触发一次后台持仓刷新；用 _refresh_inflight 去重，避免并发重入。"""
         if not self._running or self._refresh_inflight:
             return
         self._refresh_inflight = True
@@ -434,6 +486,7 @@ class SpreadEngine(QObject):
     def _apply_positions_refresh(
         self, updated: list[Position], summary: PnlSummary, risk
     ) -> None:
+        """主线程槽：接收后台刷新结果，更新缓存、重判告警并推送 UI。"""
         self._positions = updated
         self._last_summary = summary
         self.alerts.evaluate(self.config, self._spreads, risk)
@@ -468,6 +521,7 @@ class SpreadEngine(QObject):
         return self._spreads
 
     def _on_ba_quote(self, quote: Quote) -> None:
+        # 缓存最新报价，并以 80ms 防抖合并两端高频报价后统一重建点差
         self._ba_quotes[quote.symbol] = quote
         if not self._spread_rebuild_timer.isActive():
             self._spread_rebuild_timer.start(80)
@@ -478,6 +532,7 @@ class SpreadEngine(QObject):
             self._spread_rebuild_timer.start(80)
 
     def _rebuild_spreads_now(self) -> None:
+        """重建所有受监控品种的点差快照，剔除异常值后重判告警并推送 UI。"""
         for preset_id in WATCHED_PRESETS:
             preset = find_preset(preset_id)
             ba = self._ba_quotes.get(preset.symbol_ba)
@@ -495,6 +550,7 @@ class SpreadEngine(QObject):
         self._emit_market(risk)
 
     def _emit_market(self, risk) -> None:
+        """打包当前报价/点差/风险为 MarketUpdate 并发给 UI。"""
         update = MarketUpdate(
             ba_quotes=dict(self._ba_quotes),
             mt5_quotes=dict(self._mt5_quotes),

@@ -1,3 +1,11 @@
+"""单品种交易面板组件。
+
+包含三块：
+- SymbolActionStrip：点差大字、持仓/盈亏状态、对冲入口与告警/自动交易设置（中栏）。
+- SymbolTradePanel：盘口深度表（买/卖各若干档 + BA 中价）。
+- PanelSectionDialog：自定义中栏各区块的显示与顺序。
+"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QSize
@@ -39,11 +47,7 @@ from app.core.hedge_health import (
     format_position_status,
     suggest_hedge_repair,
 )
-from app.core.trading_service import (
-    detect_hedge_mode,
-    hedge_mode_strategy_label,
-    position_entry_spread,
-)
+from app.core.trading_service import detect_hedge_mode, hedge_mode_strategy_label
 from app.widgets.spread_value_label import SpreadValueLabel
 from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox, ClickToEditSpinBox
 from app.widgets.symbol_alert_settings import SymbolAlertSettings
@@ -90,11 +94,13 @@ class BookMidLabel(QLabel):
 class SymbolActionStrip(QFrame):
     """点差、持仓与对冲入口（置于中间栏盈利告警上方）."""
 
-    position_refresh_requested = Signal()
-    hedge_repair_requested = Signal(str, object)
-    section_layout_changed = Signal()
+    position_refresh_requested = Signal()          # 请求刷新持仓
+    hedge_repair_requested = Signal(str, object)   # (品种, HedgeRepair) 请求补对冲
+    section_layout_changed = Signal()              # 中栏区块布局变更
 
     def __init__(self, preset_id: str, parent=None):
+        # 构建中栏：点差大字、两端中价、持仓状态、对冲入口按钮，
+        # 以及可配置显隐/顺序的告警与自动交易设置区块。
         super().__init__(parent)
         self.preset_id = preset_id
         self._icon = SYMBOL_ICON.get(preset_id, "")
@@ -308,6 +314,7 @@ class SymbolActionStrip(QFrame):
         self.refresh_positions_btn.clicked.connect(self.position_refresh_requested.emit)
 
     def attach_monitor_buttons(self, start_btn, stop_btn) -> None:
+        """把外部的启用/停止监控按钮放到对冲入口按钮左侧。"""
         for btn in (start_btn, stop_btn):
             btn.setFixedHeight(28)
             btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -322,6 +329,7 @@ class SymbolActionStrip(QFrame):
                 self._monitor_layout.addWidget(btn)
 
     def detach_monitor_buttons(self) -> None:
+        """移除之前挂入的监控按钮（保留对冲入口按钮）。"""
         to_remove: list[QWidget] = []
         for i in range(self._monitor_layout.count()):
             item = self._monitor_layout.itemAt(i)
@@ -370,6 +378,7 @@ class SymbolActionStrip(QFrame):
                 break
 
     def _rebuild_stack(self) -> None:
+        """重建中栏纵向堆叠：固定的点差/按钮 + 按用户配置顺序与显隐的可选区块。"""
         self._clear_stack_after_title()
         # 固定常驻：点差价格 + 对冲交易/启停按钮，始终可见且位置稳定。
         self._stack_layout.addWidget(self.spread_frame)
@@ -383,13 +392,16 @@ class SymbolActionStrip(QFrame):
             self._stack_layout.addWidget(widget)
 
     def set_section_layout(self, sections: list[tuple[str, bool]]) -> None:
+        """设置中栏区块的顺序与显隐并重建。"""
         self._sections = parse_panel_sections(serialize_panel_sections(sections))
         self._rebuild_stack()
 
     def current_section_layout(self) -> list[tuple[str, bool]]:
+        """返回当前区块布局。"""
         return list(self._sections)
 
     def _open_section_dialog(self) -> None:
+        """打开区块自定义对话框，确认后应用新布局。"""
         dialog = PanelSectionDialog(self._sections, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_section_layout(dialog.result_sections())
@@ -402,6 +414,7 @@ class SymbolActionStrip(QFrame):
         mt5_quotes: dict[str, Quote],
         config: AppConfig,
     ) -> None:
+        """用最新行情重算本品种盈亏并刷新明细与持仓状态。"""
         preset = find_preset(self.preset_id)
         ba_q = ba_quotes.get(preset.symbol_ba)
         mt5_q = mt5_quotes.get(preset.symbol_mt5)
@@ -423,6 +436,7 @@ class SymbolActionStrip(QFrame):
         self._update_position_status(ba, mt5, updated, config)
 
     def update_risk(self, ba_liq: float, mt5_liq: float) -> None:
+        """刷新本品种两端的爆仓缓冲展示。"""
         def fmt(v: float) -> str:
             return "∞" if v > 90000 else f"{v:.1f}"
 
@@ -432,6 +446,7 @@ class SymbolActionStrip(QFrame):
             self._last_risk_text = text
 
     def load_settings_from(self, config: AppConfig) -> None:
+        """加载告警/自动交易/区块布局设置（加载期间屏蔽信号防误触发自动保存）。"""
         blocked: list = []
         blocked.extend(self.alert_settings.iter_watch_widgets())
         blocked.extend(self.auto_trade_settings.iter_watch_widgets())
@@ -446,16 +461,19 @@ class SymbolActionStrip(QFrame):
         self.set_section_layout(config.panel_sections(self.preset_id))
 
     def apply_settings_to(self, config: AppConfig) -> None:
+        """把告警/自动交易/区块布局设置写回配置。"""
         self.alert_settings.apply_to(config)
         self.auto_trade_settings.apply_to(config)
         config.set_panel_sections(self.preset_id, self._sections)
 
     def refresh_theme(self) -> None:
+        """主题切换后刷新点差大字着色。"""
         self.spread_value.refresh_theme()
         if self._last_spread is not None:
             self.spread_value.set_spread(self._last_spread.mid_spread)
 
     def update_spread(self, snap: SpreadSnapshot | None) -> None:
+        """刷新点差大字与两端中价；None 显示"--"。"""
         if snap is None:
             self.spread_value.set_spread(None)
             if self._last_ba_text != "--":
@@ -480,6 +498,7 @@ class SymbolActionStrip(QFrame):
     def update_positions(
         self, positions: list[Position], _summary: PnlSummary, config: AppConfig | None = None
     ) -> None:
+        """根据最新持仓刷新本品种的持仓状态行。"""
         preset = find_preset(self.preset_id)
         ba = next(
             (p for p in positions if p.platform == "BA" and p.symbol == preset.symbol_ba),
@@ -498,20 +517,14 @@ class SymbolActionStrip(QFrame):
         positions: list[Position],
         config: AppConfig | None = None,
     ) -> None:
+        """根据对冲健康状态刷新持仓状态文案、告警配色、补对冲按钮与明细面板。"""
         health = analyze_hedge_health(self.preset_id, positions, config)
-        spread = position_entry_spread(ba, mt5)
         if health.is_ok and health.code == "hedged":
             mode = detect_hedge_mode(self.preset_id, positions)
             strategy = hedge_mode_strategy_label(mode)
             live = self._last_spread.mid_spread if self._last_spread is not None else None
-            if spread is not None and live is not None:
-                text = (
-                    f"当前持仓：{strategy}（入场 {spread:+.3f} · 实时 {live:+.3f}）"
-                )
-            elif spread is not None:
-                text = f"当前持仓：{strategy}（入场差价 {spread:+.3f}）"
-            elif live is not None:
-                text = f"当前持仓：{strategy}（实时差价 {live:+.3f}）"
+            if live is not None:
+                text = f"当前持仓：{strategy}（{live:+.3f}）"
             else:
                 text = f"当前持仓：{strategy}"
         else:
@@ -543,11 +556,13 @@ class SymbolActionStrip(QFrame):
         self.pnl_detail.update_hedge_health(health, repair)
 
     def set_trade_buttons_enabled(self, enabled: bool) -> None:
+        """统一启用/禁用对冲入口与补对冲按钮（下单进行中防重复点击）。"""
         self.trade_entry_btn.setEnabled(enabled)
         self.position_repair_btn.setEnabled(enabled)
         self.pnl_detail.hedge_repair_btn.setEnabled(enabled)
 
     def lock_setting_spins(self) -> None:
+        """收起告警/自动交易设置中的所有数字框编辑态。"""
         self.alert_settings.lock_all_spins()
         self.auto_trade_settings.lock_all_spins()
 
@@ -601,6 +616,7 @@ class PanelSectionDialog(QDialog):
         root.addWidget(buttons)
 
     def _render_rows(self) -> None:
+        """按当前顺序重绘每个板块行（勾选框 + 上/下移按钮）。"""
         while self._rows_layout.count():
             item = self._rows_layout.takeAt(0)
             if item is None:
@@ -639,6 +655,7 @@ class PanelSectionDialog(QDialog):
                 break
 
     def _move(self, index: int, delta: int) -> None:
+        """上移/下移一个板块并重绘。"""
         target = index + delta
         if target < 0 or target >= len(self._sections):
             return
@@ -649,10 +666,13 @@ class PanelSectionDialog(QDialog):
         self._render_rows()
 
     def result_sections(self) -> list[tuple[str, bool]]:
+        """返回用户编辑后的板块顺序与显隐。"""
         return [(key, bool(visible)) for key, visible in self._sections]
 
 
 class SymbolTradePanel(QFrame):
+    """单品种盘口面板：买盘表 + BA 中价 + 卖盘表，支持紧凑/完整两种密度。"""
+
     def __init__(self, preset_id: str, title: str, parent=None):
         super().__init__(parent)
         self.preset_id = preset_id
@@ -679,6 +699,7 @@ class SymbolTradePanel(QFrame):
         self._apply_book_metrics()
 
     def set_compact(self, compact: bool) -> None:
+        """切换紧凑/完整模式：紧凑显示 10 档自适应宽度，完整显示 20 档固定宽度。"""
         if self._compact == compact:
             return
         self._compact = compact
@@ -708,6 +729,7 @@ class SymbolTradePanel(QFrame):
         self._sync_table_heights()
 
     def _book_panel_min_height(self) -> int:
+        """计算完整模式下盘口面板的最小高度（两表 + 中价 + 边距）。"""
         rows = max(self.bid_table.rowCount(), 1)
         row_h = self.bid_table.verticalHeader().defaultSectionSize()
         hdr_h = self.bid_table.horizontalHeader().height()
@@ -724,6 +746,7 @@ class SymbolTradePanel(QFrame):
         )
 
     def _sync_table_heights(self) -> None:
+        """按行数把买/卖盘表设为固定高度，避免内部滚动条。"""
         rows = max(self.bid_table.rowCount(), 1)
         row_h = self.bid_table.verticalHeader().defaultSectionSize()
         hdr_h = self.bid_table.horizontalHeader().height()
@@ -753,6 +776,7 @@ class SymbolTradePanel(QFrame):
         table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def _apply_book_metrics(self) -> None:
+        """根据紧凑/完整模式设置行高、字号与表头高度。"""
         row_h = 16 if self._compact else ROW_HEIGHT
         font_pt = 7 if self._compact else 8
         font = ui_font(point_size=font_pt)
@@ -770,6 +794,7 @@ class SymbolTradePanel(QFrame):
         self.ba_mid_label._sync_font()
 
     def _build_book_side(self, headers: tuple[str, str], key: str) -> QFrame:
+        """构建买盘或卖盘一侧的表格容器（key 为 bid/ask）。"""
         frame = QFrame()
         frame.setObjectName("bookSide")
         col = QVBoxLayout(frame)
@@ -788,6 +813,7 @@ class SymbolTradePanel(QFrame):
         return self.bid_table
 
     def _make_table(self, headers: tuple[str, str]) -> QTableWidget:
+        """创建一个两列（价/量）的盘口表格。"""
         table = QTableWidget(0, 2)
         table.setObjectName("orderBookTable")
         table.setHorizontalHeaderLabels(list(headers))
@@ -809,6 +835,7 @@ class SymbolTradePanel(QFrame):
         return table
 
     def update_ba_mid(self, mid: float | None) -> None:
+        """刷新买卖盘之间的 BA 中价标签（无效则隐藏）。"""
         if mid is None or mid <= 0:
             if self.ba_mid_label.isVisible():
                 self.ba_mid_label.setVisible(False)
@@ -822,6 +849,7 @@ class SymbolTradePanel(QFrame):
                 self.ba_mid_label.setText(text)
 
     def update_book(self, book: OrderBook) -> None:
+        """用最新盘口刷新买/卖盘表格（买绿卖红，空档灰显）。"""
         rows = min(max(len(book.bids), len(book.asks), 1), self._book_rows)
         if self.bid_table.rowCount() != rows:
             self.bid_table.setRowCount(rows)
@@ -862,6 +890,7 @@ class SymbolTradePanel(QFrame):
         color: QColor,
         align: Qt.AlignmentFlag,
     ) -> None:
+        """就地更新单元格文本/颜色（仅变化时改动以减少重绘）。"""
         item = table.item(row, col)
         if item is None:
             item = QTableWidgetItem(text)
@@ -875,4 +904,5 @@ class SymbolTradePanel(QFrame):
             item.setTextAlignment(align)
 
     def refresh_theme(self) -> None:
+        """主题切换钩子（盘口表样式由 QSS 控制，无需额外处理）。"""
         pass

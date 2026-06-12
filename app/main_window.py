@@ -1,3 +1,9 @@
+"""主窗口：组织三栏布局（黄金/中栏汇总/白银），连接 SpreadEngine 与各 UI 组件。
+
+负责：行情/持仓/盈亏的展示刷新、手动与自动对冲下单的入口与回执、告警与连接状态、
+主题与布局切换、授权门禁校验，以及配置的加载/保存。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -49,6 +55,8 @@ from app.widgets.trade_confirm_dialog import TradeConfirmDialog
 
 
 class StatusBadge(QFrame):
+    """平台连接状态徽标：彩色圆点 + "BA · 真实连接"之类文案。"""
+
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
         self.setObjectName("statusBadge")
@@ -71,6 +79,7 @@ class StatusBadge(QFrame):
         self._label_text = self.label.text()
 
     def set_state(self, name: str, state: str) -> None:
+        """根据连接状态更新圆点颜色与文案。"""
         mapping = {
             "connected": ("statusDotConnected", "真实连接"),
             "simulated": ("statusDotSimulated", "模拟数据"),
@@ -90,6 +99,8 @@ class StatusBadge(QFrame):
 
 
 class NetworkStatusBadge(QFrame):
+    """网络状态徽标：展示 BA/Ex 行情延迟，或离线/未启动等精简文案。"""
+
     _LATENCY_SAMPLE = ("BA 9999ms", "Ex 9999ms")
 
     def __init__(self, parent=None):
@@ -148,6 +159,7 @@ class NetworkStatusBadge(QFrame):
         self._compact_text = ""
 
     def update_status(self, status: NetworkStatus) -> None:
+        """刷新网络徽标：有延迟数据则双行显示，否则显示精简状态文案。"""
         mapping = {
             "ok": "statusDotConnected",
             "slow": "statusDotSlow",
@@ -179,6 +191,8 @@ class NetworkStatusBadge(QFrame):
 
 
 class MainWindow(QMainWindow):
+    """应用主窗口：装配三栏 UI、引擎与各类信号，并承载交易/告警/配置交互。"""
+
     def __init__(
         self,
         license_service: LicenseService | None = None,
@@ -849,9 +863,10 @@ class MainWindow(QMainWindow):
         dlg.set_position_callback(lambda d=dlg, pid=preset_id: self._position_trade_dialog(d, pid))
         dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         dlg._fit_size()
-        self._position_trade_dialog(dlg, preset_id)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
         dlg.show()
+        dlg._fit_size()
+        self._position_trade_dialog(dlg, preset_id)
         for other in self._trade_dialogs.values():
             if other.isVisible():
                 other.raise_()
@@ -876,7 +891,7 @@ class MainWindow(QMainWindow):
         if dlg.user_positioned():
             return
         strip = self.gold_actions if preset_id == "xau" else self.silver_actions
-        dlg.adjustSize()
+        dlg._fit_size()
         dlg_w = dlg.width()
         dlg_h = dlg.height()
         btn = strip.trade_entry_btn

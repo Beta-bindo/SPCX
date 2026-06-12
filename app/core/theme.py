@@ -91,17 +91,28 @@ def set_flag(widget: QWidget, name: str, value: bool) -> None:
     polish_widget(widget)
 
 
+def to_qss_url(path: str | Path) -> str:
+    """Quote local paths for QSS url(); required when path contains '&' (e.g. B&Ex)."""
+    quoted = Path(path).resolve().as_posix().replace('"', '\\"')
+    return f'"{quoted}"'
+
+
 def load_stylesheet(app: QApplication, theme: str = "light") -> None:
     path = stylesheet_path(theme)
     if not path.exists():
         raise FileNotFoundError(f"主题文件不存在: {path}")
-    icons = (path.parent / "icons").as_posix()
+    icons_dir = path.parent / "icons"
+    icons = icons_dir.as_posix()
     text = path.read_text(encoding="utf-8").replace("@ICON_DIR@", icons)
     unchecked = (
         "checkbox-unchecked-dark.svg" if theme == "dark" else "checkbox-unchecked-light.svg"
     )
-    text = text.replace("@CHECKBOX_UNCHECKED@", f"{icons}/{unchecked}")
-    text = text.replace("@CHECKBOX_CHECKED@", f"{icons}/checkbox-checked.svg")
+    text = text.replace(
+        "@CHECKBOX_UNCHECKED@", to_qss_url(icons_dir / unchecked)
+    )
+    text = text.replace(
+        "@CHECKBOX_CHECKED@", to_qss_url(icons_dir / "checkbox-checked.svg")
+    )
     app.setStyle("Fusion")
     apply_app_font(app)
     app.setStyleSheet(text)

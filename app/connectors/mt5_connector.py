@@ -1,3 +1,13 @@
+"""MetaTrader5 / Exness 连接器。
+
+封装与 MT5 终端的交互：登录初始化、行情订阅、持仓查询、对冲单腿开/平仓。
+未安装 MetaTrader5 库或未配置时退化为模拟行情。
+
+关键约束：MetaTrader5 的 Python API 不是线程安全的，必须在同一个线程内调用。
+因此本类用一个专用工作线程（_poll_loop）顺序执行所有 MT5 调用，其他线程通过
+工作队列（_work_queue）+ _call_on_mt5_thread 投递任务并同步等待结果。
+"""
+
 from __future__ import annotations
 
 import queue
@@ -34,10 +44,12 @@ except ImportError as exc:
 
 
 class MT5Connector(QObject):
-    quote_received = Signal(object)
-    state_changed = Signal(str)
-    latency_updated = Signal(float)
-    log = Signal(str)
+    """Exness/MT5 连接器，对外暴露报价/持仓/下单能力，并通过信号通知 UI。"""
+
+    quote_received = Signal(object)   # 收到新报价
+    state_changed = Signal(str)       # 连接状态变化
+    latency_updated = Signal(float)   # 行情延迟（ms）
+    log = Signal(str)                 # 日志行
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -49,8 +61,8 @@ class MT5Connector(QObject):
         self._stop_event = threading.Event()
         self._connected = False
         self._quotes: dict[str, Quote] = {}
-        self._work_queue: queue.Queue = queue.Queue()
-        self._demo_positions: dict[str, Position] = {}
+        self._work_queue: queue.Queue = queue.Queue()        # 投递到 MT5 工作线程的任务队列
+        self._demo_positions: dict[str, Position] = {}       # 模拟模式虚拟持仓
 
     @property
     def quotes(self) -> dict[str, Quote]:
@@ -77,6 +89,7 @@ class MT5Connector(QObject):
         self.latency_updated.emit(ms)
 
     def _mt5_credentials(self) -> tuple[int, str, str] | None:
+        """取齐全的登录凭据 (账号, 密码, 服务器)；任一缺失返回 None。"""
         login = int(self.config.mt5_login or 0)
         password = (self.config.mt5_password or "").strip()
         server = (self.config.mt5_server or "").strip()
@@ -85,6 +98,7 @@ class MT5Connector(QObject):
         return None
 
     def _format_mt5_init_error(self, err: tuple[int, str] | None) -> str:
+        """把 MT5 初始化错误码翻译成带排障指引的中文提示。"""
         if not err:
             return "MT5 初始化失败，改用模拟行情"
         code, message = err
@@ -113,6 +127,7 @@ class MT5Connector(QObject):
         return f"MT5 初始化失败: {err}，改用模拟行情"
 
     def _initialize_mt5(self, terminal: Path | None) -> bool:
+        """按多种方式依次尝试连接 MT5（附着已运行 / 带凭据启动 / API 登录 / 启动终端）。"""
         creds = self._mt5_credentials()
         cred_kwargs: dict[str, Any] | None = None
         if creds:
@@ -153,6 +168,7 @@ class MT5Connector(QObject):
         return False
 
     def _ensure_mt5_login(self) -> bool:
+        """确保终端已登录目标账户：未填凭据则沿用终端当前账户，否则校验/登录。"""
         creds = self._mt5_credentials()
         if not creds:
             self._log(LogLevel.INFO, "Exness 使用终端当前登录账户（未填写账户密码）")
@@ -176,6 +192,7 @@ class MT5Connector(QObject):
         return True
 
     def update_config(self, config: AppConfig) -> None:
+        """热更新配置并同步模拟行情刷新间隔。"""
         self.config = config
         if self._demo_timer is not None:
             interval_ms = max(100, int(round(config.ba_refresh_interval_sec * 1000)))
@@ -186,6 +203,7 @@ class MT5Connector(QObject):
             self.log.emit(message)
 
     def start(self) -> None:
+        """启动连接：实盘且库可用时拉起 MT5 工作线程，否则退化为模拟行情。"""
         self._stop_event.clear()
         if not self.config.use_live_mt5:
             self._start_demo()
@@ -204,6 +222,7 @@ class MT5Connector(QObject):
         self._poll_thread.start()
 
     def stop(self) -> None:
+        """停止连接/模拟并复位状态。"""
         self._stop_event.set()
         self._connected = False
         if self._demo_timer:
@@ -213,6 +232,10 @@ class MT5Connector(QObject):
         self._set_state(ConnectionState.DISCONNECTED)
 
     def _call_on_mt5_thread(self, fn: Callable[[], Any], timeout: float = 30.0) -> Any:
+        """在 MT5 专用线程上执行 fn 并同步取回结果（保证 MT5 API 单线程调用）。
+
+        若调用方本身就是工作线程则直接执行；否则投递队列并阻塞等待结果。
+        """
         if threading.current_thread() is self._poll_thread:
             return fn()
         result_box: queue.Queue = queue.Queue(maxsize=1)
@@ -225,6 +248,7 @@ class MT5Connector(QObject):
     def _live_position(
         self, symbol: str, side: Side | None = None, min_qty: float = 0.0
     ) -> Position | None:
+        """实时查询匹配交易对（可选方向/最小手数）的单个持仓。"""
         if not self._connected or not HAS_MT5:
             return None
         for pos in mt5.positions_get(symbol=symbol) or []:
@@ -253,6 +277,7 @@ class MT5Connector(QObject):
         timeout: float = 5.0,
         poll_sec: float = 0.25,
     ) -> bool:
+        """轮询等待出现 ≥min_qty 的指定方向持仓（确认开仓落地）。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._live_position(symbol, side, min_qty):
@@ -261,6 +286,7 @@ class MT5Connector(QObject):
         return False
 
     def _wait_until_flat(self, symbol: str, *, timeout: float = 5.0) -> bool:
+        """轮询等待该交易对持仓清零（确认平仓完成）。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._live_position(symbol) is None:
@@ -276,6 +302,7 @@ class MT5Connector(QObject):
         *,
         timeout: float = 5.0,
     ) -> bool:
+        """轮询等待持仓手数降到 ≤max_qty（确认部分平仓到位）。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             pos = self._live_position(symbol, side)
@@ -287,6 +314,7 @@ class MT5Connector(QObject):
         return False
 
     def get_positions(self) -> list[Position]:
+        """查询全部受监控品种的 MT5 持仓，并据账户权益反推每笔的爆仓价与缓冲。"""
         if not self.config.use_live_mt5:
             return list(self._demo_positions.values())
         if not self._connected or not HAS_MT5:
@@ -355,11 +383,17 @@ class MT5Connector(QObject):
             return []
 
     def replace_demo_positions(self, positions: list[Position]) -> None:
+        """覆盖模拟模式下的虚拟持仓。"""
         self._demo_positions = {p.symbol: p for p in positions}
 
     def open_hedge_leg(
         self, preset_id: str, mode: str = "contraction", order_mode: str = GoldOrderMode.LIMIT.value
     ) -> LegResult:
+        """在 MT5 端开/加一腿对冲仓。
+
+        收缩 → 买入（BUY），扩张 → 卖出（SELL）；与 BA 端方向相反构成对冲。
+        实盘下单后轮询确认持仓出现，未确认则返回 needs_reconciliation 交由上层回滚。
+        """
         from app.core.models import HedgeMode
 
         _, symbol_mt5, _ = resolve_symbols(
@@ -533,6 +567,10 @@ class MT5Connector(QObject):
         *,
         close_all: bool = False,
     ) -> LegResult:
+        """平 MT5 端对冲仓（按持仓 ticket 反向下单）。close_all=True 全平，否则部分平。
+
+        下单后轮询确认减仓量，未确认则返回 needs_reconciliation。
+        """
         _, symbol_mt5, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
@@ -646,6 +684,7 @@ class MT5Connector(QObject):
             return LegResult(platform="MT5", success=False, message=msg)
 
     def _start_demo(self) -> None:
+        """启动模拟行情：定时生成黄金/白银的虚拟报价。"""
         self._set_state(ConnectionState.SIMULATED)
         self._log(LogLevel.DEBUG, "Exness 模拟行情 · 黄金 + 白银（非真实价格）")
         self._demo_timer = QTimer(self)
@@ -662,6 +701,7 @@ class MT5Connector(QObject):
             self.quote_received.emit(mt5)
 
     def _process_work_queue(self) -> None:
+        """在 MT5 工作线程内排空任务队列，逐个执行并把结果/异常回传给调用方。"""
         while True:
             try:
                 fn, result_box = self._work_queue.get_nowait()
@@ -673,6 +713,7 @@ class MT5Connector(QObject):
                 result_box.put((False, exc))
 
     def read_account_leverage(self) -> int | None:
+        """读取 MT5 账户杠杆（在工作线程上执行）。"""
         if not self._connected or not HAS_MT5:
             return None
 
@@ -689,6 +730,7 @@ class MT5Connector(QObject):
             return None
 
     def _poll_loop(self) -> None:
+        """MT5 专用工作线程主循环：初始化登录后，循环处理任务队列并推送行情。"""
         try:
             terminal = find_mt5_terminal(self.config.mt5_terminal_path)
             if terminal:
@@ -743,5 +785,6 @@ class MT5Connector(QObject):
                 self._connected = False
 
     def _set_state(self, state: ConnectionState) -> None:
+        """更新连接状态并通知 UI。"""
         self._state = state
         self.state_changed.emit(state.value)

@@ -1,3 +1,5 @@
+"""利润计算器对话框：按日期/品种查询已结算平仓记录，分页展示并支持导出 xlsx。"""
+
 from __future__ import annotations
 
 from datetime import date
@@ -26,6 +28,8 @@ from app.widgets.table_pagination import TablePagination
 
 
 class ProfitCalculatorDialog(QDialog):
+    """利润计算器：筛选条件 + 汇总卡 + 分页明细表 + 导出。"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("利润计算器")
@@ -151,6 +155,7 @@ class ProfitCalculatorDialog(QDialog):
         self._render_page()
 
     def _calculate(self) -> None:
+        """按当前筛选条件统计利润并刷新汇总与表格。"""
         start, end = self._date_range()
         symbol = self.symbol_combo.currentData()
         report = calculate_profit(load_ledger(), start, end, symbol)
@@ -168,6 +173,7 @@ class ProfitCalculatorDialog(QDialog):
         self._render_page()
 
     def _render_page(self) -> None:
+        """渲染当前分页的明细行；无数据时显示占位提示。"""
         self.table.clearSpans()
         page_rows = self.pagination.slice(self._all_rows)
         self.table.setRowCount(len(page_rows))
@@ -201,6 +207,7 @@ class ProfitCalculatorDialog(QDialog):
         self.pagination.set_total(len(self._all_rows))
 
     def _export(self) -> None:
+        """把当前报表导出为 xlsx 文件，并提示导出路径。"""
         if self._last_report is None:
             self._calculate()
         if self._last_report is None:

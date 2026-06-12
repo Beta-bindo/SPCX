@@ -1,3 +1,5 @@
+"""收益统计：按日期/品种汇总成交流水，生成报表行与汇总文本。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +9,7 @@ from app.core.trade_ledger import TradeLedger, TradeRecord
 
 
 def record_label(rec: TradeRecord) -> str:
+    """记录 → "黄金收缩"这类品种+方向标签。"""
     label = "黄金" if rec.preset_id == "xau" else "白银"
     mode = "收缩" if rec.mode == "contraction" else "扩张"
     return f"{label}{mode}"
@@ -14,6 +17,8 @@ def record_label(rec: TradeRecord) -> str:
 
 @dataclass
 class ProfitRow:
+    """报表中的一行（对应一条平仓结算记录）。"""
+
     settled_at: str
     product: str
     direction: str
@@ -28,6 +33,8 @@ class ProfitRow:
 
 @dataclass
 class ProfitReport:
+    """某时段的收益汇总（两端盈亏/手续费/合计）与明细记录。"""
+
     ba_pnl: float = 0.0
     ba_fee: float = 0.0
     mt5_pnl: float = 0.0
@@ -37,6 +44,7 @@ class ProfitReport:
 
     @property
     def summary_text(self) -> str:
+        """多行汇总文本，用于结算弹窗/日志展示。"""
         lines = [
             "交易记录汇总",
             f"  BA 净盈亏 ${self.ba_pnl:.2f} · 手续费 ${self.ba_fee:.4f}",
@@ -57,6 +65,7 @@ class ProfitReport:
 
     @property
     def rows(self) -> list[ProfitRow]:
+        """把明细记录转为表格行（供导出/表格展示）。"""
         if not self.records:
             return []
         return [

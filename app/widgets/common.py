@@ -1,3 +1,5 @@
+"""通用 UI 组件：带标题的配置卡片 SectionCard，提供统一的字段排版辅助。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
 
 
 class SectionCard(QFrame):
-    """带标题栏的配置卡片。"""
+    """带标题栏的配置卡片；支持紧凑模式，并提供多种字段添加布局。"""
 
     def __init__(
         self,
@@ -85,6 +87,7 @@ class SectionCard(QFrame):
         return self._wrap_layout(wrap)
 
     def add_field(self, label: str, widget: QWidget, hint: str = "") -> None:
+        """竖排添加一个字段（标签在上、控件在下，可选提示）。"""
         self.body.addWidget(self._field_cell(label, widget, hint))
 
     def add_inline_field(
@@ -95,6 +98,7 @@ class SectionCard(QFrame):
         *,
         label_width: int | None = None,
     ) -> None:
+        """横排添加一个字段（标签居左、控件占满剩余宽度）。"""
         if label_width is None:
             label_width = 56 if self._compact else 76
         v_gap, h_gap = self._cell_spacing()
@@ -124,6 +128,7 @@ class SectionCard(QFrame):
         *,
         columns: int = 2,
     ) -> None:
+        """以网格（默认两列）批量添加字段。"""
         _, h_gap = self._cell_spacing()
         v_gap = h_gap
         grid = QGridLayout()

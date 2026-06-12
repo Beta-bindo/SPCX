@@ -1,3 +1,5 @@
+"""点差大字展示控件：主数字 + 第三位小数以右上角小字呈现，并按正负着色。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QSize
@@ -8,7 +10,7 @@ from app.core.theme import polish_widget, ui_mono_font
 
 
 class SpreadValueLabel(QWidget):
-    """点差主数字 + 第三位小数右上角小字。"""
+    """点差主数字 + 第三位小数右上角小字（正数热色、负数冷色）。"""
 
     _MAIN_PX = 36
     _SUP_PX = 14
@@ -117,6 +119,7 @@ class SpreadValueLabel(QWidget):
         polish_widget(self._sup)
 
     def set_spread(self, spread: float | None) -> None:
+        """更新显示的点差值；None 显示"--"。整数/前两位为主字，第三位小数为上标小字。"""
         if spread is None:
             if self._last_main != "--":
                 self._main.setText("--")
@@ -143,6 +146,7 @@ class SpreadValueLabel(QWidget):
         self.updateGeometry()
 
     def refresh_theme(self) -> None:
+        """主题切换后重设字体并刷新着色。"""
         self._apply_fonts()
         self._sync_height()
         tone = self._tone

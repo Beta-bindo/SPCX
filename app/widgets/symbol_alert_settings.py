@@ -1,3 +1,5 @@
+"""单品种告警设置组件，并定义"点击进入编辑、失焦自动锁定"的只读数字输入框。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QEvent
@@ -14,6 +16,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig
+
+
+def format_decimal_text(value: float, decimals: int) -> str:
+    """按实际精度显示：3 -> 3，3.55 -> 3.55，不补无意义的尾随 0。"""
+    if decimals <= 0:
+        return str(int(round(value)))
+    text = f"{value:.{decimals}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 class ClickToEditDoubleSpinBox(QDoubleSpinBox):
@@ -103,6 +115,9 @@ class ClickToEditDoubleSpinBox(QDoubleSpinBox):
         self._apply_lock(True)
         if self.hasFocus():
             self.clearFocus()
+
+    def textFromValue(self, value: float) -> str:
+        return format_decimal_text(value, self.decimals())
 
 
 class ClickToEditSpinBox(QSpinBox):
@@ -202,6 +217,7 @@ def _settings_spin(
     maximum: float = 999999,
     step: float = 0.1,
 ) -> ClickToEditDoubleSpinBox:
+    """构造设置区使用的紧凑小数输入框（无按钮、右对齐、点击编辑）。"""
     spin = ClickToEditDoubleSpinBox()
     spin.setRange(minimum, maximum)
     spin.setDecimals(decimals)
@@ -223,6 +239,7 @@ def _settings_int_spin(
     step: int = 1,
     fixed_width: int = 52,
 ) -> ClickToEditSpinBox:
+    """构造设置区使用的紧凑整数输入框。"""
     spin = ClickToEditSpinBox()
     spin.setRange(minimum, maximum)
     spin.setSingleStep(step)
@@ -280,10 +297,10 @@ class SymbolAlertSettings(QFrame):
         liq_row.setSpacing(2)
         liq_row.addWidget(self.liq_enabled)
         liq_row.addWidget(self._label("BA爆仓 <="))
-        self.ba_liq = _settings_spin(100, decimals=1, minimum=0, step=1)
+        self.ba_liq = _settings_spin(100, decimals=1, step=1)
         liq_row.addWidget(self.ba_liq)
         liq_row.addWidget(self._label("Ex爆仓 <="))
-        self.mt5_liq = _settings_spin(100, decimals=1, minimum=0, step=1)
+        self.mt5_liq = _settings_spin(100, decimals=1, step=1)
         liq_row.addWidget(self.mt5_liq)
         liq_row.addWidget(self._label("报警"))
         liq_row.addStretch()
@@ -300,6 +317,7 @@ class SymbolAlertSettings(QFrame):
         return lbl
 
     def iter_watch_widgets(self):
+        """逐个产出需要监听变更的控件（用于自动保存/联动）。"""
         yield self.spread_enabled
         yield self.liq_enabled
         yield self.spread_min
@@ -312,6 +330,7 @@ class SymbolAlertSettings(QFrame):
             spin.lock()
 
     def load_config(self, config: AppConfig) -> None:
+        """按品种把告警配置回填到控件。"""
         if self.preset_id == "xau":
             self.spread_enabled.setChecked(config.xau_spread_alert_enabled)
             self.liq_enabled.setChecked(config.xau_liq_alert_enabled)
@@ -328,6 +347,7 @@ class SymbolAlertSettings(QFrame):
             self.mt5_liq.setValue(config.xag_mt5_liq_alert)
 
     def apply_to(self, config: AppConfig) -> None:
+        """把控件值写回配置（同时同步派生的声音开关字段）。"""
         if self.preset_id == "xau":
             config.xau_spread_alert_enabled = self.spread_enabled.isChecked()
             config.xau_liq_alert_enabled = self.liq_enabled.isChecked()

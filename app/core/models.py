@@ -1,3 +1,10 @@
+"""全局数据模型与枚举。
+
+集中定义贯穿各层的数据结构：报价 / 持仓 / 点差快照 / 风险快照，以及最重要的
+应用配置 :class:`AppConfig`。所有结构均为纯数据（dataclass / Enum），不含业务逻辑，
+以便在 core、connectors、widgets 之间安全传递。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -5,6 +12,8 @@ from enum import Enum
 
 
 class ConnectionMode(str, Enum):
+    """连接模式：纯模拟 / 双实盘 / 仅 BA 实盘 / 仅 MT5 实盘。"""
+
     DEMO = "demo"
     LIVE_BOTH = "live_both"
     LIVE_BA = "live_ba"
@@ -12,6 +21,8 @@ class ConnectionMode(str, Enum):
 
 
 class ConnectionState(str, Enum):
+    """单个连接器的运行状态。"""
+
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -20,6 +31,8 @@ class ConnectionState(str, Enum):
 
 
 class Side(str, Enum):
+    """买卖方向；NONE 表示无方向 / 无持仓。"""
+
     BUY = "BUY"
     SELL = "SELL"
     NONE = "NONE"
@@ -118,14 +131,17 @@ def normalize_ba_refresh_interval(value: float | int | str | None) -> float:
 
 @dataclass
 class Quote:
+    """单一交易对的实时报价（买一 / 卖一）。"""
+
     symbol: str
     bid: float = 0.0
     ask: float = 0.0
     timestamp: float = 0.0
-    is_simulated: bool = False
+    is_simulated: bool = False  # 是否为模拟行情（非实盘真实报价）
 
     @property
     def mid(self) -> float:
+        """中间价；缺一边时退回另一边。"""
         if self.bid > 0 and self.ask > 0:
             return (self.bid + self.ask) / 2
         return self.bid or self.ask
@@ -133,12 +149,16 @@ class Quote:
 
 @dataclass
 class OrderBookLevel:
+    """盘口单档：价格 + 挂单量。"""
+
     price: float
     quantity: float
 
 
 @dataclass
 class OrderBook:
+    """盘口快照（买卖各若干档）。"""
+
     bids: list[OrderBookLevel] = field(default_factory=list)
     asks: list[OrderBookLevel] = field(default_factory=list)
     is_simulated: bool = False
@@ -146,23 +166,27 @@ class OrderBook:
 
 @dataclass
 class Position:
-    platform: str
+    """单平台单交易对的持仓快照。"""
+
+    platform: str               # "BA" 或 "MT5"
     symbol: str
     side: Side = Side.NONE
-    quantity: float = 0.0
+    quantity: float = 0.0       # BA 为合约/币数，MT5 为手数
     entry_price: float = 0.0
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
-    estimated_fee: float = 0.0
+    estimated_fee: float = 0.0  # 预估平仓手续费
     liquidation_price: float = 0.0
     mark_price: float = 0.0
     leverage: int = 0
     margin_type: str = ""
-    exchange_liq_buffer: float | None = None
+    exchange_liq_buffer: float | None = None  # 交易所返回的爆仓缓冲（如有）
 
 
 @dataclass
 class SpreadSnapshot:
+    """两端报价构成的点差快照（详见 pnl_calculator.build_spread_snapshot）。"""
+
     preset_id: str = "xau"
     ba_bid: float = 0.0
     ba_ask: float = 0.0
@@ -185,6 +209,8 @@ class SpreadSnapshot:
 
 @dataclass
 class RiskSnapshot:
+    """风险快照：各品种两端的爆仓价与到爆仓的距离（默认 99999 表示无持仓/无风险）。"""
+
     xau_ba_liq: float = 99999.0
     xau_mt5_liq: float = 99999.0
     xag_ba_liq: float = 99999.0
@@ -197,6 +223,8 @@ class RiskSnapshot:
 
 @dataclass
 class MarketUpdate:
+    """一次行情刷新打包：两端报价 + 各品种点差 + 风险快照，供 UI 一次性更新。"""
+
     ba_quotes: dict = field(default_factory=dict)
     mt5_quotes: dict = field(default_factory=dict)
     spreads: dict = field(default_factory=dict)
@@ -205,6 +233,15 @@ class MarketUpdate:
 
 @dataclass
 class AppConfig:
+    """应用全局配置（持久化到 config.json）。
+
+    字段按用途分组：连接凭据 / 代理、交易品种与手数、手续费参数、主题与刷新、
+    点差与爆仓告警、自动交易阈值（限价与市价两条 lane）、布局等。
+    带 xau_/xag_ 前缀的字段为黄金/白银各自独立配置，通过下方 *_for(preset_id)
+    辅助方法按当前品种取值。
+    """
+
+    # —— 连接凭据与代理 ——
     ba_api_key: str = ""
     ba_api_secret: str = ""
     proxy_host: str = "127.0.0.1"
@@ -215,6 +252,7 @@ class AppConfig:
     mt5_server: str = ""
     mt5_terminal_path: str = ""
     connection_mode: str = ConnectionMode.DEMO.value
+    # —— 交易品种与手数映射 ——
     symbol_preset: str = "xau"
     symbol_ba: str = "XAUUSDT"
     symbol_mt5: str = "XAUUSD"
@@ -230,16 +268,19 @@ class AppConfig:
     xag_ba_qty_map: float = 5000.0
     xag_mt5_lot_map: float = 1.0
     xag_trade_lots: float = 1.0
+    # —— 手续费 / 成本参数 ——
     ba_fee_rate: float = 0.0004
     mt5_commission_per_lot: float = 0.0
     mt5_spread_points: float = 0.25
     mt5_point_value: float = 1.0
+    # —— 外观、杠杆与刷新 ——
     theme: str = "light"
     ba_leverage: int = 20
     mt5_leverage: int = 100
     sync_leverage_on_trade: bool = False
     ba_refresh_interval_sec: float = BA_REFRESH_INTERVAL_DEFAULT
-    ba_maker_timeout_sec: float = 5.0
+    ba_maker_timeout_sec: float = 5.0   # Maker 委托等待成交超时（秒），超时撤单
+    # —— 点差 / 爆仓告警阈值与开关 ——
     xau_spread_alert_min: float = 1.0
     xau_spread_alert_max: float = 3.0
     xag_spread_alert_min: float = -2.0
@@ -258,6 +299,7 @@ class AppConfig:
     xag_spread_alert_enabled: bool = True
     xau_liq_alert_enabled: bool = True
     xag_liq_alert_enabled: bool = True
+    # —— 自动交易：限价/Maker lane 的开平仓阈值与开关 ——
     xau_auto_contraction_enabled: bool = False
     xau_auto_expansion_enabled: bool = False
     xag_auto_contraction_enabled: bool = False
@@ -276,6 +318,7 @@ class AppConfig:
     xau_auto_close_expansion_threshold: float = -0.5
     xag_auto_close_contraction_threshold: float = 0.5
     xag_auto_close_expansion_threshold: float = -0.5
+    # —— 自动交易：市价 lane（仅黄金启用）的开平仓阈值与开关 ——
     xau_auto_market_contraction_enabled: bool = False
     xau_auto_market_expansion_enabled: bool = False
     xau_auto_market_contraction_threshold: float = 3.0
@@ -284,6 +327,7 @@ class AppConfig:
     xau_auto_market_close_expansion_enabled: bool = False
     xau_auto_market_close_contraction_threshold: float = 0.5
     xau_auto_market_close_expansion_threshold: float = -0.5
+    # —— 界面布局与日志 ——
     layout_mode: str = LayoutMode.DUAL.value
     single_symbol_preset: str = "xau"
     log_level: str = "normal"
@@ -291,6 +335,7 @@ class AppConfig:
     xag_panel_sections: str = DEFAULT_PANEL_SECTIONS
 
     def panel_sections(self, preset_id: str) -> list[tuple[str, bool]]:
+        """取该品种的中间栏板块顺序与可见性配置。"""
         raw = self.xag_panel_sections if preset_id == "xag" else self.xau_panel_sections
         return parse_panel_sections(raw)
 
@@ -305,17 +350,21 @@ class AppConfig:
 
     @property
     def demo_mode(self) -> bool:
+        """是否纯模拟模式。"""
         return self.connection_mode == ConnectionMode.DEMO.value
 
     @property
     def use_live_ba(self) -> bool:
+        """BA 是否走实盘。"""
         return self.connection_mode in (ConnectionMode.LIVE_BOTH.value, ConnectionMode.LIVE_BA.value)
 
     @property
     def use_live_mt5(self) -> bool:
+        """MT5 是否走实盘。"""
         return self.connection_mode in (ConnectionMode.LIVE_BOTH.value, ConnectionMode.LIVE_MT5.value)
 
     def ba_quantity_for(self, preset_id: str) -> float:
+        """按 MT5 手数与"手数↔BA 数量"映射比例换算出对应的 BA 下单数量。"""
         if preset_id == "xag":
             ratio = self.xag_ba_qty_map / max(self.xag_mt5_lot_map, 0.001)
             return round(self.xag_trade_lots * ratio, 4)
@@ -323,10 +372,14 @@ class AppConfig:
         return round(self.xau_trade_lots * ratio, 4)
 
     def mt5_lot_for(self, preset_id: str) -> float:
+        """该品种每次交易的 MT5 手数。"""
         if preset_id == "xag":
             return self.xag_trade_lots
         return self.xau_trade_lots
 
+    # 以下一组 *_for / *_on / *_threshold 方法均为"按 preset_id 取黄金或白银对应字段"
+    # 的便捷读取器；带 *_lane 后缀的版本进一步在限价 lane 与市价 lane 之间选择
+    # （市价 lane 仅黄金启用，白银市价相关项回退到限价 lane 或返回 0/False）。
     def spread_alert_min(self, preset_id: str) -> float:
         if preset_id == "xag":
             return self.xag_spread_alert_min

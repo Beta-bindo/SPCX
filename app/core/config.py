@@ -1,3 +1,9 @@
+"""配置持久化：在 ~/.xau_assistant/config.json 与 AppConfig 之间读写。
+
+负责老版本字段的兼容迁移（_migrate_legacy）、敏感字段的加/解密（API 密钥、MT5 密码），
+以及异步保存以避免阻塞 UI。读取失败时回退到默认配置而非崩溃。
+"""
+
 from __future__ import annotations
 
 import copy
@@ -20,10 +26,12 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def ensure_config_dir() -> None:
+    """确保配置目录存在。"""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _migrate_legacy(data: dict) -> dict:
+    """把旧版本配置字段补齐/迁移为当前结构（向后兼容历史 config.json）。"""
     if "connection_mode" not in data and data.get("demo_mode", True):
         data["connection_mode"] = ConnectionMode.DEMO.value
     elif "connection_mode" not in data:
@@ -64,10 +72,12 @@ def _migrate_legacy(data: dict) -> dict:
 
 
 def load_config() -> AppConfig:
+    """读取并解析配置文件为 AppConfig；文件缺失或损坏时返回默认配置。"""
     ensure_config_dir()
     if not CONFIG_FILE.exists():
         return AppConfig()
     try:
+        # 解密敏感字段、按字段填充并做兼容迁移；任一步异常都回退默认配置
         data = _migrate_legacy(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         cfg = AppConfig(
             ba_api_key=data.get("ba_api_key", ""),
@@ -189,6 +199,7 @@ def load_config() -> AppConfig:
             xau_panel_sections=data.get("xau_panel_sections", DEFAULT_PANEL_SECTIONS),
             xag_panel_sections=data.get("xag_panel_sections", DEFAULT_PANEL_SECTIONS),
         )
+        # 由手数映射重算派生的 BA 数量/手数，保证一致性
         cfg.xau_ba_quantity = cfg.ba_quantity_for("xau")
         cfg.xag_ba_quantity = cfg.ba_quantity_for("xag")
         cfg.xau_mt5_lot_size = cfg.mt5_lot_for("xau")
@@ -199,6 +210,7 @@ def load_config() -> AppConfig:
 
 
 def save_config(config: AppConfig) -> None:
+    """将 AppConfig 序列化写入磁盘（敏感字段加密、中文不转义）。"""
     ensure_config_dir()
     config.xau_ba_quantity = config.ba_quantity_for("xau")
     config.xag_ba_quantity = config.ba_quantity_for("xag")

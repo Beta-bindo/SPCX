@@ -1,4 +1,14 @@
-"""Auto-open hedge when spread satisfies contraction/expansion thresholds."""
+"""自动交易引擎：当点差持续满足阈值时自动开/平对冲仓。
+
+核心是一个基于时间的状态机：
+- 点差满足阈值后开始计时（state.since / close_since 记录起始时刻）；
+- 持续满足达到 hold_sec 才真正触发下单，避免瞬时抖动误触发；
+- 点差回落超过 RESET_MARGIN（迟滞）则重置计时；
+- 触发后进入 COOLDOWN_SEC 冷却，防止连续重复下单。
+
+每个品种可有多个 lane（黄金支持 maker + market，白银仅 market），各 lane 独立计时。
+本模块只产出"下单意图"列表，实际下单由调用方（spread_engine）执行。
+"""
 
 from __future__ import annotations
 
@@ -8,22 +18,26 @@ from app.core.models import AppConfig, HedgeMode, SpreadSnapshot
 from app.core.order_mode import auto_trade_order_mode
 from app.core.trading_service import detect_hedge_mode, spread_allows_add
 
-COOLDOWN_SEC = 30.0
-RESET_MARGIN = 0.03
+COOLDOWN_SEC = 30.0   # 同一品种+lane 两次自动下单的最短间隔
+RESET_MARGIN = 0.03   # 迟滞带：点差需回落超过此值才重置计时，避免临界抖动
 LANE_MAKER = "maker"
 LANE_MARKET = "market"
 
 
 @dataclass
 class AutoTradeState:
-    since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)
-    last_fire: dict[tuple[str, str], float] = field(default_factory=dict)
-    close_since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)
-    last_close_fire: dict[tuple[str, str], float] = field(default_factory=dict)
+    """自动交易的跨周期状态（计时与冷却），键为 (品种, 模式, lane) 或 (品种, lane)。"""
+
+    since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)         # 开仓条件满足的起始时刻
+    last_fire: dict[tuple[str, str], float] = field(default_factory=dict)                 # 上次开仓触发时刻
+    close_since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)   # 平仓条件满足的起始时刻
+    last_close_fire: dict[tuple[str, str], float] = field(default_factory=dict)           # 上次平仓触发时刻
 
 
 @dataclass
 class AutoTradeProgress:
+    """自动交易倒计时进度，供 UI 展示"已满足 N/hold_sec 秒"。"""
+
     preset_id: str
     mode: str
     label: str
@@ -32,21 +46,25 @@ class AutoTradeProgress:
 
 
 def _lanes_for_preset(preset_id: str) -> tuple[str, ...]:
+    """该品种支持的 lane：黄金支持 Maker+市价，白银仅市价。"""
     if preset_id == "xau":
         return (LANE_MAKER, LANE_MARKET)
     return (LANE_MARKET,)
 
 
 def _lane_label(lane: str) -> str:
+    """lane → 显示后缀（市价 lane 显示"市价"，Maker lane 留空）。"""
     return "市价" if lane == LANE_MARKET else ""
 
 
 def _reset_preset(state: AutoTradeState, preset_id: str) -> None:
+    """清空该品种所有 lane 的开仓计时。"""
     for lane in _lanes_for_preset(preset_id):
         _reset_lane_open_timers(state, preset_id, lane)
 
 
 def _reset_lane_open_timers(state: AutoTradeState, preset_id: str, lane: str) -> None:
+    """清空某 lane 下两个方向的开仓计时。"""
     for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
         state.since[(preset_id, mode, lane)] = None
 
@@ -54,22 +72,26 @@ def _reset_lane_open_timers(state: AutoTradeState, preset_id: str, lane: str) ->
 def _reset_open_timer(
     state: AutoTradeState, preset_id: str, mode: str, lane: str
 ) -> None:
+    """清空单个 (品种, 模式, lane) 的开仓计时。"""
     state.since[(preset_id, mode, lane)] = None
 
 
 def _mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str) -> bool:
+    """该方向在该 lane 上是否开启了自动开仓。"""
     if mode == HedgeMode.CONTRACTION.value:
         return config.auto_contraction_on_lane(preset_id, lane)
     return config.auto_expansion_on_lane(preset_id, lane)
 
 
 def _mode_satisfied(config: AppConfig, preset_id: str, mode: str, spread: float, lane: str) -> bool:
+    """当前点差是否满足开仓阈值（收缩要求 ≥ 上阈值，扩张要求 ≤ 下阈值）。"""
     if mode == HedgeMode.CONTRACTION.value:
         return spread >= config.auto_contraction_threshold_lane(preset_id, lane)
     return spread <= config.auto_expansion_threshold_lane(preset_id, lane)
 
 
 def _mode_reset(config: AppConfig, preset_id: str, mode: str, spread: float, lane: str) -> bool:
+    """点差是否已回落出迟滞带，需重置计时。"""
     if mode == HedgeMode.CONTRACTION.value:
         return spread < config.auto_contraction_threshold_lane(preset_id, lane) - RESET_MARGIN
     return spread > config.auto_expansion_threshold_lane(preset_id, lane) + RESET_MARGIN
@@ -82,6 +104,7 @@ def _active_modes(
     state: AutoTradeState,
     lane: str,
 ) -> list[str]:
+    """该 lane 上当前"处于激活态"的方向：满足阈值，或已在迟滞带内计时尚未重置。"""
     modes: list[str] = []
     for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
         if not _mode_enabled(config, preset_id, mode, lane):
@@ -104,6 +127,7 @@ def _open_modes_for_evaluation(
     positions: list,
     lane: str,
 ) -> list[str]:
+    """评估可开仓方向：已有持仓时只允许沿现有对冲方向加仓，避免反向对锁。"""
     active = detect_hedge_mode(preset_id, positions)
     modes = _active_modes(config, preset_id, spread, state, lane)
     if active is None:
@@ -114,6 +138,7 @@ def _open_modes_for_evaluation(
 
 
 def _opposing_open_enabled(config: AppConfig, preset_id: str, opposing: str) -> bool:
+    """反方向是否在任一 lane 开启了自动开仓（用于诊断冲突）。"""
     for lane in _lanes_for_preset(preset_id):
         if _mode_enabled(config, preset_id, opposing, lane):
             return True
@@ -121,6 +146,7 @@ def _opposing_open_enabled(config: AppConfig, preset_id: str, opposing: str) -> 
 
 
 def _opposing_close_enabled(config: AppConfig, preset_id: str, opposing: str) -> bool:
+    """反方向是否在任一 lane 开启了自动平仓（用于诊断冲突）。"""
     for lane in _lanes_for_preset(preset_id):
         if _close_mode_enabled(config, preset_id, opposing, lane):
             return True
@@ -136,6 +162,7 @@ def collect_auto_trade_progress(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> AutoTradeProgress | None:
+    """汇总所有品种/lane 的开仓倒计时，返回进度最大的一项供 UI 展示。"""
     best: AutoTradeProgress | None = None
     for preset_id in preset_ids:
         active = detect_hedge_mode(preset_id, positions)
@@ -193,6 +220,10 @@ def diagnose_auto_trade_block(
     preset_ids: tuple[str, ...] = ("xau", "xag"),
     engine_running: bool = True,
 ) -> str | None:
+    """诊断自动交易为何未触发，返回一句可读的阻塞原因（无阻塞则 None）。
+
+    覆盖：引擎未启动、已有持仓导致反向冲突、点差未达阈值等常见情形，便于排障。
+    """
     if not engine_running:
         for preset_id in preset_ids:
             for lane in _lanes_for_preset(preset_id):
@@ -287,7 +318,11 @@ def evaluate_auto_trades(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> list[tuple[str, str, str, str]]:
-    """Return list of (preset_id, hedge_mode, order_mode, log_message)."""
+    """评估并产出本轮应自动开仓的下单意图列表。
+
+    返回每项为 (品种, 对冲模式, 下单模式, 日志文案)。会就地推进/重置 state 中的计时器，
+    并在触发后写入冷却时间；每个品种本轮至多触发一次。
+    """
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:
@@ -320,6 +355,7 @@ def evaluate_auto_trades(
             if not modes:
                 continue
 
+            # 冷却期内不重复触发
             fire_key = (preset_id, lane)
             last = state.last_fire.get(fire_key)
             if last is not None and now - last < COOLDOWN_SEC:
@@ -329,15 +365,17 @@ def evaluate_auto_trades(
                 key = (preset_id, mode, lane)
                 started = state.since.get(key)
                 if started is None:
+                    # 首次满足：开始计时，本轮不触发
                     state.since[key] = now
                     continue
                 if now - started < hold_sec:
-                    continue
+                    continue  # 持续时间不足，继续等待
                 if not _mode_satisfied(config, preset_id, mode, spread, lane):
                     state.since[key] = None
                     continue
 
                 if active is not None:
+                    # 加仓前再校验现价差不劣于持仓差价
                     ok, reason = spread_allows_add(preset_id, positions, spread, mode)
                     if not ok:
                         continue
@@ -372,12 +410,14 @@ def evaluate_auto_trades(
 
 
 def _reset_close_preset(state: AutoTradeState, preset_id: str) -> None:
+    """清空该品种所有 lane 的平仓计时。"""
     for lane in _lanes_for_preset(preset_id):
         for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
             state.close_since[(preset_id, mode, lane)] = None
 
 
 def _close_mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str) -> bool:
+    """该方向在该 lane 上是否开启了自动平仓。"""
     if mode == HedgeMode.CONTRACTION.value:
         return config.auto_close_contraction_on_lane(preset_id, lane)
     return config.auto_close_expansion_on_lane(preset_id, lane)
@@ -386,6 +426,7 @@ def _close_mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str)
 def _close_mode_satisfied(
     config: AppConfig, preset_id: str, mode: str, spread: float, lane: str
 ) -> bool:
+    """点差是否满足平仓阈值（平仓阈值方向与开仓相反：收缩仓在点差回落时平）。"""
     if mode == HedgeMode.CONTRACTION.value:
         return spread <= config.auto_close_contraction_threshold_lane(preset_id, lane)
     return spread >= config.auto_close_expansion_threshold_lane(preset_id, lane)
@@ -394,6 +435,7 @@ def _close_mode_satisfied(
 def _close_mode_reset(
     config: AppConfig, preset_id: str, mode: str, spread: float, lane: str
 ) -> bool:
+    """点差是否已回到不该平仓的一侧（出迟滞带），需重置平仓计时。"""
     if mode == HedgeMode.CONTRACTION.value:
         return spread > config.auto_close_contraction_threshold_lane(preset_id, lane) + RESET_MARGIN
     return spread < config.auto_close_expansion_threshold_lane(preset_id, lane) - RESET_MARGIN
@@ -408,6 +450,7 @@ def collect_auto_close_progress(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> AutoTradeProgress | None:
+    """汇总所有品种/lane 的平仓倒计时，返回进度最大的一项供 UI 展示。"""
     best: AutoTradeProgress | None = None
     for preset_id in preset_ids:
         mode = detect_hedge_mode(preset_id, positions)
@@ -452,6 +495,10 @@ def evaluate_auto_closes(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> list[tuple[str, str, str, str]]:
+    """评估并产出本轮应自动平仓的下单意图列表（结构同 evaluate_auto_trades）。
+
+    仅对已存在对冲持仓的品种生效；同样遵循 hold_sec 持续判定、迟滞重置与冷却。
+    """
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:

@@ -1,4 +1,4 @@
-"""Per-platform position detail for real-time P&L panel."""
+"""按平台聚合的持仓明细，供实时盈亏面板展示。"""
 
 
 from __future__ import annotations
@@ -11,12 +11,14 @@ from app.core.symbols import WATCHED_PRESETS, find_preset
 
 @dataclass
 class PlatformDetail:
+    """单个平台的持仓汇总明细。"""
+
     platform: str
     pnl: float = 0.0
     quantity: float = 0.0
     side: Side = Side.NONE
     liquidation_price: float = 0.0
-    liq_buffer: float = 0.0
+    liq_buffer: float = 0.0       # 距爆仓的资金缓冲（取最危险持仓）
     leverage: int = 0
     has_position: bool = False
 
@@ -28,6 +30,7 @@ def _aggregate_platform(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> PlatformDetail:
+    """跨所有受监控品种聚合某平台的持仓（盈亏求和、缓冲取最小、爆仓价取均值）。"""
     detail = PlatformDetail(platform=platform)
     matched: list[tuple[Position, str]] = []
     for preset_id in WATCHED_PRESETS:
@@ -85,6 +88,7 @@ def _aggregate_platform(
 def _resolve_buffer(
     pos: Position, quote: Quote | None, preset_id: str, leverage: int
 ) -> float:
+    """薄封装：求单个持仓的爆仓缓冲。"""
     return resolve_position_liq_buffer(pos, quote, preset_id, leverage)
 
 
@@ -96,6 +100,7 @@ def _detail_for_position(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> PlatformDetail:
+    """构造单个品种、单平台持仓的明细（无持仓则只带杠杆）。"""
     detail = PlatformDetail(platform=platform)
     lev = config.ba_leverage if platform == "BA" else config.mt5_leverage
     detail.leverage = lev
@@ -124,6 +129,7 @@ def build_platform_details_for_preset(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> tuple[PlatformDetail, PlatformDetail]:
+    """构造指定品种两端 (BA, MT5) 的持仓明细。"""
     preset = find_preset(preset_id)
     ba_pos = next(
         (p for p in positions if p.platform == "BA" and p.symbol == preset.symbol_ba),
@@ -144,6 +150,7 @@ def build_platform_details(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> tuple[PlatformDetail, PlatformDetail]:
+    """构造跨全部品种聚合的两端 (BA, MT5) 持仓明细。"""
     ba = _aggregate_platform("BA", positions, ba_quotes, mt5_quotes, config)
     mt5 = _aggregate_platform("MT5", positions, ba_quotes, mt5_quotes, config)
     return ba, mt5

@@ -1,3 +1,5 @@
+"""对冲交易下单弹窗：配比、下单模式（Maker/市价）与开/平仓按钮，按当前持仓动态构建动作。"""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -19,13 +21,19 @@ from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox
 from app.widgets.symbol_ratio_fields import SymbolRatioFields
 from app.widgets.symbol_trade_panel import SYMBOL_ICON
 
+_ACTION_BUTTON_HEIGHT = 48
+# 有持仓时开仓/平仓按钮竖排：中间留约 2 个按钮高度的间距
+_ACTION_BUTTON_STACK_GAP = _ACTION_BUTTON_HEIGHT * 2
+
 
 class TradeConfirmDialog(QWidget):
+    """单品种对冲下单浮窗（无模态 Tool 窗口）。"""
+
     class DialogCode:
         Accepted = 1
         Rejected = 0
 
-    trade_requested = Signal(str, str)
+    trade_requested = Signal(str, str)  # (动作: 开仓/平仓, 模式: 收缩/扩张)
     closed = Signal(int)
 
     def __init__(
@@ -106,6 +114,8 @@ class TradeConfirmDialog(QWidget):
         super().showEvent(event)
         self._ratio_fields.lock_all_spins()
         self._fit_size()
+        if self._position_callback is not None:
+            self._position_callback()
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
@@ -128,18 +138,58 @@ class TradeConfirmDialog(QWidget):
             self._ratio_fields.lock_all_spins()
         super().mousePressEvent(event)
 
+    def _actions_block_height(self) -> int:
+        """估算动作按钮区高度（竖排时含按钮间距），用于自适应窗口尺寸。"""
+        count = len(self._action_buttons)
+        if count <= 0:
+            return 0
+        btn_h = max(
+            (
+                max(_ACTION_BUTTON_HEIGHT, btn.minimumSizeHint().height())
+                for btn in self._action_buttons
+            ),
+            default=_ACTION_BUTTON_HEIGHT,
+        )
+        vertical = self._active_mode in (
+            HedgeMode.CONTRACTION.value,
+            HedgeMode.EXPANSION.value,
+        )
+        if vertical and count > 1:
+            return btn_h * count + _ACTION_BUTTON_STACK_GAP * (count - 1)
+        return btn_h
+
     def _fit_size(self) -> None:
-        """按内容高度展开，避免底部交易按钮被裁切。"""
-        lay = self.layout()
-        if lay is None:
+        """按内容计算窗口尺寸，确保底部交易按钮完整可见。"""
+        root = self.layout()
+        if root is None:
             return
-        lay.activate()
-        content = lay.sizeHint()
-        width = max(400, content.width())
-        height = max(320, content.height() + 12)
+        root.activate()
+        for btn in self._action_buttons:
+            btn.ensurePolished()
+
+        margins = root.contentsMargins()
+        width = max(380, self.minimumSizeHint().width(), self.sizeHint().width())
+
+        static_h = margins.top() + margins.bottom()
+        for idx in range(root.count()):
+            item = root.itemAt(idx)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is self._actions_host:
+                continue
+            if widget is not None:
+                static_h += widget.sizeHint().height()
+            else:
+                nested = item.layout()
+                if nested is not None:
+                    static_h += nested.sizeHint().height()
+            if idx < root.count() - 1:
+                static_h += root.spacing()
+
+        height = static_h + self._actions_block_height() + 24
         self.setMinimumSize(width, height)
-        if self.width() < width or self.height() < height:
-            self.resize(width, height)
+        self.resize(width, height)
 
     @property
     def preset_id(self) -> str:
@@ -167,6 +217,7 @@ class TradeConfirmDialog(QWidget):
                 self._clear_layout(nested)
 
     def _rebuild_actions(self) -> None:
+        """根据当前持仓模式重建开/平仓按钮组。"""
         self._clear_layout(self._actions_host_layout)
         self._action_buttons.clear()
         icon = SYMBOL_ICON.get(self._preset_id, "")
@@ -178,6 +229,7 @@ class TradeConfirmDialog(QWidget):
         self._actions_host_layout.addLayout(self._build_actions_layout(actions, has_position))
 
     def set_active_mode(self, active_mode: str | None) -> None:
+        """更新当前对冲方向（无/收缩/扩张），随之重建按钮并自适应尺寸。"""
         if active_mode == self._active_mode:
             return
         self._active_mode = active_mode
@@ -196,11 +248,9 @@ class TradeConfirmDialog(QWidget):
     ) -> QVBoxLayout | QHBoxLayout:
         if vertical:
             layout: QVBoxLayout | QHBoxLayout = QVBoxLayout()
-            layout.setSpacing(10)
-            for idx, (text, style, action, mode) in enumerate(actions):
+            layout.setSpacing(_ACTION_BUTTON_STACK_GAP)
+            for text, style, action, mode in actions:
                 layout.addWidget(self._make_action_button(text, style, action, mode))
-                if idx == 0 and len(actions) > 1:
-                    layout.addSpacing(12)
             return layout
 
         row = QHBoxLayout()
@@ -216,13 +266,14 @@ class TradeConfirmDialog(QWidget):
     ) -> QPushButton:
         btn = QPushButton(text)
         btn.setObjectName(style)
-        btn.setMinimumHeight(48)
+        btn.setMinimumHeight(_ACTION_BUTTON_HEIGHT)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.clicked.connect(lambda _=False, a=action, m=mode: self._execute_trade(a, m))
         self._action_buttons.append(btn)
         return btn
 
     def _visible_actions(self, icon: str) -> list[tuple[str, str, str, str]]:
+        """根据当前持仓方向决定显示哪些按钮：无持仓显示两种开仓，有持仓显示该方向的开/平。"""
         all_actions = (
             (f"{icon} 开仓收缩", "tradeShortOpen", "开仓", HedgeMode.CONTRACTION.value),
             (f"{icon} 平仓收缩", "tradeShortClose", "平仓", HedgeMode.CONTRACTION.value),
@@ -238,6 +289,7 @@ class TradeConfirmDialog(QWidget):
         return [all_actions[0], all_actions[2]]
 
     def _execute_trade(self, action: str, mode: str) -> None:
+        """点击按钮：写回配比、禁用按钮防重复点击，并发出 trade_requested。"""
         self._action = action
         self._mode = mode
         self._ratio_fields.apply_to(self._config)
@@ -254,6 +306,7 @@ class TradeConfirmDialog(QWidget):
         return self._action, self._mode
 
     def gold_order_mode(self) -> str:
+        """返回当前选择的下单模式（市价 / 只做 Maker）。"""
         if self._order_mode_market is not None and self._order_mode_market.isChecked():
             return GoldOrderMode.MARKET.value
         return GoldOrderMode.MAKER.value

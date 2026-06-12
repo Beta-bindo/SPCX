@@ -1,4 +1,4 @@
-"""Detect one-sided or mismatched hedge exposure for UI alerts."""
+"""对冲健康度检测：识别单边敞口、方向错配、两边手数不齐等异常，用于 UI 告警与修复建议。"""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from app.core.trading_service import detect_hedge_mode
 
 @dataclass(frozen=True)
 class HedgeHealth:
-    level: str  # ok | warn | alert
-    code: str
-    title: str
-    detail: str
-    action: str
+    """一次对冲健康度评估结果。"""
+
+    level: str   # 严重程度：ok（正常）| warn（提示）| alert（告警）
+    code: str    # 机器可读的状态码：none/ba_only/ex_only/side_mismatch/qty_skew/hedged
+    title: str   # 标题（含品种与策略）
+    detail: str  # 两边持仓明细
+    action: str  # 建议的处理动作（仅异常时非空）
 
     @property
     def is_ok(self) -> bool:
@@ -24,14 +26,15 @@ class HedgeHealth:
 
 @dataclass(frozen=True)
 class HedgeRepair:
-    """Suggested repair when hedge health is not ok."""
+    """当对冲不健康时，给交易弹窗的预填修复建议。"""
 
-    mode: str | None
-    order_mode: str | None = None
-    tooltip: str = ""
+    mode: str | None              # 建议的对冲模式（收缩/扩张），None 表示需人工判断
+    order_mode: str | None = None  # 建议的下单方式（如市价补腿）
+    tooltip: str = ""             # 鼠标悬浮提示
 
 
 def _side_label(side: Side) -> str:
+    """方向枚举 → 显示文本。"""
     if side == Side.BUY:
         return "BUY"
     if side == Side.SELL:
@@ -44,6 +47,11 @@ def analyze_hedge_health(
     positions: list[Position],
     config: AppConfig | None = None,
 ) -> HedgeHealth:
+    """评估单个品种的对冲健康度。
+
+    判定顺序：无持仓 → 单边敞口（仅 BA / 仅 Ex，告警）→ 方向错配（告警）
+    → 数量不齐（warn，需传入 config 才检测）→ 正常对冲。
+    """
     preset = find_preset(preset_id)
     label = "黄金" if preset_id == "xau" else "白银"
     ba_pos = next(
@@ -95,6 +103,7 @@ def analyze_hedge_health(
 
     mode_label = "收缩" if mode == HedgeMode.CONTRACTION else "扩张"
     if config is not None:
+        # 两边实际持仓量与配置预期量的比值：任一边明显偏小，或两边比值相差过大，判为不齐
         expected_ba = config.ba_quantity_for(preset_id)
         expected_ex = config.mt5_lot_for(preset_id)
         ba_ratio = ba_pos.quantity / expected_ba if expected_ba > 0 else 1.0
@@ -118,6 +127,7 @@ def analyze_hedge_health(
 
 
 def combine_hedge_health(*items: HedgeHealth) -> HedgeHealth:
+    """合并多个品种的健康度：优先返回最严重的异常，否则返回正常对冲项。"""
     if not items:
         return HedgeHealth("ok", "none", "对冲正常", "", "")
     order = {"alert": 3, "warn": 2, "ok": 1}
@@ -131,6 +141,7 @@ def combine_hedge_health(*items: HedgeHealth) -> HedgeHealth:
 
 
 def format_position_status(health: HedgeHealth) -> str:
+    """健康度 → 持仓状态行文本。"""
     if health.level == "alert":
         return f"⚠ {health.title} · {health.detail} · {health.action}"
     if health.level == "warn":
@@ -141,6 +152,7 @@ def format_position_status(health: HedgeHealth) -> str:
 
 
 def format_hedge_banner(health: HedgeHealth) -> str:
+    """健康度 → 顶部横幅文本；正常时返回空串（不显示横幅）。"""
     if health.is_ok:
         return ""
     parts = [health.title, health.detail]
@@ -154,7 +166,12 @@ def suggest_hedge_repair(
     positions: list[Position],
     health: HedgeHealth,
 ) -> HedgeRepair | None:
-    """Return trade-dialog prefill when user can attempt to rebalance."""
+    """根据健康度给出交易弹窗的预填修复方案；正常时返回 None。
+
+    - 单边敞口：建议按现有方向市价补另一腿；
+    - 数量不齐：建议打开弹窗核对手数补仓；
+    - 方向错配：建议人工平衡（不预填模式）。
+    """
     if health.is_ok:
         return None
     if health.code in ("ba_only", "ex_only"):

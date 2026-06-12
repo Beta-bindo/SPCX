@@ -1,3 +1,5 @@
+"""表格分页控件：每页条数选择 + 上/下一页，并提供对列表的切片。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
@@ -5,6 +7,8 @@ from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButto
 
 
 class TablePagination(QFrame):
+    """分页器，翻页/改每页大小时发出信号，slice() 取当前页数据。"""
+
     page_changed = Signal(int)
     page_size_changed = Signal(int)
 
@@ -55,6 +59,7 @@ class TablePagination(QFrame):
         return int(self.page_size.currentData())
 
     def set_total(self, total: int) -> None:
+        """设置总条数并按需收敛当前页码。"""
         self._total = total
         max_page = max(1, (total + self.page_size_value - 1) // self.page_size_value)
         if self._page > max_page:
@@ -62,6 +67,7 @@ class TablePagination(QFrame):
         self._refresh_info()
 
     def reset_page(self) -> None:
+        """回到第一页。"""
         self._page = 1
         self._refresh_info()
 
@@ -90,6 +96,7 @@ class TablePagination(QFrame):
         self.next_btn.setEnabled(self._page < max_page)
 
     def slice(self, items: list) -> list:
+        """返回当前页对应的子列表。"""
         size = self.page_size_value
         start = (self._page - 1) * size
         return items[start : start + size]

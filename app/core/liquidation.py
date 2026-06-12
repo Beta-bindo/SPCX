@@ -1,4 +1,8 @@
-"""Exchange-aligned liquidation price and buffer helpers."""
+"""爆仓价与"距爆仓资金缓冲"的计算工具，尽量对齐交易所真实口径。
+
+提供多种估算来源：交易所直接返回的缓冲 > 由爆仓价与盯市价反推 > 退化的保证金估算。
+MT5 侧以"权益跌到强平线（stop-out）"为爆仓条件，用二分法反推爆仓价。
+"""
 
 from __future__ import annotations
 
@@ -11,12 +15,12 @@ from app.core.symbols import find_preset
 def ba_isolated_liq_buffer(
     isolated_wallet: float, unrealized_pnl: float, maint_margin: float
 ) -> float:
-    """Binance isolated: liquidate when wallet + PnL <= maintMargin."""
+    """币安逐仓：当 钱包余额 + 浮盈 ≤ 维持保证金 时爆仓，返回距此的缓冲。"""
     return max(0.0, isolated_wallet + unrealized_pnl - maint_margin)
 
 
 def ba_cross_account_liq_buffer(margin_balance: float, maint_margin: float) -> float:
-    """Binance cross: totalMarginBalance - totalMaintMargin."""
+    """币安全仓：保证金余额 − 维持保证金。"""
     return max(0.0, margin_balance - maint_margin)
 
 
@@ -28,7 +32,10 @@ def liq_buffer_from_prices(
     *,
     qty_unit: float = 1.0,
 ) -> float:
-    """USDT distance to liquidation from exchange liq price and mark."""
+    """由"交易所爆仓价 + 当前盯市价"推算距爆仓的资金缓冲（计价货币）。
+
+    qty_unit 把合约/手数换算为实际盎司数；多头随价跌接近爆仓、空头随价涨接近爆仓。
+    """
     if liquidation_price <= 0 or mark <= 0 or quantity <= 0:
         return float("inf")
     qty = abs(quantity) * qty_unit
@@ -40,11 +47,12 @@ def liq_buffer_from_prices(
 
 
 def mt5_stopout_equity(margin: float, stop_out_pct: float) -> float:
+    """MT5 强平线对应的权益值 = 占用保证金 × 强平比例%。"""
     return margin * (stop_out_pct / 100.0)
 
 
 def mt5_account_liq_buffer(equity: float, margin: float, stop_out_pct: float) -> float:
-    """Ex/MT5 account buffer until stop-out (margin_so_so)."""
+    """MT5 账户距强平（stop-out）的权益缓冲。"""
     return max(0.0, equity - mt5_stopout_equity(margin, stop_out_pct))
 
 
@@ -58,7 +66,11 @@ def calc_liquidation_price_from_profit(
     *,
     max_iterations: int = 64,
 ) -> float:
-    """Binary-search close price where account equity hits MT5 stop-out level."""
+    """二分搜索使账户权益恰好触及 MT5 强平线的平仓价（即爆仓价）。
+
+    equity_without_position 为剔除本持仓后的权益，profit_calc(平仓价) 给出本持仓盈亏；
+    多头在 (0, 入场价] 区间下行搜索，空头在 [入场价, 3×入场价) 区间上行搜索。
+    """
     if entry_price <= 0 or margin <= 0:
         return 0.0
     target_equity = mt5_stopout_equity(margin, stop_out_pct)
@@ -103,7 +115,7 @@ def calc_liquidation_price_from_profit(
 
 
 def estimate_liquidation_price(entry: float, side: Side, leverage: int, mmr: float = 0.004) -> float:
-    """Demo / fallback when exchange liq price unavailable."""
+    """按杠杆与维持保证金率粗估爆仓价（模拟盘 / 交易所未给价时的兜底）。"""
     if entry <= 0 or leverage <= 0 or side == Side.NONE:
         return 0.0
     if side == Side.BUY:
@@ -112,6 +124,7 @@ def estimate_liquidation_price(entry: float, side: Side, leverage: int, mmr: flo
 
 
 def resolve_mark_price(pos: Position, quote: Quote | None) -> float:
+    """取盯市价：优先用持仓自带 mark_price，否则按平仓方向取对侧报价。"""
     if pos.mark_price > 0:
         return pos.mark_price
     if quote is None:
@@ -129,7 +142,12 @@ def resolve_position_liq_buffer(
     preset_id: str,
     leverage: int,
 ) -> float:
-    """Prefer exchange buffer, then liq-price distance, then legacy margin estimate."""
+    """求持仓距爆仓的缓冲，按可靠性依次尝试：
+
+    1) 交易所直接返回的缓冲（最准）；
+    2) 由交易所爆仓价 + 盯市价反推；
+    3) 退化方案：用"名义本金/杠杆"估算保证金再叠加浮盈。
+    """
     if pos.exchange_liq_buffer is not None:
         return max(0.0, pos.exchange_liq_buffer)
 
@@ -175,6 +193,7 @@ def resolve_position_liquidation_price(
     pos: Position,
     leverage: int,
 ) -> float:
+    """取持仓爆仓价：优先用交易所价，否则用持仓杠杆估算。"""
     if pos.liquidation_price > 0:
         return pos.liquidation_price
     lev = pos.leverage if pos.leverage > 0 else leverage

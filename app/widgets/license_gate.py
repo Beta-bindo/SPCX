@@ -1,3 +1,5 @@
+"""授权门禁：启动时验证授权服务器状态，未通过则弹窗收集申请信息并轮询审核结果。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -19,10 +21,10 @@ from app.core.license.service import LicenseService
 
 
 class _LicenseWorker(QThread):
-    """Run blocking license HTTP calls off the UI thread."""
+    """在子线程执行阻塞式授权 HTTP 调用，避免卡住 UI 线程。"""
 
-    finished_ok = Signal(str, str)  # action, message
-    failed = Signal(str, str)  # action, error
+    finished_ok = Signal(str, str)  # (动作, 消息)
+    failed = Signal(str, str)       # (动作, 错误)
 
     def __init__(self, action: str, fn):
         super().__init__()
@@ -121,6 +123,7 @@ class LicenseGateDialog(QDialog):
             self._apply_status(self.service.client.state.status, self.service.client.state.message)
 
     def _apply_status(self, status: str, message: str, *, auto_accept: bool = True) -> None:
+        """根据授权状态刷新提示文案/按钮；approved 时自动关闭门禁。"""
         if (
             self._worker
             and self._worker.isRunning()
@@ -153,6 +156,7 @@ class LicenseGateDialog(QDialog):
             save_license(self.service.client.state)
 
     def _start_worker(self, action: str, fn, busy_hint: str) -> None:
+        """启动后台授权任务（注册/刷新），期间禁用按钮。"""
         if self._worker and self._worker.isRunning():
             return
         self._set_busy(True, busy_hint)
@@ -203,6 +207,7 @@ class LicenseGateDialog(QDialog):
 
     @staticmethod
     def _is_valid_mainland_mobile(phone: str) -> bool:
+        """校验是否为合法的大陆 11 位手机号。"""
         return (
             len(phone) == 11
             and phone.isdigit()

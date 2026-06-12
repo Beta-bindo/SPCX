@@ -1,3 +1,5 @@
+"""连接与参数配置面板：品种、连接模式、账户、手续费、代理等；可内嵌或弹窗布局。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -23,6 +25,7 @@ from app.core.symbols import SYMBOL_PRESETS
 from app.widgets.common import SectionCard
 from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox, ClickToEditSpinBox
 
+# 连接模式下拉项：演示 / 双实盘 / 仅 BA / 仅 MT5
 CONNECTION_OPTIONS = [
     (ConnectionMode.DEMO.value, "演示模式（模拟行情）"),
     (ConnectionMode.LIVE_BOTH.value, "实盘 · BA + MT5"),
@@ -32,6 +35,8 @@ CONNECTION_OPTIONS = [
 
 
 class ConfigPanel(QFrame):
+    """配置面板。embedded=True 为主界面内嵌横排卡片，False 为设置弹窗竖排。"""
+
     def __init__(self, parent=None, *, embedded: bool = True):
         super().__init__(parent)
         self._embedded = embedded
@@ -87,6 +92,7 @@ class ConfigPanel(QFrame):
         self._sync_live_fields()
 
     def _build_fields(self) -> None:
+        """构建四张卡片（交易品种 / Binance / Exness / 手续费与网络）及其字段。"""
         compact = not self._embedded
 
         self.trade_card = SectionCard("交易品种", badge="必选", accent="#eab308", compact=compact)
@@ -308,6 +314,7 @@ class ConfigPanel(QFrame):
         root.addWidget(scroll, 1)
 
     def _on_preset_changed(self) -> None:
+        """切换品种预设：自定义时允许手填代码，否则自动填入预设代码并禁用编辑。"""
         preset_id = self.symbol_preset.currentData()
         custom = preset_id == "custom"
         self.symbol_ba.setEnabled(custom)
@@ -319,6 +326,7 @@ class ConfigPanel(QFrame):
             self.symbol_mt5.setText(preset.symbol_mt5)
 
     def _browse_mt5_terminal(self) -> None:
+        """弹出文件选择，定位 MT5 的 terminal64.exe。"""
         start_dir = self.mt5_terminal_path.text().strip()
         if not start_dir:
             detected = find_mt5_terminal()
@@ -333,6 +341,7 @@ class ConfigPanel(QFrame):
             self.mt5_terminal_path.setText(path)
 
     def _sync_live_fields(self) -> None:
+        """根据连接模式与代理开关，置灰/点亮相应卡片与输入框。"""
         mode = self.connection_mode.currentData()
         is_demo = mode == ConnectionMode.DEMO.value
         need_ba = mode in (ConnectionMode.LIVE_BOTH.value, ConnectionMode.LIVE_BA.value)
@@ -370,6 +379,7 @@ class ConfigPanel(QFrame):
         self._sync_live_fields()
 
     def load_config(self, config: AppConfig) -> None:
+        """把配置回填到各控件。"""
         idx = self.symbol_preset.findData(config.symbol_preset)
         if idx >= 0:
             self.symbol_preset.setCurrentIndex(idx)
@@ -403,6 +413,7 @@ class ConfigPanel(QFrame):
         self._sync_live_fields()
 
     def to_config(self) -> AppConfig:
+        """从各控件收集生成一个新的 AppConfig（仅含本面板涉及的字段）。"""
         return AppConfig(
             ba_api_key=self.ba_api_key.text().strip(),
             ba_api_secret=self.ba_api_secret.text().strip(),

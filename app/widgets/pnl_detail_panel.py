@@ -1,3 +1,5 @@
+"""实时盈亏明细面板：两端持仓的盈亏/手数/方向/爆仓信息表格 + 对冲健康横幅与"补对冲"按钮。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -30,6 +32,7 @@ from app.core.theme import set_flag
 from app.core.trading_service import detect_hedge_mode, hedge_strategy_label_for_platform
 
 
+# 实时盈亏表格各列像素宽（含爆仓/强平/杠杆列）
 _COL_WIDTHS = {
     "pnl": 68,
     "qty": 52,
@@ -39,6 +42,7 @@ _COL_WIDTHS = {
     "lev": 36,
 }
 
+# 弹窗中精简版表格的列宽（不含爆仓/强平列）
 _DIALOG_COL_WIDTHS = {
     "pnl": 72,
     "qty": 56,
@@ -48,7 +52,9 @@ _DIALOG_COL_WIDTHS = {
 
 
 class PnlDetailPanel(QFrame):
-    hedge_repair_requested = Signal(object)
+    """两端持仓盈亏明细表；可展示单品种或全部合并（preset_id="all"）。"""
+
+    hedge_repair_requested = Signal(object)  # 用户点击"补对冲"时携带 HedgeRepair
 
     def __init__(
         self,
@@ -151,6 +157,7 @@ class PnlDetailPanel(QFrame):
         root.addLayout(grid)
 
     def _paint_pnl(self, lbl: QLabel, value: float) -> None:
+        """渲染盈亏单元格（带正负色），仅在文本变化时更新以减少重绘。"""
         sign = "+" if value >= 0 else "-"
         text = f"${sign}{abs(value):.2f}" if value != 0 else "$0.00"
         key = f"pnl:{id(lbl)}"
@@ -177,6 +184,7 @@ class PnlDetailPanel(QFrame):
         detail: PlatformDetail,
         hedge_mode: str | None,
     ) -> None:
+        """用某平台明细填充一行；无持仓则除盈亏外显示"--"。"""
         if not detail.has_position:
             self._paint_pnl(cells["pnl"], 0.0)
             for key in self._fields:
@@ -207,6 +215,7 @@ class PnlDetailPanel(QFrame):
         self._emit_repair_requested()
 
     def set_hedge_repair(self, repair: HedgeRepair | None) -> None:
+        """设置/清除待修复对冲方案，并联动"补对冲"按钮的可见性与提示。"""
         self._pending_repair = repair
         visible = repair is not None
         if visible != self._last_repair_visible:
@@ -219,6 +228,7 @@ class PnlDetailPanel(QFrame):
             self.hedge_repair_btn.setToolTip("")
 
     def update_hedge_health(self, health, repair: HedgeRepair | None = None) -> None:
+        """更新对冲健康横幅（文案、告警级别配色）并同步修复按钮。"""
         banner = format_hedge_banner(health)
         if banner != self._last_hedge_banner:
             self.hedge_alert.setText(banner)
@@ -240,6 +250,7 @@ class PnlDetailPanel(QFrame):
         mt5_quotes: dict[str, Quote],
         config: AppConfig,
     ) -> None:
+        """根据最新持仓/报价刷新整张面板：两端明细、对冲健康、净盈亏合计。"""
         ba, mt5 = (
             build_platform_details(positions, ba_quotes, mt5_quotes, config)
             if self._preset_id == "all"

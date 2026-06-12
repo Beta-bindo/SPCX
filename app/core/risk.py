@@ -1,4 +1,8 @@
-"""Liquidation distance estimates for alerts."""
+"""风险快照汇总：计算各品种两端"距爆仓的资金缓冲"，供告警使用。
+
+distance 单位为计价货币（USDT/USD），值越小越接近爆仓；无持仓返回 inf，
+对外统一压成 99999（表示无风险）。
+"""
 
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from app.core.symbols import WATCHED_PRESETS, find_preset
 
 
 def _platform_spread(quote: Quote) -> float:
+    """平台内买卖价差（卖一 − 买一）。"""
     if quote.bid > 0 and quote.ask > 0:
         return quote.ask - quote.bid
     return 0.0
@@ -20,6 +25,7 @@ def _ba_liq_distance(
     leverage: int,
     preset_id: str,
 ) -> float:
+    """BA 端该品种持仓距爆仓的缓冲；无持仓返回 inf。"""
     preset = find_preset(preset_id)
     pos = next(
         (p for p in positions if p.platform == "BA" and p.symbol == preset.symbol_ba),
@@ -36,6 +42,7 @@ def _mt5_liq_distance(
     preset_id: str,
     leverage: int = 100,
 ) -> float:
+    """MT5 端该品种持仓距爆仓的缓冲；优先用持仓自带杠杆。"""
     preset = find_preset(preset_id)
     pos = next(
         (p for p in positions if p.platform == "MT5" and p.symbol == preset.symbol_mt5),
@@ -48,6 +55,7 @@ def _mt5_liq_distance(
 
 
 def _finite_or_max(value: float) -> float:
+    """把 inf 压成 99999（UI 友好的"无风险"占位值）。"""
     return value if value != float("inf") else 99999.0
 
 
@@ -57,6 +65,7 @@ def build_risk_snapshot(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> RiskSnapshot:
+    """遍历所有受关注品种，取每端最小缓冲（最危险持仓）组装风险快照。"""
     ba_spreads = []
     mt5_spreads = []
     xau_ba = xau_mt5 = xag_ba = xag_mt5 = float("inf")

@@ -1,4 +1,8 @@
-"""Sound alerts: spread range and per-symbol liquidation thresholds."""
+"""声音告警：点差越界与各品种爆仓缓冲阈值。
+
+AlertService 周期性评估行情与风险快照，触发文字提示（信号）并驱动持续蜂鸣，
+直到条件解除或用户关闭告警。爆仓告警优先级高于点差告警。
+"""
 
 from __future__ import annotations
 
@@ -12,32 +16,36 @@ from app.core.models import AppConfig, RiskSnapshot, SpreadSnapshot
 
 
 class AlertSoundKind(str, Enum):
+    """告警声音类型：点差 / 爆仓。"""
+
     SPREAD = "spread"
     LIQ = "liq"
 
 
 def _spread_at_warning_edge(spread: float, lo: float, hi: float) -> bool:
-    """Alert when spread reaches either configured warning edge."""
+    """点差触及任一预警边界（≤下界 或 ≥上界）即告警。"""
     return spread <= lo or spread >= hi
 
 
 def _liq_distance_alert(distance: float, threshold: float) -> bool:
-    """Alert when buffer is at or below threshold; skip when no meaningful position."""
+    """爆仓缓冲低于阈值即告警；distance>90000 视为无有效持仓，不告警。"""
     if distance > 90000:
         return False
     return distance <= threshold
 
 
 class AlertService(QObject):
+    """告警服务：评估条件、按冷却节流发文字提示、维持周期蜂鸣。"""
+
     alert_triggered = Signal(str)
 
-    SPREAD_INTERVAL_MS = 300
-    LIQ_INTERVAL_MS = 110
-    COOLDOWN_SEC = 12.0
+    SPREAD_INTERVAL_MS = 300   # 点差告警蜂鸣间隔
+    LIQ_INTERVAL_MS = 110      # 爆仓告警蜂鸣间隔（更急促）
+    COOLDOWN_SEC = 12.0        # 同一条文字提示的最短重发间隔
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._last_fire: dict[str, float] = {}
+        self._last_fire: dict[str, float] = {}  # 各告警键上次发文字提示的时间
         self._ringing = False
         self._active_kind: AlertSoundKind | None = None
         self._tones = AlertTonePlayer()
@@ -50,6 +58,7 @@ class AlertService(QObject):
         spreads: dict[str, SpreadSnapshot],
         risk: RiskSnapshot,
     ) -> None:
+        """评估当前点差/风险，触发或停止告警。总开关关闭时直接停。"""
         if not config.any_alert_sound_enabled():
             self.stop()
             return
@@ -58,6 +67,7 @@ class AlertService(QObject):
         liq_active = False
         pending_messages: list[tuple[str, str, AlertSoundKind]] = []
 
+        # 逐品种检查点差是否越界
         for preset_id, label in (("xau", "黄金"), ("xag", "白银")):
             if not config.spread_alerts_on(preset_id):
                 continue
@@ -77,6 +87,7 @@ class AlertService(QObject):
                     )
                 )
 
+        # 逐品种、逐平台检查爆仓缓冲是否低于阈值
         liq_map = [
             ("xau", "xau_ba_liq", risk.xau_ba_liq, config.xau_ba_liq_alert, "黄金 BA 爆仓缓冲"),
             ("xau", "xau_mt5_liq", risk.xau_mt5_liq, config.xau_mt5_liq_alert, "黄金 Exness 爆仓缓冲"),
@@ -101,6 +112,7 @@ class AlertService(QObject):
             self.stop()
             return
 
+        # 文字提示按冷却节流，避免刷屏；蜂鸣则持续到条件解除
         for key, message, kind in pending_messages:
             if self._should_fire(key):
                 self.alert_triggered.emit(message)
@@ -109,6 +121,7 @@ class AlertService(QObject):
         self._ensure_beep(active_kind)
 
     def _should_fire(self, key: str) -> bool:
+        """该告警键距上次发文字提示是否已超过冷却时间。"""
         now = time.time()
         last = self._last_fire.get(key, 0.0)
         if now - last < self.COOLDOWN_SEC:
@@ -117,7 +130,7 @@ class AlertService(QObject):
         return True
 
     def _ensure_beep(self, kind: AlertSoundKind) -> None:
-        """Keep ringing until stop() — condition cleared or user disables alert."""
+        """启动/维持周期蜂鸣，直到 stop()。爆仓告警可抢占点差告警的节奏。"""
         kind_changed = self._active_kind != kind
         if kind == AlertSoundKind.LIQ or self._active_kind != AlertSoundKind.LIQ:
             self._active_kind = kind
@@ -144,12 +157,14 @@ class AlertService(QObject):
             self._tones.play_spread()
 
     def _tick_beep(self) -> None:
+        """定时器回调：仍在响铃则播放一次，否则停表。"""
         if not self._ringing:
             self._beep_timer.stop()
             return
         self._play_active_tone()
 
     def stop(self) -> None:
+        """停止一切告警声音并复位状态。"""
         self._ringing = False
         self._beep_timer.stop()
         self._active_kind = None

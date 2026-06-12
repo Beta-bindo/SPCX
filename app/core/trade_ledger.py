@@ -1,4 +1,4 @@
-"""Local trade settlement records for profit calculator."""
+"""本地成交/结算流水：持久化到 JSON，供收益统计与导出使用。"""
 
 
 from __future__ import annotations
@@ -9,11 +9,11 @@ from datetime import date, datetime
 
 from app.core.paths import ledger_path
 
-_ledger_lock = threading.Lock()
+_ledger_lock = threading.Lock()  # 串行化"读-改-写"流水文件，避免并发覆盖
 
 
 def hedge_sides(mode: str) -> tuple[str, str]:
-    """Return (ba_side, mt5_side) for contraction/expansion."""
+    """对冲模式 → (BA 方向, MT5 方向)。收缩=BA 空/Ex 多；扩张=BA 多/Ex 空。"""
     if mode == "expansion":
         return "BUY", "SELL"
     return "SELL", "BUY"
@@ -21,10 +21,12 @@ def hedge_sides(mode: str) -> tuple[str, str]:
 
 @dataclass
 class TradeRecord:
-    settled_at: str
+    """一条成交/结算记录。"""
+
+    settled_at: str   # ISO 时间戳
     preset_id: str
     mode: str
-    action: str = "close"
+    action: str = "close"  # open / close
     spread: float = 0.0
     ba_price: float = 0.0
     ex_price: float = 0.0
@@ -39,18 +41,22 @@ class TradeRecord:
 
     @property
     def gross_pnl(self) -> float:
+        """毛利 = 两端盈亏之和。"""
         return round(self.ba_pnl + self.mt5_pnl, 2)
 
     @property
     def total_fees(self) -> float:
+        """手续费合计。"""
         return round(self.ba_fee + self.mt5_fee, 4)
 
     @property
     def net_pnl(self) -> float:
+        """净利 = 毛利 − 手续费。"""
         return round(self.gross_pnl - self.total_fees, 2)
 
     @property
     def direction(self) -> str:
+        """方向文本；缺字段时按对冲模式推断。"""
         if self.ba_side and self.mt5_side:
             return f"BA {self.ba_side} / Ex {self.mt5_side}"
         ba_side, mt5_side = hedge_sides(self.mode)
@@ -59,9 +65,12 @@ class TradeRecord:
 
 @dataclass
 class TradeLedger:
+    """成交记录集合，提供追加与按日期/品种筛选。"""
+
     records: list[TradeRecord] = field(default_factory=list)
 
     def add(self, record: TradeRecord) -> None:
+        """追加一条并立即落盘。"""
         self.records.append(record)
         save_ledger(self)
 
@@ -71,6 +80,7 @@ class TradeLedger:
         end: date | None = None,
         preset_id: str | None = None,
     ) -> list[TradeRecord]:
+        """按 [start, end] 日期区间与可选品种筛选记录。"""
         end = end or date.today()
         out: list[TradeRecord] = []
         for rec in self.records:
@@ -87,6 +97,7 @@ class TradeLedger:
 
 
 def load_ledger() -> TradeLedger:
+    """从磁盘读取流水；文件缺失或损坏时返回空账本。"""
     path = ledger_path()
     if not path.exists():
         return TradeLedger()
@@ -99,6 +110,7 @@ def load_ledger() -> TradeLedger:
 
 
 def save_ledger(ledger: TradeLedger) -> None:
+    """将整本流水写回磁盘。"""
     path = ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"records": [asdict(r) for r in ledger.records]}
@@ -122,6 +134,7 @@ def record_trade(
     ba_fee: float = 0.0,
     mt5_fee: float = 0.0,
 ) -> TradeRecord:
+    """构造一条成交记录、加锁追加落盘并返回（统一四舍五入）。"""
     if not ba_side or not mt5_side:
         ba_side, mt5_side = hedge_sides(mode)
     rec = TradeRecord(
@@ -164,6 +177,7 @@ def record_close_settlement(
     ba_side: str = "",
     mt5_side: str = "",
 ) -> TradeRecord:
+    """记录一次平仓结算（record_trade 的 action="close" 便捷封装）。"""
     return record_trade(
         preset_id,
         mode,
@@ -183,6 +197,7 @@ def record_close_settlement(
 
 
 def trade_record_to_payload(record: TradeRecord) -> dict:
+    """把记录展开为含派生字段（direction/net_pnl）的字典，便于上报/导出。"""
     return {
         "settled_at": record.settled_at,
         "preset_id": record.preset_id,

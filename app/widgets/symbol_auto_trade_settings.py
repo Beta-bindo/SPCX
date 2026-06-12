@@ -1,3 +1,8 @@
+"""单品种自动交易设置：按收缩/扩张配置自动开/平仓的点差阈值与触发条件。
+
+黄金支持 Maker 与市价两条"通道"（lane），白银仅市价。每条通道含开仓/平仓各两个方向。
+"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -15,6 +20,7 @@ from app.widgets.symbol_alert_settings import _settings_int_spin, _settings_spin
 
 
 def _hold_spin(value: float):
+    """构造"持续秒数"用的整数输入框（1~120）。"""
     return _settings_int_spin(max(1, int(round(value))), minimum=1, maximum=120)
 
 
@@ -55,6 +61,7 @@ class SymbolAutoTradeSettings(QFrame):
         root.addWidget(self.status_label)
 
     def _build_trade_block(self, open_title: str, close_title: str, lane: str) -> QHBoxLayout:
+        """构建一条通道的开仓列 + 平仓列（各含收缩/扩张两行），并按通道保存控件引用。"""
         blocks_row = QHBoxLayout()
         blocks_row.setContentsMargins(0, 0, 0, 0)
         blocks_row.setSpacing(12)
@@ -135,6 +142,7 @@ class SymbolAutoTradeSettings(QFrame):
         return lbl
 
     def _build_hold_row(self) -> QHBoxLayout:
+        """构建"条件连续满足 N 秒后执行"的全局触发行。"""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
@@ -146,6 +154,7 @@ class SymbolAutoTradeSettings(QFrame):
         return row
 
     def _build_maker_wait_row(self) -> QHBoxLayout:
+        """构建"Maker 委托等待 N 秒未成交撤单"行（仅黄金 Maker 通道）。"""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
@@ -176,6 +185,10 @@ class SymbolAutoTradeSettings(QFrame):
         return row, enabled, threshold
 
     def _lane_widgets(self, lane: str) -> tuple:
+        """返回某通道的 8 个控件，顺序固定：
+        (开收缩启用, 开扩张启用, 开收缩阈值, 开扩张阈值,
+         平收缩启用, 平扩张启用, 平收缩阈值, 平扩张阈值)。白银无 maker 通道返回空元组。
+        """
         if lane == "maker":
             if self.preset_id != "xau":
                 return ()
@@ -225,10 +238,12 @@ class SymbolAutoTradeSettings(QFrame):
                 yield widget
 
     def lock_all_spins(self) -> None:
+        """收起所有数字框的编辑态。"""
         for spin in self.iter_spin_widgets():
             spin.lock()
 
     def load_config(self, config: AppConfig) -> None:
+        """按品种把自动交易配置回填到各控件。"""
         if self.preset_id == "xau":
             self.contraction_enabled.setChecked(config.xau_auto_contraction_enabled)
             self.expansion_enabled.setChecked(config.xau_auto_expansion_enabled)
@@ -270,6 +285,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.hold_sec.setValue(max(1, int(round(config.xag_auto_trade_hold_sec))))
 
     def apply_to(self, config: AppConfig) -> None:
+        """把控件值写回配置。"""
         if self.preset_id == "xau":
             config.xau_auto_contraction_enabled = self.contraction_enabled.isChecked()
             config.xau_auto_expansion_enabled = self.expansion_enabled.isChecked()
@@ -309,6 +325,7 @@ class SymbolAutoTradeSettings(QFrame):
             config.xag_auto_trade_hold_sec = float(self.hold_sec.value())
 
     def any_enabled(self) -> bool:
+        """是否存在任一已启用的自动开/平仓条件。"""
         enabled = (
             self.contraction_enabled.isChecked()
             or self.expansion_enabled.isChecked()
@@ -325,6 +342,7 @@ class SymbolAutoTradeSettings(QFrame):
         return enabled
 
     def snapshot_lock_state(self) -> tuple[bool, ...]:
+        """采集各勾选框的勾选/可用状态指纹，用于检测持仓联动后是否需刷新。"""
         flags: list[bool] = []
         for lane in ("maker", "market"):
             widgets = self._lane_widgets(lane)
@@ -339,6 +357,7 @@ class SymbolAutoTradeSettings(QFrame):
         return tuple(flags)
 
     def set_status(self, text: str) -> None:
+        """更新底部状态提示行（空文本则隐藏）。"""
         self.status_label.setText(text)
         self.status_label.setVisible(bool(text))
 

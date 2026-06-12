@@ -1,3 +1,5 @@
+"""单品种数量配比设置：BA 数量 ↔ Exness 手数 的映射，以及每次开仓手数。"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -15,7 +17,7 @@ from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox
 
 
 class SymbolRatioFields(QFrame):
-    """单品种数量配比：BA / Exness / 开仓手数。"""
+    """单品种数量配比：BA / Exness / 开仓手数，并实时预览换算结果。"""
 
     def __init__(
         self,
@@ -108,10 +110,12 @@ class SymbolRatioFields(QFrame):
         self.setMouseTracking(True)
 
     def lock_all_spins(self) -> None:
+        """把所有数字框恢复为只读态（点击外部/移出时收起编辑）。"""
         for spin in (self.ba_map, self.mt5_map, self.trade_lots):
             spin.lock()
 
     def mousePressEvent(self, event) -> None:
+        # 点击非数字框区域时收起所有编辑态
         target = self.childAt(event.pos())
         while target is not None and target is not self:
             if isinstance(target, ClickToEditDoubleSpinBox):
@@ -126,6 +130,7 @@ class SymbolRatioFields(QFrame):
         super().leaveEvent(event)
 
     def _update_preview(self) -> None:
+        """根据当前配比实时预览本次下单的 BA 数量与 Exness 手数。"""
         cfg = AppConfig()
         self.apply_to(cfg)
         ba_q = cfg.ba_quantity_for(self.preset_id)
@@ -133,6 +138,7 @@ class SymbolRatioFields(QFrame):
         self.preview.setText(f"本次：BA 数量 {ba_q:.4g} · Exness 手数 {mt5_l:.2f}")
 
     def apply_to(self, config: AppConfig) -> None:
+        """把配比写回配置，并刷新派生的 BA 数量/手数字段。"""
         if self.preset_id == "xau":
             config.xau_ba_qty_map = self.ba_map.value()
             config.xau_mt5_lot_map = self.mt5_map.value()
@@ -155,6 +161,7 @@ def _ratio_spin(
     maximum: float = 999999,
     step: float = 0.1,
 ) -> ClickToEditDoubleSpinBox:
+    """构造一个紧凑、只读态、点击进入编辑的小数输入框。"""
     spin = ClickToEditDoubleSpinBox()
     spin.setRange(minimum, maximum)
     spin.setDecimals(decimals)

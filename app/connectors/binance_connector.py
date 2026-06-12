@@ -1,3 +1,13 @@
+"""币安（U 本位合约）连接器。
+
+封装与 Binance Futures 的全部交互：行情轮询、盘口深度、持仓查询（带缓存）、
+杠杆设置，以及对冲单腿的开/平仓（支持市价 / 限价 / Maker-only，含限价等待成交与撤单）。
+未配置实盘或缺少 SDK 时退化为内置模拟行情，保证 UI 可离线演示。
+
+线程模型：行情/持仓轮询在后台线程 `_poll_loop` 进行，结果通过 Qt 信号回主线程；
+持仓查询用 TTL 缓存 + 单飞锁（_positions_fetch_lock）避免重复请求。
+"""
+
 from __future__ import annotations
 
 import math
@@ -46,6 +56,7 @@ except ImportError:
 
 
 def _format_ba_connection_error(exc: Exception, config: AppConfig) -> str:
+    """把底层连接异常翻译成面向用户、含排障建议的中文提示（多与代理相关）。"""
     msg = str(exc)
     exc_name = type(exc).__name__
     if "Proxy" in exc_name or "proxy" in msg.lower():
@@ -77,10 +88,12 @@ def _format_ba_connection_error(exc: Exception, config: AppConfig) -> str:
 
 
 class BinanceConnector(QObject):
-    quote_received = Signal(object)
-    state_changed = Signal(str)
-    latency_updated = Signal(float)
-    log = Signal(str)
+    """币安合约连接器，对外暴露报价/持仓/下单能力，并通过信号通知 UI。"""
+
+    quote_received = Signal(object)   # 收到新报价（Quote）
+    state_changed = Signal(str)       # 连接状态变化
+    latency_updated = Signal(float)   # 接口往返延迟（ms）
+    log = Signal(str)                 # 日志行
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -94,14 +107,14 @@ class BinanceConnector(QObject):
         self._poll_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._api = ApiClient()
-        self._demo_positions: dict[str, Position] = {}
+        self._demo_positions: dict[str, Position] = {}      # 模拟模式下的虚拟持仓
         self._effective_proxy_host: str | None = None
         self._effective_proxy_port: int | None = None
-        self._leverage_applied: dict[str, int] = {}
-        self._positions_cache: list[Position] = []
+        self._leverage_applied: dict[str, int] = {}         # 已设置过杠杆的交易对
+        self._positions_cache: list[Position] = []          # 持仓缓存（含 TTL）
         self._positions_cache_at: float = 0.0
-        self._symbol_leverage: dict[str, int] = {}
-        self._positions_fetch_lock = threading.Lock()
+        self._symbol_leverage: dict[str, int] = {}          # 各交易对实际杠杆
+        self._positions_fetch_lock = threading.Lock()       # 持仓拉取单飞锁
         self._positions_inflight: threading.Event | None = None
         self._quote_poll_count = 0
 
@@ -137,6 +150,7 @@ class BinanceConnector(QObject):
         self.latency_updated.emit(ms)
 
     def update_config(self, config: AppConfig) -> None:
+        """热更新配置；杠杆相关项变化时清空"已设置杠杆"标记以便重设。"""
         if (
             config.ba_leverage != self.config.ba_leverage
             or config.sync_leverage_on_trade != self.config.sync_leverage_on_trade
@@ -154,6 +168,7 @@ class BinanceConnector(QObject):
         return max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))
 
     def start(self) -> None:
+        """启动连接：实盘且有密钥时拉起后台轮询线程，否则退化为模拟行情。"""
         if self._poll_thread is not None and self._poll_thread.is_alive():
             return
         self._stop_event.clear()
@@ -169,6 +184,7 @@ class BinanceConnector(QObject):
         self._poll_thread.start()
 
     def stop(self) -> None:
+        """停止轮询/模拟、等待线程退出并清空缓存。"""
         self._stop_event.set()
         if self._demo_timer:
             self._demo_timer.stop()
@@ -191,6 +207,10 @@ class BinanceConnector(QObject):
         return getattr(self._client, "session", None)
 
     def _run_ba_api(self, fn, *, log_failures: bool = True, priority: bool = False):
+        """统一执行币安 API 调用：经 ApiClient 串行化 + 网络重试，并友好化常见错误。
+
+        priority=True 用于下单等关键请求插队；遇到限频(-1003/418)立即停止重试并提示。
+        """
         session = self._session()
 
         def _call():
@@ -225,6 +245,7 @@ class BinanceConnector(QObject):
         return max(0.5, min(1.0, self.config.ba_refresh_interval_sec))
 
     def _try_cancel_order(self, symbol: str, order_id: str) -> None:
+        """尽力撤销委托（失败仅记调试日志，不抛出）。"""
         if not self._client or not order_id:
             return
 
@@ -244,6 +265,7 @@ class BinanceConnector(QObject):
         *,
         min_executed: float,
     ) -> bool:
+        """轮询限价/Maker 委托直到成交或超时；达到最小成交量即视为成功。"""
         timeout = self._maker_timeout_sec()
         poll_sec = self._maker_poll_sec()
         deadline = time.monotonic() + timeout
@@ -272,6 +294,7 @@ class BinanceConnector(QObject):
         return 0.25
 
     def _refresh_positions_from_api(self) -> list[Position]:
+        """单飞拉取持仓：并发调用时只让一个线程真正请求，其余等待复用结果。"""
         leader = False
         waiter: threading.Event | None = None
         with self._positions_fetch_lock:
@@ -301,6 +324,7 @@ class BinanceConnector(QObject):
     def _parse_live_positions(
         self, raw_rows: list[dict], *, cross_account_buffer: float | None = None
     ) -> list[Position]:
+        """把交易所原始持仓行解析为 Position，并按逐仓/全仓计算爆仓缓冲、记录杠杆。"""
         watched = set(watched_ba_symbols())
         positions: list[Position] = []
         leverage_map: dict[str, int] = {}
@@ -347,6 +371,7 @@ class BinanceConnector(QObject):
         return positions
 
     def _fetch_live_positions(self) -> list[Position]:
+        """实际调用接口拉取持仓；全仓持仓额外查账户以得到全仓爆仓缓冲。"""
         watched = set(watched_ba_symbols())
 
         def _fetch() -> list[Position]:
@@ -379,6 +404,7 @@ class BinanceConnector(QObject):
     def _position_from_cache(
         self, symbol: str, side: Side | None = None, min_qty: float = 0.0
     ) -> Position | None:
+        """从缓存中查找匹配交易对（可选方向/最小数量）的持仓。"""
         for pos in self._positions_cache:
             if pos.symbol != symbol:
                 continue
@@ -398,6 +424,7 @@ class BinanceConnector(QObject):
         timeout: float = 5.0,
         poll_sec: float = 0.25,
     ) -> bool:
+        """轮询等待出现 ≥min_qty 的指定方向持仓（确认开仓已落地）。"""
         deadline = time.monotonic() + timeout
         poll_sec = max(poll_sec, self._maker_poll_sec())
         while time.monotonic() < deadline:
@@ -411,6 +438,7 @@ class BinanceConnector(QObject):
         return False
 
     def _wait_until_flat(self, symbol: str, *, timeout: float = 5.0) -> bool:
+        """轮询等待该交易对持仓清零（确认平仓完成）。"""
         deadline = time.monotonic() + timeout
         poll_sec = self._maker_poll_sec()
         while time.monotonic() < deadline:
@@ -431,6 +459,7 @@ class BinanceConnector(QObject):
         *,
         timeout: float = 5.0,
     ) -> bool:
+        """轮询等待持仓数量降到 ≤max_qty（确认部分平仓到位）。"""
         deadline = time.monotonic() + timeout
         poll_sec = self._maker_poll_sec()
         while time.monotonic() < deadline:
@@ -482,10 +511,11 @@ class BinanceConnector(QObject):
             return []
 
     def replace_demo_positions(self, positions: list[Position]) -> None:
+        """覆盖模拟模式下的虚拟持仓（由模拟成交逻辑维护）。"""
         self._demo_positions = {p.symbol: p for p in positions}
 
     def seed_positions_cache(self, positions: list[Position]) -> None:
-        """Trade preflight: reuse UI snapshot to skip a live fetch before open/close."""
+        """下单前置：用 UI 已有快照预热缓存，省去开/平仓前的一次实时拉取。"""
         if not self.config.use_live_ba:
             return
         with self._positions_fetch_lock:
@@ -498,6 +528,12 @@ class BinanceConnector(QObject):
     def open_hedge_leg(
         self, preset_id: str, mode: str = "contraction", order_mode: str = GoldOrderMode.LIMIT.value
     ) -> LegResult:
+        """在 BA 端开/加一腿对冲仓。
+
+        收缩 → 卖出（SELL），扩张 → 买入（BUY）。模拟模式直接更新虚拟持仓；
+        实盘按市价/限价/Maker 下单，限价单等待成交、超时撤单，并通过复查持仓确认成交，
+        状态不明时返回 needs_reconciliation 交由上层回滚。
+        """
         from app.core.models import HedgeMode
 
         symbol_ba, _, _ = resolve_symbols(
@@ -696,6 +732,11 @@ class BinanceConnector(QObject):
         *,
         close_all: bool = False,
     ) -> LegResult:
+        """平 BA 端对冲仓（reduceOnly）。close_all=True 全平，否则按单次交易量部分平。
+
+        与开仓对称：限价单等待成交并复查减仓量，未确认则返回 needs_reconciliation。
+        回滚场景由上层以 close_all=True 调用。
+        """
         symbol_ba, _, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
@@ -839,6 +880,7 @@ class BinanceConnector(QObject):
             return LegResult(platform="BA", success=False, message=msg)
 
     def _apply_leverage(self, symbol: str) -> None:
+        """按配置为交易对设置杠杆（仅"下单时同步"开启时），已设过则跳过。"""
         if not self.config.sync_leverage_on_trade or not self._client:
             return
         leverage = int(self.config.ba_leverage)
@@ -852,6 +894,7 @@ class BinanceConnector(QObject):
             self._log(LogLevel.DEBUG, f"BA 设置杠杆失败: {exc}")
 
     def refresh_platform_leverage(self, symbol: str) -> int | None:
+        """读取交易对在平台上的实际杠杆（优先缓存，否则强制拉一次持仓）。"""
         cached = self._symbol_leverage.get(symbol)
         if cached:
             self._leverage_applied[symbol] = cached
@@ -868,6 +911,7 @@ class BinanceConnector(QObject):
         return lev
 
     def _start_demo(self) -> None:
+        """启动模拟行情：用定时器周期性生成黄金/白银的虚拟报价与盘口。"""
         self._set_state(ConnectionState.SIMULATED)
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
@@ -896,6 +940,7 @@ class BinanceConnector(QObject):
         return max(3, int(round(3.0 / max(0.3, self.config.ba_refresh_interval_sec))))
 
     def _update_top_of_book(self, symbol: str, bid: float, ask: float) -> None:
+        """用最新买卖一价更新盘口首档（深度未刷新时也能保持顶档准确）。"""
         book = self._order_books.get(symbol)
         if book and book.bids and book.asks:
             book.bids[0] = OrderBookLevel(bid, book.bids[0].quantity)
@@ -929,6 +974,7 @@ class BinanceConnector(QObject):
         return out
 
     def _fetch_one_depth(self, symbol: str) -> None:
+        """拉取单个交易对的 10 档盘口并同步顶档报价。"""
         book = self._client.futures_order_book(symbol=symbol, limit=10)
         self._order_books[symbol] = OrderBook(
             bids=[OrderBookLevel(float(p), float(q)) for p, q in book["bids"][:10]],
@@ -946,12 +992,14 @@ class BinanceConnector(QObject):
         )
 
     def _fetch_watched_depths(self, watched: set[str]) -> None:
+        """逐个刷新受监控交易对的盘口；有下单等优先请求待处理则让路。"""
         for symbol in watched:
             if self._api.priority_pending():
                 break
             self._fetch_one_depth(symbol)
 
     def _build_demo_book(self, mid: float, is_gold: bool) -> OrderBook:
+        """围绕中价生成 10 档模拟盘口（黄金/白银档距不同）。"""
         step = 0.05 if is_gold else 0.002
         bids, asks = [], []
         for i in range(10):
@@ -961,6 +1009,7 @@ class BinanceConnector(QObject):
         return OrderBook(bids=bids, asks=asks, is_simulated=True)
 
     def _create_client(self) -> object:
+        """创建并配置币安 SDK 客户端（CA 证书、可选 HTTP 代理及兜底）。"""
         client = Client(
             self.config.ba_api_key,
             self.config.ba_api_secret,
@@ -996,6 +1045,7 @@ class BinanceConnector(QObject):
         return client
 
     def _poll_loop(self) -> None:
+        """后台主循环：建连→ping→读取元数据/杠杆→循环拉取报价与盘口直到停止。"""
         try:
             self._client = self._create_client()
             self._run_ba_api(self._client.futures_ping, log_failures=False)
@@ -1076,5 +1126,6 @@ class BinanceConnector(QObject):
             self._set_state(ConnectionState.ERROR)
 
     def _set_state(self, state: ConnectionState) -> None:
+        """更新连接状态并通知 UI。"""
         self._state = state
         self.state_changed.emit(state.value)

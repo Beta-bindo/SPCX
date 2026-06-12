@@ -1,4 +1,4 @@
-"""Application log levels and trade log formatting."""
+"""日志级别定义与交易日志文案格式化。"""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from enum import IntEnum
 
 from app.core.models import HedgeMode
 
-LOG_LEVEL_QUIET = "quiet"
-LOG_LEVEL_NORMAL = "normal"
-LOG_LEVEL_VERBOSE = "verbose"
+LOG_LEVEL_QUIET = "quiet"      # 精简：仅交易与错误
+LOG_LEVEL_NORMAL = "normal"    # 标准
+LOG_LEVEL_VERBOSE = "verbose"  # 详细（含 DEBUG）
 LOG_LEVEL_DEFAULT = LOG_LEVEL_NORMAL
 
 LOG_LEVEL_OPTIONS: list[tuple[str, str]] = [
@@ -19,6 +19,8 @@ LOG_LEVEL_OPTIONS: list[tuple[str, str]] = [
 
 
 class LogLevel(IntEnum):
+    """消息重要性（值越小越重要），用于与配置级别比较决定是否输出。"""
+
     ERROR = 10
     TRADE = 20
     INFO = 30
@@ -26,12 +28,14 @@ class LogLevel(IntEnum):
 
 
 def normalize_log_level(value: str | None) -> str:
+    """规整日志级别字符串，非法值回退默认。"""
     if value in {LOG_LEVEL_QUIET, LOG_LEVEL_NORMAL, LOG_LEVEL_VERBOSE}:
         return value
     return LOG_LEVEL_DEFAULT
 
 
 def should_log(config_level: str, msg_level: LogLevel) -> bool:
+    """根据配置级别判断该消息是否应输出；ERROR 始终输出。"""
     if msg_level == LogLevel.ERROR:
         return True
     ceiling = {
@@ -43,11 +47,12 @@ def should_log(config_level: str, msg_level: LogLevel) -> bool:
 
 
 def hedge_mode_word(mode: str) -> str:
+    """对冲模式 → 收缩 / 扩张。"""
     return "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
 
 
 def hedge_action_label(action: str, mode: str, *, adding: bool = False) -> str:
-    """action: open | close"""
+    """生成动作标签，如"开仓收缩""加仓扩张""平仓收缩"。action 为 open | close。"""
     mode_word = hedge_mode_word(mode)
     if action == "close":
         return f"平仓{mode_word}"
@@ -67,6 +72,7 @@ def trade_leg_success_msg(
     order_type: str = "",
     spread_index: float | None = None,
 ) -> str:
+    """拼装单腿成交成功的日志行（按提供的字段拼" · "分隔的明细）。"""
     parts = [
         f"【{platform}】{hedge_action_label(action, mode, adding=adding)}成功",
         f"订单 {order_id}",
@@ -85,5 +91,6 @@ def trade_leg_success_msg(
 
 
 def emit_if_visible(signal, config_level: str, level: LogLevel, message: str) -> None:
+    """仅当该消息级别在配置允许范围内时，通过信号发出。"""
     if should_log(config_level, level):
         signal.emit(message)
