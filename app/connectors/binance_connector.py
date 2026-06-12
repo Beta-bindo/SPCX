@@ -693,6 +693,10 @@ class BinanceConnector(QObject):
                     order_type=order_mode_text,
                 ),
             )
+            # 演示 Maker/限价同样需驱动 Exness 对冲：按成交量回调一次，
+            # 否则上层 mt5_legs 为空会被判为"BA 未成交"导致部分成功+回滚循环。
+            if on_fill_delta is not None and qty > 0:
+                on_fill_delta(float(qty))
             msg = "演示加仓成功" if adding else "演示开仓成功"
             return LegResult(
                 platform="BA",

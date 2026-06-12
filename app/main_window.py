@@ -1284,24 +1284,33 @@ class MainWindow(QMainWindow):
                 dlg.set_actions_enabled(True)
         pending = self._pending_auto_trade
         self._pending_auto_trade = None
-        if pending and result.success:
-            action, preset_id, mode, order_mode = pending
-            if action == "open":
-                self._disable_auto_open(preset_id, mode, order_mode)
+        is_auto = pending is not None
+        if pending and pending[0] == "open":
+            # 自动开仓无论成功/部分/失败都取消勾选：需人工重新勾选授权，
+            # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
+            _, preset_id_p, mode, order_mode = pending
+            self._disable_auto_open(preset_id_p, mode, order_mode)
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:
-            box = QMessageBox(QMessageBox.Icon.Warning, "部分成交", result.message, parent=self)
-            box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
-            box.exec()
             self.engine.refresh_positions()
             self.status_bar.showMessage(result.message, 10000)
+            if is_auto:
+                # 自动下单不弹模态窗口，仅日志+状态栏，防止阻塞 UI / 连环弹窗
+                self._append_log(LogLevel.ERROR, f"部分成交：{result.message}（自动下单已取消勾选）")
+            else:
+                box = QMessageBox(QMessageBox.Icon.Warning, "部分成交", result.message, parent=self)
+                box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+                box.exec()
         elif not result.success:
-            box = QMessageBox(QMessageBox.Icon.Critical, "交易失败", result.message, parent=self)
-            box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
-            box.exec()
             self.engine.refresh_positions()
             self.status_bar.showMessage(result.message, 10000)
+            if is_auto:
+                self._append_log(LogLevel.ERROR, f"交易失败：{result.message}（自动下单已取消勾选）")
+            else:
+                box = QMessageBox(QMessageBox.Icon.Critical, "交易失败", result.message, parent=self)
+                box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+                box.exec()
         else:
             self._pending_status_preset = preset_id
             self.engine.refresh_positions()
