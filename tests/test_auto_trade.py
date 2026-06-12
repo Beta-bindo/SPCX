@@ -1,4 +1,4 @@
-"""Auto trade strategy: contraction/expansion thresholds and hold seconds."""
+"""Auto trade strategy: contraction/expansion thresholds, instant trigger."""
 
 import os
 import sys
@@ -16,28 +16,25 @@ from app.core.config import load_config, save_config
 from app.core.models import AppConfig, ConnectionMode, HedgeMode, Position, Side, SpreadSnapshot
 
 
-def _cfg_contraction_only(threshold: float = 3.0, hold: float = 3.0) -> AppConfig:
+def _cfg_contraction_only(threshold: float = 3.0) -> AppConfig:
     return AppConfig(
         xau_auto_contraction_enabled=True,
         xau_auto_contraction_threshold=threshold,
-        xau_auto_trade_hold_sec=hold,
     )
 
 
-def test_contraction_fires_after_hold():
+def test_contraction_fires_immediately():
     state = AutoTradeState()
     cfg = _cfg_contraction_only()
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=3.5)}
 
-    assert not evaluate_auto_trades(cfg, spreads, [], 100.0, state)
-    assert not evaluate_auto_trades(cfg, spreads, [], 101.0, state)
-    orders = evaluate_auto_trades(cfg, spreads, [], 103.0, state)
+    orders = evaluate_auto_trades(cfg, spreads, [], 100.0, state)
     assert len(orders) == 1
     assert orders[0][0] == "xau"
     assert orders[0][1] == HedgeMode.CONTRACTION.value
     assert orders[0][2] == "maker"
     assert "收缩" in orders[0][3]
-    print("  ✓ 收缩：连续满足 N 秒后触发")
+    print("  ✓ 收缩：满足阈值即触发")
 
 
 def test_contraction_resets_when_spread_drops():
@@ -47,12 +44,10 @@ def test_contraction_resets_when_spread_drops():
     low = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=2.0)}
 
     evaluate_auto_trades(cfg, ok, [], 100.0, state)
-    evaluate_auto_trades(cfg, low, [], 101.0, state)
-    evaluate_auto_trades(cfg, ok, [], 102.0, state)
-    assert not evaluate_auto_trades(cfg, ok, [], 104.0, state)
-    orders = evaluate_auto_trades(cfg, ok, [], 105.0, state)
+    assert not evaluate_auto_trades(cfg, low, [], 101.0, state)
+    orders = evaluate_auto_trades(cfg, ok, [], 102.0, state)
     assert len(orders) == 1
-    print("  ✓ 收缩：条件中断后重新计时")
+    print("  ✓ 收缩：点差回落出迟滞带后再次满足仍立即触发")
 
 
 def test_expansion_fires_when_spread_below_threshold():
@@ -64,12 +59,11 @@ def test_expansion_fires_when_spread_below_threshold():
     )
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=-3.5)}
 
-    evaluate_auto_trades(cfg, spreads, [], 10.0, state)
-    orders = evaluate_auto_trades(cfg, spreads, [], 12.0, state)
+    orders = evaluate_auto_trades(cfg, spreads, [], 10.0, state)
     assert len(orders) == 1
     assert orders[0][1] == HedgeMode.EXPANSION.value
     assert "扩张" in orders[0][3]
-    print("  ✓ 扩张：点差 ≤ 阈值且连续满足后触发")
+    print("  ✓ 扩张：点差 ≤ 阈值即触发")
 
 
 def test_disabled_strategy_never_fires():
@@ -99,26 +93,24 @@ def test_fires_immediately_without_cooldown():
 
 def test_hysteresis_keeps_timer_near_threshold():
     state = AutoTradeState()
-    cfg = _cfg_contraction_only(threshold=3.0, hold=3.0)
+    cfg = _cfg_contraction_only(threshold=3.0)
     ok = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=3.1)}
     dip = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=2.98)}
     recover = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=3.05)}
 
     evaluate_auto_trades(cfg, ok, [], 0.0, state)
-    evaluate_auto_trades(cfg, dip, [], 1.0, state)
+    assert not evaluate_auto_trades(cfg, dip, [], 1.0, state)
     assert not evaluate_auto_trades(cfg, dip, [], 3.0, state)
-    evaluate_auto_trades(cfg, recover, [], 3.5, state)
-    orders = evaluate_auto_trades(cfg, recover, [], 6.5, state)
+    orders = evaluate_auto_trades(cfg, recover, [], 3.5, state)
     assert len(orders) == 1
     print("  ok hysteresis + threshold at fire")
 
 
-def test_auto_close_contraction_fires_after_hold():
+def test_auto_close_contraction_fires_immediately():
     state = AutoTradeState()
     cfg = AppConfig(
         xau_auto_close_contraction_enabled=True,
         xau_auto_close_contraction_threshold=0.5,
-        xau_auto_trade_hold_sec=2.0,
     )
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=0.3)}
     positions = [
@@ -126,12 +118,11 @@ def test_auto_close_contraction_fires_after_hold():
         Position(platform="MT5", symbol="XAUUSD", side=Side.BUY, quantity=1.0),
     ]
 
-    evaluate_auto_closes(cfg, spreads, positions, 10.0, state)
-    orders = evaluate_auto_closes(cfg, spreads, positions, 12.0, state)
+    orders = evaluate_auto_closes(cfg, spreads, positions, 10.0, state)
     assert len(orders) == 1
     assert orders[0][1] == HedgeMode.CONTRACTION.value
     assert "自动平仓" in orders[0][3] or "平仓" in orders[0][3]
-    print("  ✓ 收缩自动平仓：点差回落且连续满足后触发")
+    print("  ✓ 收缩自动平仓：点差满足即触发")
 
 
 def _xau_contraction_positions() -> list[Position]:
@@ -147,9 +138,7 @@ def test_contraction_open_with_existing_contraction_position():
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=3.5)}
     positions = _xau_contraction_positions()
 
-    assert not evaluate_auto_trades(cfg, spreads, positions, 100.0, state)
-    assert not evaluate_auto_trades(cfg, spreads, positions, 101.0, state)
-    orders = evaluate_auto_trades(cfg, spreads, positions, 103.0, state)
+    orders = evaluate_auto_trades(cfg, spreads, positions, 100.0, state)
     assert len(orders) == 1
     assert orders[0][1] == HedgeMode.CONTRACTION.value
     print("  ✓ 有收缩持仓仍可同方向自动开仓")
@@ -222,8 +211,7 @@ def test_market_auto_open_fires_with_market_order_mode():
     )
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=3.5)}
 
-    evaluate_auto_trades(cfg, spreads, [], 10.0, state)
-    orders = evaluate_auto_trades(cfg, spreads, [], 12.0, state)
+    orders = evaluate_auto_trades(cfg, spreads, [], 10.0, state)
     assert len(orders) == 1
     assert orders[0][2] == "market"
     print("  ✓ 黄金市价自动开仓返回 market 模式")
@@ -239,7 +227,6 @@ def test_config_roundtrip():
     auto.expansion_enabled.setChecked(True)
     auto.contraction_threshold.setValue(2.5)
     auto.expansion_threshold.setValue(-2.5)
-    auto.hold_sec.setValue(5)
     auto.close_contraction_enabled.setChecked(True)
     auto.close_expansion_threshold.setValue(-0.8)
     auto.market_contraction_enabled.setChecked(True)
@@ -253,7 +240,7 @@ def test_config_roundtrip():
     assert loaded.xau_auto_expansion_enabled is True
     assert loaded.xau_auto_contraction_threshold == 2.5
     assert loaded.xau_auto_expansion_threshold == -2.5
-    assert loaded.xau_auto_trade_hold_sec == 5.0
+    assert loaded.xau_auto_trade_hold_sec == 0.0
     assert loaded.xau_auto_close_contraction_enabled is True
     assert loaded.xau_auto_close_expansion_threshold == -0.8
     assert loaded.xau_auto_market_contraction_enabled is True
@@ -268,13 +255,13 @@ def test_config_roundtrip():
 def main() -> int:
     errors: list[str] = []
     tests = [
-        test_contraction_fires_after_hold,
+        test_contraction_fires_immediately,
         test_contraction_resets_when_spread_drops,
         test_expansion_fires_when_spread_below_threshold,
         test_disabled_strategy_never_fires,
-        test_cooldown_blocks_repeat,
+        test_fires_immediately_without_cooldown,
         test_hysteresis_keeps_timer_near_threshold,
-        test_auto_close_contraction_fires_after_hold,
+        test_auto_close_contraction_fires_immediately,
         test_contraction_open_with_existing_contraction_position,
         test_expansion_blocked_with_contraction_position,
         test_other_symbol_unaffected_by_position,
