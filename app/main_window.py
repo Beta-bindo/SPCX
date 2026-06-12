@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
         if progress is None:
             return
         strip = self.gold_actions if progress.preset_id == "xau" else self.silver_actions
-        text = f"计时中 {progress.elapsed_sec:.0f}/{progress.hold_sec:.0f}s · {progress.label}"
+        text = f"计时中 {progress.elapsed_sec:.1f}/{progress.hold_sec:g}s · {progress.label}"
         strip.auto_trade_settings.set_status(text)
         kind = "自动平仓" if "平仓" in progress.label else "自动开仓"
         self.status_bar.showMessage(f"{kind} · {text}")

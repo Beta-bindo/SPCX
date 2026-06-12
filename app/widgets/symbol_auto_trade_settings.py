@@ -20,7 +20,18 @@ from app.widgets.symbol_alert_settings import _settings_int_spin, _settings_spin
 
 
 def _hold_spin(value: float):
-    """构造"持续秒数"用的整数输入框（1~120）。"""
+    """构造"持续秒数"用的小数输入框（0.01~120，步长 0.01）。"""
+    return _settings_spin(
+        max(0.01, float(value)),
+        decimals=2,
+        minimum=0.01,
+        maximum=120.0,
+        step=0.01,
+    )
+
+
+def _maker_timeout_spin(value: float):
+    """构造 Maker 委托等待用的整数输入框（1~120 秒）。"""
     return _settings_int_spin(max(1, int(round(value))), minimum=1, maximum=120)
 
 
@@ -158,8 +169,7 @@ class SymbolAutoTradeSettings(QFrame):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
-        self.maker_timeout_sec = _hold_spin(5)
-        self.maker_timeout_sec.setRange(1, 120)
+        self.maker_timeout_sec = _maker_timeout_spin(5)
         row.addWidget(self._field_label("Maker 委托等待"))
         row.addWidget(self.maker_timeout_sec)
         row.addWidget(self._field_label("秒未成交撤单"))
@@ -253,7 +263,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_expansion_enabled.setChecked(config.xau_auto_close_expansion_enabled)
             self.close_contraction_threshold.setValue(config.xau_auto_close_contraction_threshold)
             self.close_expansion_threshold.setValue(config.xau_auto_close_expansion_threshold)
-            self.hold_sec.setValue(max(1, int(round(config.xau_auto_trade_hold_sec))))
+            self.hold_sec.setValue(max(0.01, float(config.xau_auto_trade_hold_sec)))
             self.market_contraction_enabled.setChecked(config.xau_auto_market_contraction_enabled)
             self.market_expansion_enabled.setChecked(config.xau_auto_market_expansion_enabled)
             self.market_contraction_threshold.setValue(config.xau_auto_market_contraction_threshold)
@@ -282,7 +292,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_expansion_enabled.setChecked(config.xag_auto_close_expansion_enabled)
             self.close_contraction_threshold.setValue(config.xag_auto_close_contraction_threshold)
             self.close_expansion_threshold.setValue(config.xag_auto_close_expansion_threshold)
-            self.hold_sec.setValue(max(1, int(round(config.xag_auto_trade_hold_sec))))
+            self.hold_sec.setValue(max(0.01, float(config.xag_auto_trade_hold_sec)))
 
     def apply_to(self, config: AppConfig) -> None:
         """把控件值写回配置。"""

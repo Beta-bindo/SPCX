@@ -396,7 +396,7 @@ def evaluate_auto_trades(
                         order_mode,
                         (
                             f"[自动下单] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
-                            f"连续 {hold_sec:.0f}s 满足 · {mlabel}开仓{mode_text}"
+                            f"连续 {hold_sec:g}s 满足 · {mlabel}开仓{mode_text}"
                         ),
                     )
                 )
@@ -560,7 +560,7 @@ def evaluate_auto_closes(
                     order_mode,
                     (
                         f"[自动平仓] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
-                        f"连续 {hold_sec:.0f}s 满足 · {mlabel}平仓{mode_text}"
+                        f"连续 {hold_sec:g}s 满足 · {mlabel}平仓{mode_text}"
                     ),
                 )
             )
