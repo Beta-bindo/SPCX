@@ -88,7 +88,7 @@ def test_upload_works_with_pending_token(tmp_path, monkeypatch):
         def raise_for_status(self):
             return None
 
-    with patch("app.core.license.client.requests.post", return_value=_Resp()):
+    with patch.object(client._session, "post", return_value=_Resp()):
         ok = client.upload_trades([trade])
 
     assert ok is True
@@ -126,8 +126,9 @@ def test_upload_failure_enqueues(tmp_path, monkeypatch):
 
     import requests
 
-    with patch(
-        "app.core.license.client.requests.post",
+    with patch.object(
+        client._session,
+        "post",
         side_effect=requests.ConnectionError("offline"),
     ):
         ok = client.upload_trades([trade])

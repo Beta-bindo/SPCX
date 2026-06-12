@@ -1,4 +1,4 @@
-[2026/06/12 ���� 22:24:03.10] build start 
+[2026/06/13 ����  5:09:50.30] build start 
 build.bat v8 mode=nolicense 
 Using: py -3
 
@@ -11,11 +11,6 @@ Latest: dist\
 --- output ---
 Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
 Requirement already satisfied: pip in .\.venv\lib\site-packages (26.0.1)
-WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ProxyError('Cannot connect to proxy.', FileNotFoundError(2, 'No such file or directory'))': /simple/pip/
-WARNING: Retrying (Retry(total=3, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ProxyError('Cannot connect to proxy.', FileNotFoundError(2, 'No such file or directory'))': /simple/pip/
-WARNING: Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ProxyError('Cannot connect to proxy.', FileNotFoundError(2, 'No such file or directory'))': /simple/pip/
-WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ProxyError('Cannot connect to proxy.', FileNotFoundError(2, 'No such file or directory'))': /simple/pip/
-WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ProxyError('Cannot connect to proxy.', FileNotFoundError(2, 'No such file or directory'))': /simple/pip/
 
 ========== Install requirements ==========
 --- output ---
@@ -65,12 +60,12 @@ Requirement already satisfied: tzdata in .\.venv\lib\site-packages (from tzlocal
 
 ========== PyInstaller pack (5-15 min) ==========
 --- output ---
-130 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.6
-131 INFO: Python: 3.9.9
-140 INFO: Platform: Windows-10-10.0.19045-SP0
-140 INFO: Python environment: F:\交易\BS\.venv
-142 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\pyinstaller
-953 INFO: Module search paths (PYTHONPATH):
+117 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.6
+117 INFO: Python: 3.9.9
+124 INFO: Platform: Windows-10-10.0.19045-SP0
+124 INFO: Python environment: F:\交易\BS\.venv
+126 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\pyinstaller
+1000 INFO: Module search paths (PYTHONPATH):
 ['F:\\交易\\BS',
  'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python39\\python39.zip',
  'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python39\\DLLs',
@@ -79,94 +74,129 @@ Requirement already satisfied: tzdata in .\.venv\lib\site-packages (from tzlocal
  'F:\\交易\\BS\\.venv',
  'F:\\交易\\BS\\.venv\\lib\\site-packages',
  'F:\\交易\\BS']
-1279 INFO: Appending 'datas' from .spec
-1282 INFO: checking Analysis
-1282 INFO: Building Analysis because Analysis-00.toc is non existent
-1282 INFO: Looking for Python shared library...
-1282 INFO: Using Python shared library: C:\Users\Administrator\AppData\Local\Programs\Python\Python39\python39.dll
-1282 INFO: Running Analysis Analysis-00.toc
-1282 INFO: Target bytecode optimization level: 0
-1282 INFO: Initializing module dependency graph...
-1284 INFO: Initializing module graph hook caches...
-1304 INFO: Analyzing modules for base_library.zip ...
-1797 INFO: Processing standard module hook 'hook-encodings.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-3114 INFO: Processing standard module hook 'hook-pickle.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-3730 INFO: Processing standard module hook 'hook-heapq.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-4066 INFO: Caching module dependency graph...
-4124 INFO: Analyzing F:\交易\BS\main.py
-4136 INFO: Processing standard module hook 'hook-certifi.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-4187 INFO: Processing standard module hook 'hook-urllib3.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-4362 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-4363 INFO: SetuptoolsInfo: initializing cached setuptools info...
-4755 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-5061 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-5153 INFO: Processing standard module hook 'hook-xml.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-5335 INFO: Processing standard module hook 'hook-_ctypes.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-6331 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-6528 INFO: Processing standard module hook 'hook-PySide6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-6726 INFO: Processing standard module hook 'hook-shiboken6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-6865 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-8569 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-10639 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-12763 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-27453 INFO: Processing standard module hook 'hook-platform.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-28612 INFO: Processing standard module hook 'hook-dateparser.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-28840 INFO: Processing standard module hook 'hook-pytz.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-29081 INFO: Processing standard module hook 'hook-regex.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-29251 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-29270 INFO: Processing standard module hook 'hook-sysconfig.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-29320 INFO: Processing standard module hook 'hook-dateparser.utils.strptime.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-29787 INFO: Processing standard module hook 'hook-dateutil.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-29972 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-30132 INFO: Processing standard module hook 'hook-Crypto.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-30947 INFO: Processing standard module hook 'hook-websockets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-31702 INFO: Processing standard module hook 'hook-PySide6.QtMultimedia.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-33231 INFO: Analyzing hidden import 'numpy'
-33243 INFO: Processing standard module hook 'hook-numpy.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-33909 INFO: Processing standard module hook 'hook-difflib.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-34966 INFO: Processing module hooks (post-graph stage)...
-35410 INFO: Processing standard module hook 'hook-PySide6.QtMultimediaWidgets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-35780 INFO: Processing standard module hook 'hook-tzdata.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-36361 INFO: Performing binary vs. data reclassification (1425 entries)
-36583 INFO: Looking for ctypes DLLs
-36605 INFO: Analyzing run-time hooks ...
-36605 INFO: Including custom run-time hook 'F:\\交易\\BS\\runtime\\pyi_rth_ssl.py'
-36612 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-36614 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-36616 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-36619 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-36620 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
-36622 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
-36685 INFO: Creating base_library.zip...
-36920 INFO: Looking for dynamic libraries
-38001 INFO: Extra DLL search directories (AddDllDirectory): ['F:\\交易\\BS\\.venv\\Lib\\site-packages\\shiboken6', 'F:\\交易\\BS\\.venv\\lib\\site-packages\\numpy.libs']
-38001 INFO: Extra DLL search directories (PATH): ['F:\\交易\\BS\\.venv\\Lib\\site-packages\\PySide6']
-39893 INFO: Warnings written to F:\交易\BS\build_tmp\build\warn-build.txt
-40030 INFO: Graph cross-reference written to F:\交易\BS\build_tmp\build\xref-build.html
-40102 INFO: checking PYZ
-40102 INFO: Building PYZ because PYZ-00.toc is non existent
-40102 INFO: Building PYZ (ZlibArchive) F:\交易\BS\build_tmp\build\PYZ-00.pyz
-40716 INFO: Building PYZ (ZlibArchive) F:\交易\BS\build_tmp\build\PYZ-00.pyz completed successfully.
-40771 INFO: checking PKG
-40771 INFO: Building PKG because PKG-00.toc is non existent
-40771 INFO: Building PKG (CArchive) TradeAssistant.pkg
-62582 INFO: Building PKG (CArchive) TradeAssistant.pkg completed successfully.
-62616 INFO: Bootloader F:\交易\BS\.venv\lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
-62617 INFO: checking EXE
-62617 INFO: Building EXE because EXE-00.toc is non existent
-62617 INFO: Building EXE from EXE-00.toc
-62624 INFO: Copying bootloader EXE to C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out\TradeAssistant.exe
-62627 INFO: Copying icon to EXE
-62630 INFO: Copying 0 resources to EXE
-62630 INFO: Embedding manifest in EXE
-62632 INFO: Appending PKG archive to EXE
-62698 INFO: Fixing EXE headers
-63089 INFO: Building EXE from EXE-00.toc completed successfully.
-63122 INFO: Build complete! The results are available in: C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out
+1317 INFO: Appending 'datas' from .spec
+1319 INFO: checking Analysis
+1320 INFO: Building Analysis because Analysis-00.toc is non existent
+1320 INFO: Looking for Python shared library...
+1320 INFO: Using Python shared library: C:\Users\Administrator\AppData\Local\Programs\Python\Python39\python39.dll
+1320 INFO: Running Analysis Analysis-00.toc
+1320 INFO: Target bytecode optimization level: 0
+1320 INFO: Initializing module dependency graph...
+1321 INFO: Initializing module graph hook caches...
+1344 INFO: Analyzing modules for base_library.zip ...
+2164 INFO: Processing standard module hook 'hook-encodings.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+3105 INFO: Processing standard module hook 'hook-pickle.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+3689 INFO: Processing standard module hook 'hook-heapq.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+3965 INFO: Caching module dependency graph...
+4012 INFO: Analyzing F:\交易\BS\main.py
+4021 INFO: Processing standard module hook 'hook-certifi.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+4053 INFO: Processing standard module hook 'hook-urllib3.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+4202 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+4203 INFO: SetuptoolsInfo: initializing cached setuptools info...
+4578 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+4881 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+4943 INFO: Processing standard module hook 'hook-xml.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+5141 INFO: Processing standard module hook 'hook-_ctypes.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+6091 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+6295 INFO: Processing standard module hook 'hook-PySide6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+6476 INFO: Processing standard module hook 'hook-shiboken6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+6613 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+8310 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+10239 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+12351 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+25959 INFO: Processing standard module hook 'hook-platform.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+26106 INFO: Processing standard module hook 'hook-websockets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27505 INFO: Processing standard module hook 'hook-dateparser.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27729 INFO: Processing standard module hook 'hook-pytz.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+27956 INFO: Processing standard module hook 'hook-regex.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28079 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28129 INFO: Processing standard module hook 'hook-sysconfig.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+28178 INFO: Processing standard module hook 'hook-dateparser.utils.strptime.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28638 INFO: Processing standard module hook 'hook-dateutil.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28782 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+28966 INFO: Processing standard module hook 'hook-Crypto.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30038 INFO: Processing standard module hook 'hook-PySide6.QtMultimedia.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+31534 INFO: Analyzing hidden import 'numpy'
+31547 INFO: Processing standard module hook 'hook-numpy.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+32191 INFO: Processing standard module hook 'hook-difflib.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+33228 INFO: Processing module hooks (post-graph stage)...
+33663 INFO: Processing standard module hook 'hook-PySide6.QtMultimediaWidgets.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+34020 INFO: Processing standard module hook 'hook-tzdata.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+34589 INFO: Performing binary vs. data reclassification (1425 entries)
+34799 INFO: Looking for ctypes DLLs
+34819 INFO: Analyzing run-time hooks ...
+34819 INFO: Including custom run-time hook 'F:\\交易\\BS\\runtime\\pyi_rth_ssl.py'
+34826 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+34827 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+34829 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+34831 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+34832 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+34833 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'F:\\交易\\BS\\.venv\\lib\\site-packages\\PyInstaller\\hooks'
+34892 INFO: Creating base_library.zip...
+34916 INFO: Looking for dynamic libraries
+35972 INFO: Extra DLL search directories (AddDllDirectory): ['F:\\交易\\BS\\.venv\\Lib\\site-packages\\shiboken6', 'F:\\交易\\BS\\.venv\\lib\\site-packages\\numpy.libs']
+35973 INFO: Extra DLL search directories (PATH): ['F:\\交易\\BS\\.venv\\Lib\\site-packages\\PySide6']
+37848 INFO: Warnings written to F:\交易\BS\build_tmp\build\warn-build.txt
+37978 INFO: Graph cross-reference written to F:\交易\BS\build_tmp\build\xref-build.html
+38045 INFO: checking PYZ
+38045 INFO: Building PYZ because PYZ-00.toc is non existent
+38046 INFO: Building PYZ (ZlibArchive) F:\交易\BS\build_tmp\build\PYZ-00.pyz
+38619 INFO: Building PYZ (ZlibArchive) F:\交易\BS\build_tmp\build\PYZ-00.pyz completed successfully.
+38673 INFO: checking PKG
+38674 INFO: Building PKG because PKG-00.toc is non existent
+38674 INFO: Building PKG (CArchive) TradeAssistant.pkg
+59619 INFO: Building PKG (CArchive) TradeAssistant.pkg completed successfully.
+59652 INFO: Bootloader F:\交易\BS\.venv\lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+59652 INFO: checking EXE
+59652 INFO: Building EXE because EXE-00.toc is non existent
+59652 INFO: Building EXE from EXE-00.toc
+59652 INFO: Copying bootloader EXE to C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out\TradeAssistant.exe
+59657 INFO: Copying icon to EXE
+59659 INFO: Copying 0 resources to EXE
+59659 INFO: Embedding manifest in EXE
+59661 INFO: Appending PKG archive to EXE
+59726 INFO: Fixing EXE headers
+60091 INFO: Building EXE from EXE-00.toc completed successfully.
+60121 INFO: Build complete! The results are available in: C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out
 
 ========== Verify exe contains no BA/Exness credentials ==========
 --- output ---
 RELEASE VERIFY OK: TradeAssistant.exe 未包含本地 BA/Exness 账号及 tests 源码
+
+========== BUILD FAILED ==========
+Full log: build_log.txt
+==================================
+Latest: dist\TradeAssistant-nolicense.exe
+
+========================================
+BUILD OK
+Output: C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out\TradeAssistant.exe
+History kept under: dist\releases\
+Latest: dist\TradeAssistant.exe
+Latest: dist\TradeAssistant-license.exe
+========================================
+
+========== Clean release dist ==========
+
+========== Remove sensitive sidecar files from dist ==========
+--- output ---
+CLEAN RELEASE DIST OK
+
+========== Prepare pack ==========
+Stop running TradeAssistant.exe if any...
+Output dir: C:\Users\Administrator\AppData\Local\Temp\TradeAssistant_build_out
+
+========== Pre-release checks (tests/memory) ==========
+--- output ---
+Traceback (most recent call last):
+  File "F:\交易\BS\scripts\pre_release_check.py", line 77, in <module>
+    raise SystemExit(main())
+  File "F:\交易\BS\scripts\pre_release_check.py", line 66, in main
+    problems.extend(check_imports_and_memory())
+  File "F:\交易\BS\scripts\pre_release_check.py", line 42, in check_imports_and_memory
+    resolve_position_liq_buffer(positions[0], ba._quotes["XAUUSDT"], "xau", 20)
+IndexError: list index out of range
+[ERROR] Step failed: Pre-release checks (tests/memory) (exit 1)
 
 ========== BUILD FAILED ==========
 Full log: build_log.txt

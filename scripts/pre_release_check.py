@@ -18,7 +18,7 @@ def check_imports_and_memory() -> list[str]:
 
     from app.core.config import AppConfig
     from app.core.liquidation import resolve_position_liq_buffer
-    from app.core.models import ConnectionMode, Position, Quote, Side
+    from app.core.models import ConnectionMode, GoldOrderMode, Position, Quote, Side
     from app.core.risk import build_risk_snapshot
     from app.core.spread_engine import SpreadEngine
     from app.core.trading_service import open_hedge, hedge_strategy_label_for_leg
@@ -30,7 +30,7 @@ def check_imports_and_memory() -> list[str]:
     mt5 = MT5Connector(cfg)
     ba._quotes["XAUUSDT"] = Quote("XAUUSDT", 2650, 2650.2, is_simulated=True)
     mt5._quotes["XAUUSD"] = Quote("XAUUSD", 2649, 2649.2, is_simulated=True)
-    open_hedge(ba, mt5, "xau")
+    open_hedge(ba, mt5, "xau", order_mode=GoldOrderMode.MARKET.value)
     positions = ba.get_positions() + mt5.get_positions()
     build_risk_snapshot(
         positions,
