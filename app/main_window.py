@@ -10,7 +10,7 @@ import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QFontMetrics, QGuiApplication
+from PySide6.QtGui import QFontMetrics, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -203,7 +203,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._demo_seed = demo_seed
         self._demo_seed_mixed = demo_seed_mixed
-        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         self.setUpdatesEnabled(False)
         self.license_service = license_service
         self.setWindowTitle(APP_NAME)
@@ -224,6 +223,9 @@ class MainWindow(QMainWindow):
         self._pending_status_preset: str | None = None
         self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
         self._monitor_buttons_on_header = True
+        self._pending_demo_start = False
+        self._demo_start_scheduled = False
+        self._ui_bootstrapping = True
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -305,14 +307,28 @@ class MainWindow(QMainWindow):
         self._finalize_startup()
         self._sync_monitor_buttons()
 
-    def _finalize_startup(self) -> None:
-        """在窗口显示前完成布局与演示连接，避免首屏闪烁。"""
+    def present(self) -> None:
+        """首屏展示：布局就绪后只 show 一次，避免透明窗/processEvents 造成连闪。"""
         self._sync_columns_sizes()
-        self._refresh_order_book()
+        self.show()
+        QTimer.singleShot(400, self._finish_ui_bootstrap)
+
+    def _finish_ui_bootstrap(self) -> None:
+        self._ui_bootstrapping = False
+        if self._pending_demo_start and not self._demo_start_scheduled:
+            self._pending_demo_start = False
+            self._demo_start_scheduled = True
+            QTimer.singleShot(800, self._on_start)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+
+    def _finalize_startup(self) -> None:
+        """在窗口显示前完成静态初始化，连接与行情放到显示后。"""
         if self._demo_seed or self._demo_seed_mixed:
             self._load_demo_seed_positions()
         if self.config.demo_mode and not self.engine.is_running:
-            self._on_start()
+            self._pending_demo_start = True
         else:
             from app.core.network_status import NetworkStatus
 
@@ -521,6 +537,9 @@ class MainWindow(QMainWindow):
     def _sync_ba_refresh_timers(self) -> None:
         timer = getattr(self, "_book_timer", None)
         if timer is None:
+            return
+        if not self.engine.is_running:
+            timer.stop()
             return
         ms = max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))
         if timer.isActive():
@@ -781,7 +800,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "未授权", "尚未通过授权，无法继续。")
             return False
 
-     def _on_license_revoked(self, message: str) -> None:
+    def _on_license_revoked(self, message: str) -> None:
         if self.engine.is_running:
             self.engine.stop()
         self._sync_monitor_buttons()
@@ -1231,6 +1250,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(result.message, 5000)
 
     def _on_market(self, update) -> None:
+        if self._ui_bootstrapping:
+            return
         self.spread_panel.update_market(update)
         risk = update.risk
         self.spread_panel.update_risk(
@@ -1262,6 +1283,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"⚠ 告警：{message}")
 
     def _on_connection(self, platform: str, state: str) -> None:
+        if self._ui_bootstrapping:
+            return
         if platform == "BA":
             self.ba_status.set_state("币安", state)
         else:

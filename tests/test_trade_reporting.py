@@ -132,7 +132,7 @@ class TradeReportingTests(unittest.TestCase):
                     posted.append(json)
                     return _Resp()
 
-                with patch("app.core.license.client.requests.post", side_effect=_post):
+                with patch.object(client._session, "post", side_effect=_post):
                     count = client.flush_pending_trades()
                 self.assertEqual(count, 1)
                 self.assertEqual(load_pending(), [])

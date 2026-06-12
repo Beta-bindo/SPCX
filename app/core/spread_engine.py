@@ -373,7 +373,8 @@ class SpreadEngine(QObject):
         self._poll_timer.start(self._position_poll_ms())
         self._network_timer.start(1000)
         self._emit_network_status()
-        QTimer.singleShot(3000, self._sync_platform_leverage)
+        if not self.config.demo_mode:
+            QTimer.singleShot(3000, self._sync_platform_leverage)
 
     def _sync_platform_leverage(self) -> None:
         """从交易所读取实际杠杆并回写配置，使风险估算更贴近真实。"""

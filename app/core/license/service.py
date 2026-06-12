@@ -36,10 +36,18 @@ class LicenseService(QObject):
     def state(self):
         return self.client.state
 
-    def start_heartbeat(self) -> None:
-        self.flush_pending()
+    def start_heartbeat(self, *, flush: bool = True, defer_retry_min: int = 0) -> None:
+        """启动定时心跳；defer_retry_min>0 时推迟补传重试，避免启动阶段联网。"""
+        if flush:
+            self.flush_pending()
         self._timer.start(HEARTBEAT_MS)
-        self._retry_timer.start(2 * 60 * 1000)
+        if defer_retry_min > 0:
+            QTimer.singleShot(
+                defer_retry_min * 60 * 1000,
+                lambda: self._retry_timer.start(2 * 60 * 1000),
+            )
+        else:
+            self._retry_timer.start(2 * 60 * 1000)
 
     def stop_heartbeat(self) -> None:
         self._timer.stop()
@@ -116,29 +124,63 @@ class LicenseService(QObject):
             return
         self.ensure_approved()
 
+    def _reporting_fresh_enough(self, *, max_age_minutes: int = 30) -> bool:
+        """本地已有令牌且近期心跳成功，启动时跳过联网避免系统代理小窗。"""
+        if not self.client.state.access_token:
+            return False
+        last = self.client.state.last_check
+        if not last:
+            return False
+        try:
+            from datetime import datetime, timedelta
+
+            checked_at = datetime.fromisoformat(last)
+            return datetime.now() - checked_at < timedelta(minutes=max_age_minutes)
+        except ValueError:
+            return False
+
     def ensure_reporting_ready(self) -> None:
-        """免授权版：静默注册设备并获取交易上报令牌。"""
+        """免授权版：静默注册/续期上报令牌；尽量单次心跳，无积压则不再额外请求。"""
+        if self._reporting_fresh_enough():
+            return
         import os
 
         st = self.client.state
-        if st.status in ("unknown", "", "pending"):
+        needs_register = st.status in ("unknown", "") or (
+            st.status == "pending" and not st.access_token
+        )
+        if needs_register:
             name = (st.display_name or os.environ.get("COMPUTERNAME", "免授权用户"))[:32]
             try:
                 self.client.register(name, "13000000000", "免授权版自动注册")
             except LicenseError:
                 pass
         try:
-            self.refresh()
+            state = self.client.heartbeat()
+            self.status_changed.emit(state.status, state.message)
         except LicenseError:
             pass
-        self.flush_pending()
+        if not self.client.can_upload_trades:
+            return
+        from app.core.license.pending_trades import load_pending
+
+        if load_pending():
+            try:
+                self.client.flush_pending_trades()
+            except Exception:
+                pass
 
     def upload_trade(self, record: TradeRecord) -> None:
         if not self.client.can_upload_trades:
             try:
-                self.refresh()
+                self.ensure_reporting_ready()
             except LicenseError:
                 pass
+            if not self.client.can_upload_trades:
+                try:
+                    self.refresh()
+                except LicenseError:
+                    pass
         trade = trade_record_to_payload(record)
         if not self.client.can_upload_trades:
             from app.core.license.pending_trades import enqueue_trades

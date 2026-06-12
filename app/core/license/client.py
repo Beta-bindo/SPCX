@@ -30,6 +30,19 @@ class LicenseClient:
             from app.core.license.store import DEFAULT_SERVER_URL
 
             self.state.server_url = DEFAULT_SERVER_URL
+        self._session = requests.Session()
+        # 不走 Windows 系统代理，避免启动/上报时弹出代理认证小窗
+        self._session.trust_env = False
+        self._session.proxies = {"http": None, "https": None}
+        self._session.verify = ensure_ca_bundle()
+
+    def _post(self, path: str, *, json: dict, headers: dict | None = None) -> requests.Response:
+        return self._session.post(
+            self._url(path),
+            json=json,
+            headers=headers or self._headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
 
     @property
     def is_approved(self) -> bool:
@@ -97,11 +110,7 @@ class LicenseClient:
             "app_version": APP_VERSION,
         }
         try:
-            res = requests.post(
-                self._url("/api/v1/register"),
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
+            res = self._post("/api/v1/register", json=payload, headers={"Content-Type": "application/json"})
             res.raise_for_status()
         except requests.RequestException as exc:
             raise self._raise_http_error(exc, "无法连接授权服务器") from exc
@@ -134,11 +143,10 @@ class LicenseClient:
             "xag_position": xag_position,
         }
         try:
-            res = requests.post(
-                self._url("/api/v1/heartbeat"),
+            res = self._post(
+                "/api/v1/heartbeat",
                 json=payload,
-                headers=self._headers(),
-                timeout=REQUEST_TIMEOUT,
+                headers={**self._headers()},
             )
             if res.status_code == 404:
                 return self._save_check(status="unknown", message="设备未注册，请重新申请")
@@ -166,11 +174,9 @@ class LicenseClient:
         if not self.state.access_token:
             return False
         try:
-            res = requests.post(
-                self._url("/api/v1/trades/batch"),
+            res = self._post(
+                "/api/v1/trades/batch",
                 json={"trades": trades},
-                headers=self._headers(),
-                timeout=REQUEST_TIMEOUT,
             )
             res.raise_for_status()
             return True
@@ -187,11 +193,9 @@ class LicenseClient:
         if not pending or not self.state.access_token:
             return 0
         try:
-            res = requests.post(
-                self._url("/api/v1/trades/batch"),
+            res = self._post(
+                "/api/v1/trades/batch",
                 json={"trades": pending},
-                headers=self._headers(),
-                timeout=REQUEST_TIMEOUT,
             )
             res.raise_for_status()
         except requests.RequestException:

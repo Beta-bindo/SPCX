@@ -7,8 +7,7 @@ from app.core.ssl_certs import ensure_ca_bundle
 
 ensure_ca_bundle()
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from app.core.branding import APP_NAME, apply_app_branding
 from app.core.config import load_config
@@ -50,8 +49,8 @@ def main() -> int:
         if ensure_license_approved(license_service=license_service) is None:
             return 0
     else:
-        license_service.ensure_reporting_ready()
-        license_service.start_heartbeat()
+        # 免授权版：启动阶段零联网；首次成交或 10 分钟定时器再上报
+        license_service.start_heartbeat(flush=False, defer_retry_min=30)
 
     window = MainWindow(
         license_service=license_service,
@@ -61,8 +60,8 @@ def main() -> int:
     window.setWindowTitle(APP_NAME)
     if not app.windowIcon().isNull():
         window.setWindowIcon(app.windowIcon())
-    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
-    window.show()
+    window.present()
+
     return app.exec()
 
 

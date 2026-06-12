@@ -64,9 +64,15 @@ def _tone_cache_path(name: str, payload: bytes) -> Path:
 
 
 class AlertTonePlayer:
-    """Play spread / liquidation tones via cached WAV files."""
+    """Play spread / liquidation tones via cached WAV files (lazy init)."""
 
     def __init__(self) -> None:
+        self._spread: QSoundEffect | None = None
+        self._liq: QSoundEffect | None = None
+
+    def _ensure(self) -> None:
+        if self._spread is not None and self._liq is not None:
+            return
         spread_path = _tone_cache_path(
             "alert_spread_loud",
             _generate_tone_wav(_SPREAD_HZ, 600, volume=0.7, sharp=False),
@@ -79,13 +85,14 @@ class AlertTonePlayer:
         self._liq = QSoundEffect()
         self._spread.setSource(QUrl.fromLocalFile(str(spread_path)))
         self._liq.setSource(QUrl.fromLocalFile(str(liq_path)))
-        # 循环播放，避免每次定时器重新 play 造成的卡顿；音量拉满
         self._spread.setLoopCount(QSoundEffect.Loop.Infinite.value)
         self._liq.setLoopCount(QSoundEffect.Loop.Infinite.value)
         self._spread.setVolume(1.0)
         self._liq.setVolume(1.0)
 
     def play_spread(self) -> None:
+        self._ensure()
+        assert self._spread is not None and self._liq is not None
         if self._spread.status() == QSoundEffect.Status.Error:
             self._fallback_beep()
             return
@@ -95,6 +102,8 @@ class AlertTonePlayer:
             self._spread.play()
 
     def play_liq(self) -> None:
+        self._ensure()
+        assert self._spread is not None and self._liq is not None
         if self._liq.status() == QSoundEffect.Status.Error:
             self._fallback_beep(double=True)
             return
@@ -104,8 +113,10 @@ class AlertTonePlayer:
             self._liq.play()
 
     def stop(self) -> None:
-        self._spread.stop()
-        self._liq.stop()
+        if self._spread is not None:
+            self._spread.stop()
+        if self._liq is not None:
+            self._liq.stop()
 
     @staticmethod
     def _fallback_beep(*, double: bool = False) -> None:
