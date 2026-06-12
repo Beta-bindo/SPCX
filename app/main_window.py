@@ -781,7 +781,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "未授权", "尚未通过授权，无法继续。")
             return False
 
-    def _on_license_revoked(self, message: str) -> None:
+     def _on_license_revoked(self, message: str) -> None:
         if self.engine.is_running:
             self.engine.stop()
         self._sync_monitor_buttons()
@@ -793,8 +793,17 @@ class MainWindow(QMainWindow):
         )
 
     def _on_trade_recorded(self, record) -> None:
-        if self.license_service:
-            self.license_service.upload_trade(record)
+        # 成交上报含同步网络请求（最长 15s），必须放到后台线程，
+        # 否则会在每次下单成交后阻塞主线程导致界面卡顿。
+        service = self.license_service
+        if service is None:
+            return
+        threading.Thread(
+            target=service.upload_trade,
+            args=(record,),
+            daemon=True,
+            name="upload-trade",
+        ).start()
 
     def _open_trade_dialog(
         self,
