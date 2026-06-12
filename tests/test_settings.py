@@ -122,7 +122,6 @@ def test_settings_load_apply_roundtrip():
         xag_liq_alert_enabled=False,
         xau_auto_contraction_enabled=True,
         xau_auto_contraction_threshold=2.5,
-        xau_auto_trade_hold_sec=5.0,
     )
     window.gold_actions.load_settings_from(src)
     window.silver_actions.load_settings_from(src)
@@ -136,7 +135,7 @@ def test_settings_load_apply_roundtrip():
     assert dst.xag_spread_alert_enabled is False
     assert dst.xau_auto_contraction_enabled is True
     assert dst.xau_auto_contraction_threshold == 2.5
-    assert dst.xau_auto_trade_hold_sec == 5.0
+    assert dst.xau_auto_trade_hold_sec == 0.0  # hold 时间已移除，恒为 0（即时触发）
     window.close()
     print("  ✓ 设置面板 load/apply 往返")
 

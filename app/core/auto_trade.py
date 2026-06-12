@@ -15,7 +15,11 @@ from dataclasses import dataclass, field
 
 from app.core.models import AppConfig, HedgeMode, SpreadSnapshot
 from app.core.order_mode import auto_trade_order_mode
-from app.core.trading_service import detect_hedge_mode, spread_allows_add
+from app.core.trading_service import (
+    detect_hedge_mode,
+    position_entry_spread,
+    spread_allows_add,
+)
 
 RESET_MARGIN = 0.03   # 迟滞带：点差需回落超过此值才重置计时，避免临界抖动
 LANE_MAKER = "maker"
@@ -53,6 +57,17 @@ def _lanes_for_preset(preset_id: str) -> tuple[str, ...]:
 def _lane_label(lane: str) -> str:
     """lane → 显示后缀（市价 lane 显示"市价"，Maker lane 留空）。"""
     return "市价" if lane == LANE_MARKET else ""
+
+
+def _entry_spread_for(preset_id: str, positions: list) -> float | None:
+    """取该品种当前对冲持仓的加权平均入场点差（无完整两腿则 None）。"""
+    from app.core.symbols import find_preset
+    from app.core.trading_service import _position_for
+
+    preset = find_preset(preset_id)
+    ba_pos = _position_for(positions, "BA", preset.symbol_ba)
+    mt5_pos = _position_for(positions, "MT5", preset.symbol_mt5)
+    return position_entry_spread(ba_pos, mt5_pos)
 
 
 def _reset_preset(state: AutoTradeState, preset_id: str) -> None:
@@ -314,11 +329,16 @@ def evaluate_auto_trades(
                     state.since[key] = None
                     continue
 
+                # 已放宽：达到设定阈值即加仓，不再因低于持仓成本而拦截。
+                # 若现价差确实劣于持仓平均入场差价，附注提示便于知晓（不阻止下单）。
+                add_note = ""
                 if active is not None:
-                    # 加仓前再校验现价差不劣于持仓差价
-                    ok, reason = spread_allows_add(preset_id, positions, spread, mode)
+                    ok, _reason = spread_allows_add(preset_id, positions, spread, mode)
                     if not ok:
-                        continue
+                        entry = _entry_spread_for(preset_id, positions)
+                        if entry is not None:
+                            worse = "低于" if mode == HedgeMode.CONTRACTION.value else "高于"
+                            add_note = f"（{worse}持仓差价 {entry:+.3f}，仍按阈值加仓）"
 
                 mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
                 thresh = (
@@ -336,7 +356,7 @@ def evaluate_auto_trades(
                         order_mode,
                         (
                             f"[自动下单] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
-                            f"已满足 · {mlabel}开仓{mode_text}"
+                            f"已满足 · {mlabel}开仓{mode_text}{add_note}"
                         ),
                     )
                 )
@@ -353,6 +373,12 @@ def _reset_close_preset(state: AutoTradeState, preset_id: str) -> None:
     for lane in _lanes_for_preset(preset_id):
         for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
             state.close_since[(preset_id, mode, lane)] = None
+
+
+def _reset_lane_close_timers(state: AutoTradeState, preset_id: str, lane: str) -> None:
+    """清空某 lane 下两个方向的平仓计时。"""
+    for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
+        state.close_since[(preset_id, mode, lane)] = None
 
 
 def _close_mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str) -> bool:

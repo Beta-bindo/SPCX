@@ -1055,6 +1055,7 @@ class MainWindow(QMainWindow):
         if self.engine.is_trading:
             self._append_log(LogLevel.INFO, "自动平仓：上一笔交易尚未完成，已跳过")
             return
+        self._pending_auto_trade = ("close", preset_id, mode, order_mode)
         self.engine.close_hedge(preset_id, mode, order_mode)
 
     def _disable_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
@@ -1080,6 +1081,30 @@ class MainWindow(QMainWindow):
         self._append_log(
             LogLevel.INFO,
             f"自动开仓{mlabel}({lane_label})已成功，已取消{sym}对应勾选，可手动重新开启",
+        )
+
+    def _disable_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
+        from app.core.auto_trade import _reset_lane_close_timers
+        from app.core.order_mode import auto_trade_lane
+
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        auto = strip.auto_trade_settings
+        is_market = order_mode == GoldOrderMode.MARKET.value
+        lane = auto_trade_lane(preset_id, order_mode)
+        checkbox = auto.close_checkbox(lane, mode)
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(False)
+            checkbox.blockSignals(False)
+        _reset_lane_close_timers(self._auto_trade_state, preset_id, lane)
+        self.config = self._merge_config()
+        save_config(self.config)
+        sym = "黄金" if preset_id == "xau" else "白银"
+        mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
+        lane_label = "市价" if is_market else "Maker"
+        self._append_log(
+            LogLevel.INFO,
+            f"自动平仓{mlabel}({lane_label})已平一手，已取消{sym}对应勾选，可手动重新开启",
         )
 
     def _on_open_orders_changed(self, symbols) -> None:
@@ -1290,6 +1315,11 @@ class MainWindow(QMainWindow):
             # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
             _, preset_id_p, mode, order_mode = pending
             self._disable_auto_open(preset_id_p, mode, order_mode)
+        elif pending and pending[0] == "close":
+            # 自动平仓与开仓对称：每次只平一手，平成功/部分/失败后均取消勾选，
+            # 需人工重新勾选才平下一手，避免点差持续满足时连续平到光。
+            _, preset_id_p, mode, order_mode = pending
+            self._disable_auto_close(preset_id_p, mode, order_mode)
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:

@@ -49,12 +49,33 @@ from app.core.app_log import (
     trade_leg_success_msg,
 )
 
-try:
-    from binance.client import Client
-    from binance.exceptions import BinanceAPIException
-    HAS_BINANCE = True
-except ImportError:
-    HAS_BINANCE = False
+import importlib.util
+
+# binance 包的 __init__ 较重（~270ms）。启动阶段不需要它，改为首次连实盘时
+# 在后台线程懒加载，避免拖慢窗口显示。这里仅用 find_spec 探测是否可用，不触发加载。
+HAS_BINANCE = importlib.util.find_spec("binance") is not None
+
+
+class _BinanceNotLoaded(Exception):
+    """binance SDK 尚未加载时的占位异常，确保 except 子句始终是合法异常类。"""
+
+
+Client = None
+BinanceAPIException: type[BaseException] = _BinanceNotLoaded
+
+
+def _ensure_binance_loaded() -> bool:
+    """首次需要时才真正 import binance（其 __init__ 较重），返回是否可用。"""
+    global Client, BinanceAPIException
+    if not HAS_BINANCE:
+        return False
+    if Client is None:
+        from binance.client import Client as _Client
+        from binance.exceptions import BinanceAPIException as _Exc
+
+        Client = _Client
+        BinanceAPIException = _Exc
+    return True
 
 
 def _format_ba_connection_error(exc: Exception, config: AppConfig) -> str:
@@ -1241,6 +1262,7 @@ class BinanceConnector(QObject):
 
     def _create_client(self) -> object:
         """创建并配置币安 SDK 客户端（CA 证书、可选 HTTP 代理及兜底）。"""
+        _ensure_binance_loaded()  # 后台线程内首次连实盘时才真正加载 binance SDK
         client = Client(
             self.config.ba_api_key,
             self.config.ba_api_secret,

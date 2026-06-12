@@ -21,12 +21,21 @@ class _FakeConnector:
     def get_positions(self, force=False):
         return []
 
-    def open_hedge_leg(self, preset_id: str, mode: str, order_mode: str) -> LegResult:
+    def open_hedge_leg(
+        self,
+        preset_id: str,
+        mode: str,
+        order_mode: str,
+        *,
+        on_fill_delta=None,
+        lots_override=None,
+    ) -> LegResult:
         return LegResult(
             platform=self.platform,
             success=self.open_success,
             message="opened" if self.open_success else "failed",
             needs_reconciliation=self.needs_reconciliation,
+            filled_quantity=1.0 if self.open_success else 0.0,
         )
 
     def close_hedge_leg(

@@ -266,6 +266,17 @@ class SymbolAutoTradeSettings(QFrame):
             return None
         return widgets[0] if mode == "contraction" else widgets[1]
 
+    def close_checkbox(self, lane: str, mode: str):
+        """返回某通道某方向（收缩/扩张）的"自动平仓"勾选框。
+
+        与 open_checkbox 对称，统一通过 _lane_widgets 取（索引 4=平收缩、5=平扩张），
+        避免黄金/白银命名差异取错控件。通道无效返回 None。
+        """
+        widgets = self._lane_widgets(lane)
+        if not widgets:
+            return None
+        return widgets[4] if mode == "contraction" else widgets[5]
+
     def iter_watch_widgets(self):
         for lane in ("maker", "market"):
             for widget in self._lane_widgets(lane):
