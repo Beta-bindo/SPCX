@@ -60,14 +60,15 @@ class LayoutMode(str, Enum):
     SINGLE = "single"
 
 
-# 中间栏可配置板块（顺序即默认显示顺序）。点差价格区与对冲交易按钮区固定常驻，不参与此配置。
-PANEL_SECTION_KEYS: tuple[str, ...] = ("alert", "auto", "position")
+# 中间栏可配置板块（顺序即默认显示顺序）。对冲交易按钮区固定常驻，不参与此配置。
+PANEL_SECTION_KEYS: tuple[str, ...] = ("spread", "alert", "auto", "position")
 PANEL_SECTION_LABELS: dict[str, str] = {
+    "spread": "跨平台点差",
     "alert": "告警设置",
     "auto": "自动交易",
     "position": "当前持仓 / 盈利",
 }
-DEFAULT_PANEL_SECTIONS: str = "alert:1,auto:1,position:1"
+DEFAULT_PANEL_SECTIONS: str = "spread:1,alert:1,auto:1,position:1"
 
 
 def parse_panel_sections(raw: str | None) -> list[tuple[str, bool]]:
@@ -87,7 +88,12 @@ def parse_panel_sections(raw: str | None) -> list[tuple[str, bool]]:
         seen.add(key)
     for key in PANEL_SECTION_KEYS:
         if key not in seen:
-            result.append((key, True))
+            entry = (key, True)
+            if key == "spread":
+                result.insert(0, entry)
+            else:
+                result.append(entry)
+            seen.add(key)
     return result
 
 

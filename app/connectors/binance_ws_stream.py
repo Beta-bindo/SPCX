@@ -13,7 +13,6 @@ import time
 from typing import Callable
 
 import websockets
-from websockets.exceptions import ConnectionClosed
 
 from app.core.system_proxy import resolve_http_proxy
 
@@ -141,8 +140,11 @@ class BinanceWsStream:
             except asyncio.CancelledError:
                 break
             except Exception:
-                self._set_connected(False)
-                self._on_state("connecting")
+                pass
+            # 连接已断开：立即清掉最近消息时间并标记未连接，
+            # 让 is_live 立刻转 False，迫使上层切回 REST 兜底，避免用过期数据。
+            self._last_message_at = 0.0
+            self._set_connected(False)
             if self._stop_event.is_set():
                 break
             if self._session_connected:
@@ -170,9 +172,12 @@ class BinanceWsStream:
             self._session_connected = True
             while not self._stop_event.is_set():
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_STALE_SEC + 5)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                 except asyncio.TimeoutError:
-                    raise ConnectionClosed(None, None)
+                    # 行情静默期（周末/低波动）保持连接不重连：
+                    # socket 由 ping/pong 维持探活；若长时间无数据，is_live 自然转 False，
+                    # 上层会切 REST 兜底；真正掉线时 ping_timeout 会抛 ConnectionClosed。
+                    continue
                 self._handle_message(raw)
         return True
 
@@ -191,8 +196,12 @@ class BinanceWsStream:
         symbol = str(data.get("s", "")).upper()
         if not symbol:
             return
-        bid = float(data.get("b", 0) or 0)
-        ask = float(data.get("a", 0) or 0)
+        try:
+            bid = float(data.get("b", 0) or 0)
+            ask = float(data.get("a", 0) or 0)
+        except (TypeError, ValueError):
+            # 单条坏消息直接丢弃，不让其冒泡触发整条连接重连
+            return
         if bid <= 0 or ask <= 0:
             return
 

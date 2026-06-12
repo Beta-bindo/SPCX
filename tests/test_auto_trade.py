@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from app.core.auto_trade import AutoTradeState, COOLDOWN_SEC, evaluate_auto_closes, evaluate_auto_trades
+from app.core.auto_trade import AutoTradeState, evaluate_auto_closes, evaluate_auto_trades
 from app.core.config import load_config, save_config
 from app.core.models import AppConfig, ConnectionMode, HedgeMode, Position, Side, SpreadSnapshot
 
@@ -84,20 +84,17 @@ def test_disabled_strategy_never_fires():
     print("  ✓ 未勾选策略不触发")
 
 
-def test_cooldown_blocks_repeat():
+def test_fires_immediately_without_cooldown():
     state = AutoTradeState()
-    cfg = _cfg_contraction_only(hold=1.0)
+    cfg = _cfg_contraction_only()
     spreads = {"xau": SpreadSnapshot(preset_id="xau", mid_spread=4.0)}
 
-    assert not evaluate_auto_trades(cfg, spreads, [], 0.0, state)
-    orders = evaluate_auto_trades(cfg, spreads, [], 1.0, state)
-    assert len(orders) == 1
-    assert not evaluate_auto_trades(cfg, spreads, [], 2.0, state)
-    t = 1.0 + COOLDOWN_SEC
-    assert not evaluate_auto_trades(cfg, spreads, [], t, state)
-    orders2 = evaluate_auto_trades(cfg, spreads, [], t + 1.0, state)
-    assert len(orders2) == 1
-    print("  ✓ 冷却期内不重复下单")
+    # 满足阈值即触发，无需等待；无触发冷却，连续多轮均会产出意图
+    # （实际防重复由执行层 is_trading + 下单后自动取消勾选保证）
+    assert len(evaluate_auto_trades(cfg, spreads, [], 0.0, state)) == 1
+    assert len(evaluate_auto_trades(cfg, spreads, [], 0.1, state)) == 1
+    assert len(evaluate_auto_trades(cfg, spreads, [], 1.0, state)) == 1
+    print("  ✓ 满足即触发、无冷却")
 
 
 def test_hysteresis_keeps_timer_near_threshold():

@@ -42,6 +42,9 @@ class SymbolAutoTradeSettings(QFrame):
         super().__init__(parent)
         self.preset_id = preset_id
         self.setObjectName("symbolAutoTradeSettings")
+        # 锁定状态来源：持仓方向锁 + Maker 委托锁，统一在 _recompute_locks 合并
+        self._active_mode: str | None = None
+        self._maker_pending = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -50,6 +53,7 @@ class SymbolAutoTradeSettings(QFrame):
         # 自动交易满足阈值后立即触发；保留隐藏控件仅兼容旧配置读写路径。
         self.hold_sec = _hold_spin(0)
         self.hold_sec.setVisible(False)
+        self.maker_pending_light: QLabel | None = None
 
         if preset_id == "xau":
             root.addLayout(self._build_trade_block("Maker自动开仓", "Maker自动平仓", "maker"))
@@ -166,7 +170,7 @@ class SymbolAutoTradeSettings(QFrame):
         return row
 
     def _build_maker_wait_row(self) -> QHBoxLayout:
-        """构建"Maker 委托等待 N 秒未成交撤单"行（仅黄金 Maker 通道）。"""
+        """构建"Maker 委托等待 N 秒未成交撤单"行（仅黄金 Maker 通道），附委托指示灯。"""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
@@ -174,8 +178,24 @@ class SymbolAutoTradeSettings(QFrame):
         row.addWidget(self._field_label("Maker 委托等待"))
         row.addWidget(self.maker_timeout_sec)
         row.addWidget(self._field_label("秒未成交撤单"))
+        row.addSpacing(8)
+        self.maker_pending_light = QLabel()
+        self.maker_pending_light.setObjectName("makerPendingLight")
+        row.addWidget(self.maker_pending_light)
         row.addStretch()
+        self._update_pending_light()
         return row
+
+    def _update_pending_light(self) -> None:
+        """刷新委托指示灯外观：有挂单亮（橙），无挂单灭（灰）。"""
+        if self.maker_pending_light is None:
+            return
+        if self._maker_pending:
+            self.maker_pending_light.setText("● 委托中")
+            self.maker_pending_light.setStyleSheet("color:#e67e22; font-weight:bold;")
+        else:
+            self.maker_pending_light.setText("○ 无委托")
+            self.maker_pending_light.setStyleSheet("color:#888;")
 
     def _condition_row(
         self, check_text: str, operator_text: str, threshold_value: float, action_text: str
@@ -372,7 +392,23 @@ class SymbolAutoTradeSettings(QFrame):
         self.status_label.setVisible(bool(text))
 
     def apply_position_lock(self, active_mode: str | None) -> None:
-        """有持仓时禁用并取消反向（扩张/收缩）开/平仓；同方向 Maker/市价互不影响。"""
+        """记录持仓方向并重算锁定状态（持仓锁 + Maker 委托锁）。"""
+        self._active_mode = active_mode
+        self._recompute_locks()
+
+    def set_pending_order(self, active: bool) -> None:
+        """设置 Maker 委托灯状态：有挂单时点亮并禁止勾选 Maker 自动开仓。"""
+        if self.preset_id != "xau":
+            return
+        active = bool(active)
+        if active == self._maker_pending:
+            return
+        self._maker_pending = active
+        self._update_pending_light()
+        self._recompute_locks()
+
+    def _recompute_locks(self) -> None:
+        """统一应用两类锁：先全部解锁，再叠加持仓方向锁与 Maker 委托锁。"""
         for lane in ("maker", "market"):
             widgets = self._lane_widgets(lane)
             if not widgets:
@@ -387,19 +423,25 @@ class SymbolAutoTradeSettings(QFrame):
                 enabled.setEnabled(True)
                 threshold.setEnabled(True)
 
-            if active_mode is None:
-                continue
+            if self._active_mode is not None:
+                lock_pairs = (
+                    (widgets[1], widgets[3]),
+                    (widgets[5], widgets[7]),
+                ) if self._active_mode == "contraction" else (
+                    (widgets[0], widgets[2]),
+                    (widgets[4], widgets[6]),
+                )
+                for enabled, threshold in lock_pairs:
+                    enabled.blockSignals(True)
+                    enabled.setChecked(False)
+                    enabled.blockSignals(False)
+                    enabled.setEnabled(False)
+                    threshold.setEnabled(False)
 
-            lock_pairs = (
-                (widgets[1], widgets[3]),
-                (widgets[5], widgets[7]),
-            ) if active_mode == "contraction" else (
-                (widgets[0], widgets[2]),
-                (widgets[4], widgets[6]),
-            )
-            for enabled, threshold in lock_pairs:
-                enabled.blockSignals(True)
-                enabled.setChecked(False)
-                enabled.blockSignals(False)
-                enabled.setEnabled(False)
-                threshold.setEnabled(False)
+            # Maker 委托存在时，禁止勾选该通道的自动开仓（收缩/扩张）
+            if lane == "maker" and self._maker_pending:
+                for enabled in (widgets[0], widgets[1]):
+                    enabled.blockSignals(True)
+                    enabled.setChecked(False)
+                    enabled.blockSignals(False)
+                    enabled.setEnabled(False)

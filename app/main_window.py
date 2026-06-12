@@ -791,6 +791,7 @@ class MainWindow(QMainWindow):
         self.engine.connection_changed.connect(self._on_connection)
         self.engine.network_status_changed.connect(self._on_network_status)
         self.engine.binance.ws_state_changed.connect(self._on_ws_state)
+        self.engine.binance.open_orders_changed.connect(self._on_open_orders_changed)
         self.engine.log_message.connect(self.log_panel.append)
         self.engine.positions_updated.connect(self._on_positions)
         self.engine.trade_started.connect(self._on_trade_started)
@@ -1091,6 +1092,14 @@ class MainWindow(QMainWindow):
             LogLevel.INFO,
             f"自动开仓{mlabel}({lane})已成功，已取消{sym}对应勾选，可手动重新开启",
         )
+
+    def _on_open_orders_changed(self, symbols) -> None:
+        """委托单集合变化：点亮/熄灭各品种委托灯，并联动禁用 Maker 自动开仓。"""
+        from app.core.symbols import preset_for_ba_symbol
+
+        pending = {preset_for_ba_symbol(s) for s in symbols}
+        for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
+            strip.auto_trade_settings.set_pending_order(preset_id in pending)
 
     def _sync_auto_trade_locks(self, positions) -> None:
         changed = False

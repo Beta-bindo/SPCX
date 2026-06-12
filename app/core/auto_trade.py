@@ -3,7 +3,7 @@
 核心是一个基于阈值的状态机：
 - 点差满足阈值且对应方向已勾选时立即触发；
 - 点差回落超过 RESET_MARGIN（迟滞）则重置计时；
-- 触发后进入 COOLDOWN_SEC 冷却，防止连续重复下单。
+- 不设触发冷却：下单成功后会自动取消勾选，人工重新勾选即视为再次授权。
 
 每个品种可有多个 lane（黄金支持 maker + market，白银仅 market），各 lane 独立计时。
 本模块只产出"下单意图"列表，实际下单由调用方（spread_engine）执行。
@@ -17,7 +17,6 @@ from app.core.models import AppConfig, HedgeMode, SpreadSnapshot
 from app.core.order_mode import auto_trade_order_mode
 from app.core.trading_service import detect_hedge_mode, spread_allows_add
 
-COOLDOWN_SEC = 30.0   # 同一品种+lane 两次自动下单的最短间隔
 RESET_MARGIN = 0.03   # 迟滞带：点差需回落超过此值才重置计时，避免临界抖动
 LANE_MAKER = "maker"
 LANE_MARKET = "market"
@@ -161,53 +160,8 @@ def collect_auto_trade_progress(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> AutoTradeProgress | None:
-    """汇总所有品种/lane 的开仓倒计时，返回进度最大的一项供 UI 展示。"""
-    best: AutoTradeProgress | None = None
-    for preset_id in preset_ids:
-        active = detect_hedge_mode(preset_id, positions)
-        snap = spreads.get(preset_id)
-        if snap is None:
-            continue
-        spread = snap.mid_spread
-        label = "黄金" if preset_id == "xau" else "白银"
-        for lane in _lanes_for_preset(preset_id):
-            if active is not None:
-                open_modes = [active] if _mode_enabled(config, preset_id, active, lane) else []
-            else:
-                open_modes = [
-                    m
-                    for m in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value)
-                    if _mode_enabled(config, preset_id, m, lane)
-                ]
-            for mode in open_modes:
-                if active is None and mode not in _active_modes(
-                    config, preset_id, spread, state, lane
-                ):
-                    continue
-                if active is not None and mode not in _open_modes_for_evaluation(
-                    config, preset_id, spread, state, positions, lane
-                ):
-                    continue
-                key = (preset_id, mode, lane)
-                started = state.since.get(key)
-                if started is None:
-                    continue
-                elapsed = max(0.0, now - started)
-                if elapsed >= hold_sec:
-                    continue
-                mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
-                lane_text = _lane_label(lane)
-                suffix = f"·{lane_text}" if lane_text else ""
-                progress = AutoTradeProgress(
-                    preset_id=preset_id,
-                    mode=mode,
-                    label=f"{label}{mlabel}{suffix}",
-                    elapsed_sec=elapsed,
-                    hold_sec=hold_sec,
-                )
-                if best is None or progress.elapsed_sec > best.elapsed_sec:
-                    best = progress
-    return best
+    """开仓改为满足阈值即触发，无倒计时，固定返回 None（保留供 UI 兼容）。"""
+    return None
 
 
 def diagnose_auto_trade_block(
@@ -332,7 +286,6 @@ def evaluate_auto_trades(
             continue
 
         spread = snap.mid_spread
-        hold_sec = config.auto_trade_hold_sec(preset_id)
 
         for lane in _lanes_for_preset(preset_id):
             modes = _open_modes_for_evaluation(
@@ -351,12 +304,6 @@ def evaluate_auto_trades(
                         state.since[key] = None
 
             if not modes:
-                continue
-
-            # 冷却期内不重复触发
-            fire_key = (preset_id, lane)
-            last = state.last_fire.get(fire_key)
-            if last is not None and now - last < COOLDOWN_SEC:
                 continue
 
             for mode in modes:
@@ -393,7 +340,6 @@ def evaluate_auto_trades(
                         ),
                     )
                 )
-                state.last_fire[fire_key] = now
                 _reset_lane_open_timers(state, preset_id, lane)
                 break
             if orders and orders[-1][0] == preset_id:
@@ -443,39 +389,8 @@ def collect_auto_close_progress(
     *,
     preset_ids: tuple[str, ...] = ("xau", "xag"),
 ) -> AutoTradeProgress | None:
-    """汇总所有品种/lane 的平仓倒计时，返回进度最大的一项供 UI 展示。"""
-    best: AutoTradeProgress | None = None
-    for preset_id in preset_ids:
-        mode = detect_hedge_mode(preset_id, positions)
-        if mode is None:
-            continue
-        snap = spreads.get(preset_id)
-        if snap is None:
-            continue
-        label = "黄金" if preset_id == "xau" else "白银"
-        mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
-        for lane in _lanes_for_preset(preset_id):
-            if not _close_mode_enabled(config, preset_id, mode, lane):
-                continue
-            key = (preset_id, mode, lane)
-            started = state.close_since.get(key)
-            if started is None:
-                continue
-            elapsed = max(0.0, now - started)
-            if elapsed >= hold_sec:
-                continue
-            lane_text = _lane_label(lane)
-            suffix = f"·{lane_text}" if lane_text else ""
-            progress = AutoTradeProgress(
-                preset_id=preset_id,
-                mode=mode,
-                label=f"{label}{mlabel}平仓{suffix}",
-                elapsed_sec=elapsed,
-                hold_sec=hold_sec,
-            )
-            if best is None or progress.elapsed_sec > best.elapsed_sec:
-                best = progress
-    return best
+    """平仓改为满足阈值即触发，无倒计时，固定返回 None（保留供 UI 兼容）。"""
+    return None
 
 
 def evaluate_auto_closes(
@@ -513,7 +428,6 @@ def evaluate_auto_closes(
                 continue
 
             key = (preset_id, mode, lane)
-            fire_key = (preset_id, lane)
 
             if _close_mode_reset(config, preset_id, mode, spread, lane):
                 state.close_since[key] = None
@@ -521,10 +435,6 @@ def evaluate_auto_closes(
 
             if not _close_mode_satisfied(config, preset_id, mode, spread, lane):
                 state.close_since[key] = None
-                continue
-
-            last = state.last_close_fire.get(fire_key)
-            if last is not None and now - last < COOLDOWN_SEC:
                 continue
 
             if state.close_since.get(key) is None:
@@ -551,7 +461,6 @@ def evaluate_auto_closes(
                     ),
                 )
             )
-            state.last_close_fire[fire_key] = now
             state.close_since[key] = None
             break
 

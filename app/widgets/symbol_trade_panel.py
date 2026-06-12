@@ -215,7 +215,6 @@ class SymbolActionStrip(QFrame):
         spread_layout.setColumnStretch(0, 0)
         spread_layout.setColumnStretch(1, 0)
         self.spread_frame.setMinimumWidth(spread_w + 118 + 8 + 12)
-        self._stack_layout.addWidget(self.spread_frame)
 
         self.alert_settings = SymbolAlertSettings(preset_id)
 
@@ -308,6 +307,7 @@ class SymbolActionStrip(QFrame):
         monitor_layout.addWidget(self.trade_entry_btn)
 
         self._section_widgets = {
+            "spread": self.spread_frame,
             "alert": self.alert_settings,
             "auto": self._auto_block,
             "position": self._position_block,
@@ -382,12 +382,9 @@ class SymbolActionStrip(QFrame):
                 break
 
     def _rebuild_stack(self) -> None:
-        """重建中栏纵向堆叠：固定的点差/按钮 + 按用户配置顺序与显隐的可选区块。"""
+        """重建中栏纵向堆叠：固定对冲按钮 + 按用户配置顺序与显隐的可选区块。"""
         self._clear_stack_after_title()
-        # 固定常驻：点差价格 + 对冲交易/启停按钮，始终可见且位置稳定。
-        self._stack_layout.addWidget(self.spread_frame)
         self._stack_layout.addWidget(self._monitor_host)
-        # 可配置板块：按用户设置的顺序与显隐渲染。
         for key, visible in self._sections:
             widget = self._section_widgets.get(key)
             if widget is None:
