@@ -1064,33 +1064,22 @@ class MainWindow(QMainWindow):
         strip = self.gold_actions if preset_id == "xau" else self.silver_actions
         auto = strip.auto_trade_settings
         is_market = order_mode == GoldOrderMode.MARKET.value
-        if is_market:
-            checkbox = (
-                auto.market_contraction_enabled
-                if mode == HedgeMode.CONTRACTION.value
-                else auto.market_expansion_enabled
-            )
-        else:
-            checkbox = (
-                auto.contraction_enabled
-                if mode == HedgeMode.CONTRACTION.value
-                else auto.expansion_enabled
-            )
-        checkbox.blockSignals(True)
-        checkbox.setChecked(False)
-        checkbox.blockSignals(False)
+        lane = auto_trade_lane(preset_id, order_mode)
+        checkbox = auto.open_checkbox(lane, mode)
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(False)
+            checkbox.blockSignals(False)
         auto.apply_position_lock(mode)
-        _reset_lane_open_timers(
-            self._auto_trade_state, preset_id, auto_trade_lane(preset_id, order_mode)
-        )
+        _reset_lane_open_timers(self._auto_trade_state, preset_id, lane)
         self.config = self._merge_config()
         save_config(self.config)
         sym = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
-        lane = "市价" if is_market else "Maker"
+        lane_label = "市价" if is_market else "Maker"
         self._append_log(
             LogLevel.INFO,
-            f"自动开仓{mlabel}({lane})已成功，已取消{sym}对应勾选，可手动重新开启",
+            f"自动开仓{mlabel}({lane_label})已成功，已取消{sym}对应勾选，可手动重新开启",
         )
 
     def _on_open_orders_changed(self, symbols) -> None:

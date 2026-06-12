@@ -255,6 +255,17 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_expansion_threshold,
         )
 
+    def open_checkbox(self, lane: str, mode: str):
+        """返回某通道某方向（收缩/扩张）的"自动开仓"勾选框。
+
+        统一通过 _lane_widgets 取，避免白银（无 maker、市价勾选框沿用非前缀命名）
+        与黄金市价（market_ 前缀命名）之间的命名差异导致取错控件。通道无效返回 None。
+        """
+        widgets = self._lane_widgets(lane)
+        if not widgets:
+            return None
+        return widgets[0] if mode == "contraction" else widgets[1]
+
     def iter_watch_widgets(self):
         for lane in ("maker", "market"):
             for widget in self._lane_widgets(lane):
