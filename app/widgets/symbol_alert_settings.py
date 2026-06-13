@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig
+from app.widgets.panel_ui_scale import build_panel_section_qss, clamp_check_px, clamp_font_pt
 
 
 def format_decimal_text(value: float, decimals: int) -> str:
@@ -328,6 +329,15 @@ class SymbolAlertSettings(QFrame):
     def lock_all_spins(self) -> None:
         for spin in (self.spread_min, self.spread_max, self.ba_liq, self.mt5_liq):
             spin.lock()
+
+    def apply_ui_scale(self, font_pt: int, check_px: int) -> None:
+        """应用板块字体与勾选框尺寸（仅作用于本告警板块）。"""
+        font_pt = clamp_font_pt(font_pt)
+        check_px = clamp_check_px(check_px)
+        self.setStyleSheet(build_panel_section_qss(font_pt, check_px))
+        spin_h = max(18, check_px + 2)
+        for spin in (self.spread_min, self.spread_max, self.ba_liq, self.mt5_liq):
+            spin.setFixedHeight(spin_h)
 
     def load_config(self, config: AppConfig) -> None:
         """按品种把告警配置回填到控件。"""

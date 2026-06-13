@@ -29,11 +29,16 @@ from app.core.position_detail import (
     build_platform_details_for_preset,
 )
 from app.core.symbols import find_preset
-from app.core.theme import set_flag, ui_mono_font
+from app.core.theme import set_flag, ui_font
+from app.widgets.panel_ui_scale import (
+    DEFAULT_PANEL_FONT_PT,
+    build_panel_section_qss,
+    clamp_font_pt,
+)
 from app.core.trading_service import detect_hedge_mode, hedge_strategy_label_for_platform
 
 
-# 实时盈亏表格各列像素宽（含爆仓/强平/杠杆列）
+# 实时盈亏表格各列像素宽（基准 10pt 字体）
 _COL_WIDTHS = {
     "pnl": 76,
     "qty": 58,
@@ -75,6 +80,9 @@ class PnlDetailPanel(QFrame):
             "lev",
         )
         col_widths = _COL_WIDTHS if show_liq_buf else _DIALOG_COL_WIDTHS
+        self._col_widths_base = col_widths
+        self._ui_font_pt = DEFAULT_PANEL_FONT_PT
+        self._header_labels: list[QLabel] = []
         self.setObjectName("pnlDetailPanel")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         root = QVBoxLayout(self)
@@ -133,8 +141,10 @@ class PnlDetailPanel(QFrame):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             grid.addWidget(lbl, 0, col)
+            self._header_labels.append(lbl)
 
         self._rows: dict[str, dict[str, QLabel]] = {}
+        self._platform_labels: list[QLabel] = []
         self._last_total_text = ""
         self._last_cell_text: dict[str, str] = {}
         self._last_hedge_banner = ""
@@ -144,17 +154,13 @@ class PnlDetailPanel(QFrame):
             plat.setObjectName("platformTag")
             plat.setAlignment(Qt.AlignmentFlag.AlignCenter)
             plat.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-            _plat_font = plat.font()
-            _plat_font.setPointSizeF(_plat_font.pointSizeF() + 1)
-            plat.setFont(_plat_font)
             grid.addWidget(plat, row, 0)
+            self._platform_labels.append(plat)
             cells: dict[str, QLabel] = {}
             for col, field in enumerate(self._fields, start=1):
                 cell = QLabel("--")
                 cell.setObjectName("positionValue")
                 cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                # 字体与「跨平台点差」里 BA/EX 价格完全一致（等宽 10pt 加粗）
-                cell.setFont(ui_mono_font(point_size=10, weight=QFont.Weight.Bold))
                 cell.setFixedWidth(col_widths[field])
                 cell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 grid.addWidget(cell, row, col)
@@ -162,7 +168,46 @@ class PnlDetailPanel(QFrame):
             self._rows[key] = cells
         for col, field in enumerate(self._fields, start=1):
             grid.setColumnMinimumWidth(col, col_widths[field])
+        self._grid = grid
         root.addLayout(grid)
+        self.apply_ui_scale(self._ui_font_pt)
+
+    def apply_ui_scale(self, font_pt: int) -> None:
+        """应用板块字体（仅作用于本盈亏明细表）。"""
+        font_pt = clamp_font_pt(font_pt)
+        if font_pt == self._ui_font_pt and self.styleSheet():
+            return
+        self._ui_font_pt = font_pt
+        scale = font_pt / 10.0
+        header_font = ui_font(font_pt, weight=QFont.Weight.DemiBold)
+        platform_font = ui_font(font_pt, weight=QFont.Weight.Bold)
+        cell_font = ui_font(font_pt, weight=QFont.Weight.DemiBold)
+        total_font = ui_font(font_pt + 2, weight=QFont.Weight.Bold)
+        self.setStyleSheet(
+            build_panel_section_qss(font_pt, 18)
+            + f"""
+QFrame#pnlDetailPanel QLabel#positionValue,
+QFrame#pnlDetailPanel QLabel#platformTag,
+QFrame#pnlDetailPanel QLabel#fieldLabel,
+QFrame#pnlDetailPanel QLabel#pnlTotal {{
+    font-size: {font_pt}pt;
+}}
+"""
+        )
+        self.total_label.setFont(total_font)
+        for lbl in self._header_labels:
+            lbl.setFont(header_font)
+        for lbl in self._platform_labels:
+            lbl.setFont(platform_font)
+        for cells in self._rows.values():
+            for field, lbl in cells.items():
+                lbl.setFont(cell_font)
+                base_w = self._col_widths_base[field]
+                w = max(int(base_w * scale), base_w)
+                lbl.setFixedWidth(w)
+        for col, field in enumerate(self._fields, start=1):
+            base_w = self._col_widths_base[field]
+            self._grid.setColumnMinimumWidth(col, max(int(base_w * scale), base_w))
 
     def _paint_pnl(self, lbl: QLabel, value: float) -> None:
         """渲染盈亏单元格（带正负色），仅在文本变化时更新以减少重绘。"""

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -16,6 +17,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig
+from app.core.theme import polish_widget, ui_font
+from app.widgets.panel_ui_scale import (
+    DEFAULT_PANEL_FONT_PT,
+    build_panel_section_qss,
+    clamp_check_px,
+    clamp_font_pt,
+)
 from app.widgets.symbol_alert_settings import _settings_int_spin, _settings_spin
 
 
@@ -45,6 +53,7 @@ class SymbolAutoTradeSettings(QFrame):
         # 锁定状态来源：持仓方向锁 + Maker 委托锁，统一在 _recompute_locks 合并
         self._active_mode: str | None = None
         self._maker_pending = False
+        self._ui_font_pt = DEFAULT_PANEL_FONT_PT
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -179,23 +188,33 @@ class SymbolAutoTradeSettings(QFrame):
         row.addWidget(self.maker_timeout_sec)
         row.addWidget(self._field_label("秒未成交撤单"))
         row.addSpacing(8)
-        self.maker_pending_light = QLabel()
-        self.maker_pending_light.setObjectName("makerPendingLight")
+        self.maker_pending_light = self._field_label("")
+        self.maker_pending_light.setProperty("pendingActive", "false")
         row.addWidget(self.maker_pending_light)
         row.addStretch()
         self._update_pending_light()
         return row
 
+    def _sync_pending_light_font(self) -> None:
+        if self.maker_pending_light is None:
+            return
+        font_pt = clamp_font_pt(self._ui_font_pt)
+        self.maker_pending_light.setFont(
+            ui_font(font_pt, weight=QFont.Weight.DemiBold)
+        )
+
     def _update_pending_light(self) -> None:
         """刷新委托指示灯外观：有挂单亮（橙），无挂单灭（灰）。"""
         if self.maker_pending_light is None:
             return
+        self._sync_pending_light_font()
         if self._maker_pending:
             self.maker_pending_light.setText("● 委托中")
-            self.maker_pending_light.setStyleSheet("color:#e67e22; font-weight:bold;")
+            self.maker_pending_light.setProperty("pendingActive", "true")
         else:
             self.maker_pending_light.setText("○ 无委托")
-            self.maker_pending_light.setStyleSheet("color:#888;")
+            self.maker_pending_light.setProperty("pendingActive", "false")
+        polish_widget(self.maker_pending_light)
 
     def _condition_row(
         self, check_text: str, operator_text: str, threshold_value: float, action_text: str
@@ -314,6 +333,17 @@ class SymbolAutoTradeSettings(QFrame):
         """收起所有数字框的编辑态。"""
         for spin in self.iter_spin_widgets():
             spin.lock()
+
+    def apply_ui_scale(self, font_pt: int, check_px: int) -> None:
+        """应用板块字体与勾选框尺寸（仅作用于本自动交易板块）。"""
+        font_pt = clamp_font_pt(font_pt)
+        check_px = clamp_check_px(check_px)
+        self._ui_font_pt = font_pt
+        self.setStyleSheet(build_panel_section_qss(font_pt, check_px))
+        spin_h = max(18, check_px + 2)
+        for spin in self.iter_spin_widgets():
+            spin.setFixedHeight(spin_h)
+        self._update_pending_light()
 
     def load_config(self, config: AppConfig) -> None:
         """按品种把自动交易配置回填到各控件。"""

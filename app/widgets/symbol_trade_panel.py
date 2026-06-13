@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -58,6 +59,17 @@ from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox, ClickToE
 from app.widgets.symbol_alert_settings import SymbolAlertSettings
 from app.widgets.symbol_auto_trade_settings import SymbolAutoTradeSettings
 from app.widgets.pnl_detail_panel import PnlDetailPanel
+from app.widgets.panel_ui_scale import (
+    DEFAULT_PANEL_CHECK_PX,
+    DEFAULT_PANEL_FONT_PT,
+    MAX_PANEL_CHECK_PX,
+    MAX_PANEL_FONT_PT,
+    MIN_PANEL_CHECK_PX,
+    MIN_PANEL_FONT_PT,
+    build_panel_section_qss,
+    clamp_check_px,
+    clamp_font_pt,
+)
 
 BOOK_ROWS_COMPACT = 10
 BOOK_ROWS_FULL = 20
@@ -325,6 +337,7 @@ class SymbolActionStrip(QFrame):
         self._rebuild_stack()
 
         self.refresh_positions_btn.clicked.connect(self.position_refresh_requested.emit)
+        self.apply_panel_ui_scale()
 
     def attach_monitor_buttons(self, start_btn, stop_btn) -> None:
         """把外部的启用/停止监控按钮放到对冲入口按钮左侧。"""
@@ -394,20 +407,48 @@ class SymbolActionStrip(QFrame):
         """重建中栏纵向堆叠：固定对冲按钮 + 按用户配置顺序与显隐的可选区块。"""
         self._clear_stack_after_title()
         self._stack_layout.addWidget(self._monitor_host)
-        for key, visible in self._sections:
+        for key, visible, _font_pt, _check_px in self._sections:
             widget = self._section_widgets.get(key)
             if widget is None:
                 continue
             widget.setVisible(visible)
             self._stack_layout.addWidget(widget)
 
-    def set_section_layout(self, sections: list[tuple[str, bool]]) -> None:
-        """设置中栏区块的顺序与显隐并重建。"""
+    def _section_ui_scale(self, key: str) -> tuple[int, int]:
+        for section_key, _visible, font_pt, check_px in self._sections:
+            if section_key == key:
+                return font_pt, check_px
+        return DEFAULT_PANEL_FONT_PT, DEFAULT_PANEL_CHECK_PX
+
+    def apply_panel_ui_scale(self) -> None:
+        """把各板块的字体/勾选框尺寸分别应用到对应控件。"""
+        spread_font, spread_check = self._section_ui_scale("spread")
+        alert_font, alert_check = self._section_ui_scale("alert")
+        auto_font, auto_check = self._section_ui_scale("auto")
+        pos_font, pos_check = self._section_ui_scale("position")
+
+        self.spread_frame.setStyleSheet(
+            build_panel_section_qss(spread_font, spread_check)
+        )
+        self.alert_settings.apply_ui_scale(alert_font, alert_check)
+        self.auto_trade_settings.apply_ui_scale(auto_font, auto_check)
+        self._position_block.setStyleSheet(build_panel_section_qss(pos_font, pos_check))
+        self.pnl_detail.apply_ui_scale(pos_font)
+        tag_font = ui_mono_font(point_size=spread_font, weight=QFont.Weight.Bold)
+        for lbl in self.spread_frame.findChildren(QLabel):
+            name = lbl.objectName()
+            if name in ("fieldLabel", "mt5PlatformTag"):
+                lbl.setFont(tag_font)
+
+    def set_section_layout(
+        self, sections: list[tuple[str, bool] | tuple[str, bool, int, int]]
+    ) -> None:
+        """设置中栏区块的顺序、显隐与各板块 UI 缩放并重建。"""
         self._sections = parse_panel_sections(serialize_panel_sections(sections))
         self._rebuild_stack()
 
-    def current_section_layout(self) -> list[tuple[str, bool]]:
-        """返回当前区块布局。"""
+    def current_section_layout(self) -> list[tuple[str, bool, int, int]]:
+        """返回当前区块布局（含各板块字体与勾选框尺寸）。"""
         return list(self._sections)
 
     def _open_section_dialog(self) -> None:
@@ -415,6 +456,7 @@ class SymbolActionStrip(QFrame):
         dialog = PanelSectionDialog(self._sections, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_section_layout(dialog.result_sections())
+            self.apply_panel_ui_scale()
             self.section_layout_changed.emit()
 
     def update_pnl(
@@ -519,6 +561,7 @@ class SymbolActionStrip(QFrame):
             for widget in blocked:
                 widget.blockSignals(False)
         self.set_section_layout(config.panel_sections(self.preset_id))
+        self.apply_panel_ui_scale()
 
     def apply_settings_to(self, config: AppConfig) -> None:
         """把告警/自动交易/区块布局设置写回配置。"""
@@ -639,21 +682,33 @@ class SymbolActionStrip(QFrame):
 
 
 class PanelSectionDialog(QDialog):
-    """配置中间栏板块的显示与上下顺序。"""
+    """配置中间栏各板块的显示、顺序、字体与勾选框尺寸。"""
 
-    def __init__(self, sections: list[tuple[str, bool]], parent=None):
+    def __init__(
+        self,
+        sections: list[tuple[str, bool, int, int]],
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("板块设置")
         self.setModal(True)
-        self._sections: list[list] = [[key, bool(visible)] for key, visible in sections]
+        self._sections: list[list] = [
+            [key, bool(visible), clamp_font_pt(font_pt), clamp_check_px(check_px)]
+            for key, visible, font_pt, check_px in sections
+        ]
         self._checks: dict[str, QCheckBox] = {}
+        self._font_spins: dict[str, QSpinBox] = {}
+        self._check_spins: dict[str, QSpinBox] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(8)
 
-        hint = QLabel("勾选显示对应板块，用 ↑ ↓ 调整上下顺序。")
+        hint = QLabel(
+            "勾选显示对应板块；每行可单独设置字体与勾选框大小；用 ↑ ↓ 调整上下顺序。"
+        )
         hint.setObjectName("fieldHint")
+        hint.setWordWrap(True)
         root.addWidget(hint)
 
         self._rows_host = QWidget()
@@ -676,8 +731,21 @@ class PanelSectionDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def _sync_row_check_size(self, key: str) -> None:
+        """同步单行勾选框尺寸，便于预览点击区域。"""
+        check = self._checks.get(key)
+        spin = self._check_spins.get(key)
+        if check is None or spin is None:
+            return
+        px = spin.value()
+        touch = max(22, px + 6)
+        check.setStyleSheet(
+            f"QCheckBox::indicator {{ width: {px}px; height: {px}px; }}"
+            f"QCheckBox {{ min-height: {touch}px; }}"
+        )
+
     def _render_rows(self) -> None:
-        """按当前顺序重绘每个板块行（勾选框 + 上/下移按钮）。"""
+        """按当前顺序重绘每个板块行。"""
         while self._rows_layout.count():
             item = self._rows_layout.takeAt(0)
             if item is None:
@@ -686,7 +754,15 @@ class PanelSectionDialog(QDialog):
             if widget is not None:
                 widget.deleteLater()
         self._checks.clear()
-        for idx, (key, visible) in enumerate(self._sections):
+        self._font_spins.clear()
+        self._check_spins.clear()
+        for idx, entry in enumerate(self._sections):
+            key, visible, font_pt, check_px = (
+                entry[0],
+                entry[1],
+                entry[2],
+                entry[3],
+            )
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
@@ -696,6 +772,29 @@ class PanelSectionDialog(QDialog):
             check.toggled.connect(lambda state, k=key: self._set_visible(k, state))
             self._checks[key] = check
             row_layout.addWidget(check)
+            row_layout.addSpacing(4)
+            row_layout.addWidget(QLabel("字体"))
+            font_spin = QSpinBox()
+            font_spin.setRange(MIN_PANEL_FONT_PT, MAX_PANEL_FONT_PT)
+            font_spin.setValue(font_pt)
+            font_spin.setSuffix(" pt")
+            font_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            font_spin.setFixedWidth(68)
+            self._font_spins[key] = font_spin
+            row_layout.addWidget(font_spin)
+            row_layout.addSpacing(4)
+            row_layout.addWidget(QLabel("勾选"))
+            check_spin = QSpinBox()
+            check_spin.setRange(MIN_PANEL_CHECK_PX, MAX_PANEL_CHECK_PX)
+            check_spin.setValue(check_px)
+            check_spin.setSuffix(" px")
+            check_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            check_spin.setFixedWidth(68)
+            check_spin.valueChanged.connect(
+                lambda _value, k=key: self._sync_row_check_size(k)
+            )
+            self._check_spins[key] = check_spin
+            row_layout.addWidget(check_spin)
             row_layout.addStretch(1)
             up_btn = QPushButton("↑")
             up_btn.setFixedWidth(30)
@@ -708,6 +807,7 @@ class PanelSectionDialog(QDialog):
             row_layout.addWidget(up_btn)
             row_layout.addWidget(down_btn)
             self._rows_layout.addWidget(row)
+            self._sync_row_check_size(key)
 
     def _set_visible(self, key: str, visible: bool) -> None:
         for entry in self._sections:
@@ -726,9 +826,25 @@ class PanelSectionDialog(QDialog):
         )
         self._render_rows()
 
-    def result_sections(self) -> list[tuple[str, bool]]:
-        """返回用户编辑后的板块顺序与显隐。"""
-        return [(key, bool(visible)) for key, visible in self._sections]
+    def result_sections(self) -> list[tuple[str, bool, int, int]]:
+        """返回用户编辑后的板块顺序、显隐与各板块 UI 缩放。"""
+        result: list[tuple[str, bool, int, int]] = []
+        for key, _visible, _font_pt, _check_px in self._sections:
+            check = self._checks.get(key)
+            font_spin = self._font_spins.get(key)
+            check_spin = self._check_spins.get(key)
+            visible = check.isChecked() if check is not None else True
+            font_pt = font_spin.value() if font_spin is not None else DEFAULT_PANEL_FONT_PT
+            check_px = check_spin.value() if check_spin is not None else DEFAULT_PANEL_CHECK_PX
+            result.append(
+                (
+                    key,
+                    visible,
+                    clamp_font_pt(font_pt),
+                    clamp_check_px(check_px),
+                )
+            )
+        return result
 
 
 class SymbolTradePanel(QFrame):

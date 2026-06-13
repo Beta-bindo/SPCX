@@ -17,6 +17,8 @@ from app.core.models import (
     BA_REFRESH_INTERVAL_DEFAULT,
     DEFAULT_PANEL_SECTIONS,
     normalize_ba_refresh_interval,
+    parse_panel_sections,
+    serialize_panel_sections,
 )
 from app.core.app_log import LOG_LEVEL_DEFAULT, normalize_log_level
 from app.core.secret_store import protect_secret, unprotect_secret
@@ -197,8 +199,20 @@ def load_config() -> AppConfig:
             layout_mode=data.get("layout_mode", "dual"),
             single_symbol_preset=data.get("single_symbol_preset", "xau"),
             log_level=normalize_log_level(data.get("log_level", LOG_LEVEL_DEFAULT)),
-            xau_panel_sections=data.get("xau_panel_sections", DEFAULT_PANEL_SECTIONS),
-            xag_panel_sections=data.get("xag_panel_sections", DEFAULT_PANEL_SECTIONS),
+            xau_panel_sections=serialize_panel_sections(
+                parse_panel_sections(
+                    data.get("xau_panel_sections", DEFAULT_PANEL_SECTIONS),
+                    default_font_pt=int(data.get("xau_panel_font_pt", 10)),
+                    default_check_px=int(data.get("xau_panel_check_px", 18)),
+                )
+            ),
+            xag_panel_sections=serialize_panel_sections(
+                parse_panel_sections(
+                    data.get("xag_panel_sections", DEFAULT_PANEL_SECTIONS),
+                    default_font_pt=int(data.get("xag_panel_font_pt", 10)),
+                    default_check_px=int(data.get("xag_panel_check_px", 18)),
+                )
+            ),
         )
         # 由手数映射重算派生的 BA 数量/手数，保证一致性
         cfg.xau_ba_quantity = cfg.ba_quantity_for("xau")

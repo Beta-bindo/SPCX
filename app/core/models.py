@@ -68,27 +68,53 @@ PANEL_SECTION_LABELS: dict[str, str] = {
     "auto": "自动交易",
     "position": "当前持仓 / 盈利",
 }
-DEFAULT_PANEL_SECTIONS: str = "spread:1,alert:1,auto:1,position:1"
+DEFAULT_PANEL_SECTIONS: str = "spread:1:10:18,alert:1:10:18,auto:1:10:18,position:1:10:18"
+
+# (板块 key, 是否显示, 字体 pt, 勾选框 px)
+PanelSectionEntry = tuple[str, bool, int, int]
 
 
-def parse_panel_sections(raw: str | None) -> list[tuple[str, bool]]:
-    """解析 "alert:1,auto:0,position:1" 为有序的 (key, visible) 列表，并补齐缺失板块。"""
-    result: list[tuple[str, bool]] = []
+def parse_panel_sections(
+    raw: str | None,
+    *,
+    default_font_pt: int = 10,
+    default_check_px: int = 18,
+) -> list[PanelSectionEntry]:
+    """解析板块配置。支持旧格式 key:visible 与新格式 key:visible:font_pt:check_px。"""
+    from app.widgets.panel_ui_scale import clamp_check_px, clamp_font_pt
+
+    default_font_pt = clamp_font_pt(default_font_pt)
+    default_check_px = clamp_check_px(default_check_px)
+    result: list[PanelSectionEntry] = []
     seen: set[str] = set()
     for chunk in (raw or "").split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
-        key, _, flag = chunk.partition(":")
-        key = key.strip()
+        parts = [p.strip() for p in chunk.split(":")]
+        key = parts[0]
         if key not in PANEL_SECTION_KEYS or key in seen:
             continue
-        visible = flag.strip() not in ("0", "false", "False", "no")
-        result.append((key, visible))
+        visible = True
+        if len(parts) > 1:
+            visible = parts[1] not in ("0", "false", "False", "no")
+        font_pt = default_font_pt
+        check_px = default_check_px
+        if len(parts) > 2:
+            try:
+                font_pt = clamp_font_pt(int(parts[2]))
+            except ValueError:
+                pass
+        if len(parts) > 3:
+            try:
+                check_px = clamp_check_px(int(parts[3]))
+            except ValueError:
+                pass
+        result.append((key, visible, font_pt, check_px))
         seen.add(key)
     for key in PANEL_SECTION_KEYS:
         if key not in seen:
-            entry = (key, True)
+            entry: PanelSectionEntry = (key, True, default_font_pt, default_check_px)
             if key == "spread":
                 result.insert(0, entry)
             else:
@@ -97,17 +123,28 @@ def parse_panel_sections(raw: str | None) -> list[tuple[str, bool]]:
     return result
 
 
-def serialize_panel_sections(sections: list[tuple[str, bool]]) -> str:
+def serialize_panel_sections(sections: list[PanelSectionEntry] | list[tuple]) -> str:
     parts: list[str] = []
     seen: set[str] = set()
-    for key, visible in sections:
+    from app.widgets.panel_ui_scale import clamp_check_px, clamp_font_pt
+
+    for item in sections:
+        if len(item) >= 4:
+            key, visible, font_pt, check_px = item[0], item[1], item[2], item[3]
+        elif len(item) == 2:
+            key, visible = item[0], item[1]
+            font_pt, check_px = 10, 18
+        else:
+            continue
         if key not in PANEL_SECTION_KEYS or key in seen:
             continue
-        parts.append(f"{key}:{1 if visible else 0}")
+        font_pt = clamp_font_pt(int(font_pt))
+        check_px = clamp_check_px(int(check_px))
+        parts.append(f"{key}:{1 if visible else 0}:{font_pt}:{check_px}")
         seen.add(key)
     for key in PANEL_SECTION_KEYS:
         if key not in seen:
-            parts.append(f"{key}:1")
+            parts.append(f"{key}:1:10:18")
     return ",".join(parts)
 
 
@@ -358,13 +395,13 @@ class AppConfig:
     xau_panel_sections: str = DEFAULT_PANEL_SECTIONS
     xag_panel_sections: str = DEFAULT_PANEL_SECTIONS
 
-    def panel_sections(self, preset_id: str) -> list[tuple[str, bool]]:
-        """取该品种的中间栏板块顺序与可见性配置。"""
+    def panel_sections(self, preset_id: str) -> list[PanelSectionEntry]:
+        """取该品种的中间栏板块顺序、可见性与各板块 UI 缩放。"""
         raw = self.xag_panel_sections if preset_id == "xag" else self.xau_panel_sections
         return parse_panel_sections(raw)
 
     def set_panel_sections(
-        self, preset_id: str, sections: list[tuple[str, bool]]
+        self, preset_id: str, sections: list[PanelSectionEntry] | list[tuple]
     ) -> None:
         text = serialize_panel_sections(sections)
         if preset_id == "xag":

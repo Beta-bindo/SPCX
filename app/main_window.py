@@ -99,7 +99,7 @@ class StatusBadge(QFrame):
 
 
 class WsStatusBadge(QFrame):
-    """BA 行情通道徽标：WebSocket 实时推流 / REST 兜底 / 连接中。"""
+    """BA 行情连接方式徽标：WebSocket 实时推流 / REST 兜底（非管理后台）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,10 +111,10 @@ class WsStatusBadge(QFrame):
         self.dot = QFrame()
         self.dot.setFixedSize(8, 8)
         self.dot.setObjectName("statusDotDisconnected")
-        self.label = QLabel("行情 · 关闭")
+        self.label = QLabel("连接方式：关闭")
         self.label.setObjectName("statusText")
         metrics = QFontMetrics(self.label.font())
-        self.label.setMinimumWidth(metrics.horizontalAdvance("行情 · REST 兜底"))
+        self.label.setMinimumWidth(metrics.horizontalAdvance("连接方式：WebSocket"))
         layout.addWidget(self.dot)
         layout.addWidget(self.label)
         self._dot_name = "statusDotDisconnected"
@@ -122,13 +122,13 @@ class WsStatusBadge(QFrame):
 
     def set_mode(self, mode: str, *, live_ba: bool) -> None:
         if not live_ba:
-            dot_name, text = "statusDotSimulated", "行情 · 关闭"
+            dot_name, text = "statusDotSimulated", "连接方式：模拟"
         else:
             mapping = {
-                "streaming": ("statusDotConnected", "行情 · WS 已连"),
-                "rest": ("statusDotSlow", "行情 · REST 兜底"),
-                "connecting": ("statusDotDisconnected", "行情 · WS 连接中"),
-                "off": ("statusDotDisconnected", "行情 · 关闭"),
+                "streaming": ("statusDotConnected", "连接方式：WebSocket"),
+                "rest": ("statusDotSlow", "连接方式：REST"),
+                "connecting": ("statusDotDisconnected", "连接方式：WebSocket(连接中)"),
+                "off": ("statusDotDisconnected", "连接方式：关闭"),
             }
             dot_name, text = mapping.get(mode, mapping["off"])
         if text != self._label_text:
@@ -143,15 +143,15 @@ class WsStatusBadge(QFrame):
 class NetworkStatusBadge(QFrame):
     """网络状态徽标：展示 BA/Ex 行情延迟，或离线/未启动等精简文案。"""
 
-    _LATENCY_SAMPLE = ("BA 9999ms", "Ex 9999ms")
+    _MS_SAMPLE = "9999ms"  # 数值列按四位数 ms 预留，避免 >999 时被裁切
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("networkStatusBadge")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 2, 8, 2)
-        layout.setSpacing(5)
+        layout.setContentsMargins(4, 2, 5, 2)
+        layout.setSpacing(4)
         self.dot = QFrame()
         self.dot.setFixedSize(8, 8)
         self.dot.setObjectName("statusDotDisconnected")
@@ -159,32 +159,43 @@ class NetworkStatusBadge(QFrame):
 
         latency_font = ui_mono_font(point_size=18)
         metrics = QFontMetrics(latency_font)
-        line_w = max(metrics.horizontalAdvance(s) for s in self._LATENCY_SAMPLE)
+        tag_w = metrics.horizontalAdvance("Ex")
+        ms_w = metrics.horizontalAdvance(self._MS_SAMPLE)
         line_h = metrics.height()
+        row_w = tag_w + 2 + ms_w
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(0)
 
-        self.ba_label = QLabel("BA ----ms")
-        self.ba_label.setObjectName("statusLatency")
-        self.ex_label = QLabel("Ex ----ms")
-        self.ex_label.setObjectName("statusLatency")
-        for lbl in (self.ba_label, self.ex_label):
-            lbl.setFont(latency_font)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            text_col.addWidget(lbl)
+        self.ba_tag = QLabel("BA")
+        self.ba_ms = QLabel("----")
+        self.ex_tag = QLabel("Ex")
+        self.ex_ms = QLabel("----")
+        for tag, ms in ((self.ba_tag, self.ba_ms), (self.ex_tag, self.ex_ms)):
+            tag.setObjectName("statusLatencyTag")
+            ms.setObjectName("statusLatency")
+            tag.setFont(latency_font)
+            ms.setFont(latency_font)
+            tag.setFixedSize(tag_w, line_h)
+            ms.setFixedSize(ms_w, line_h)
+            tag.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            ms.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(2)
+            row.addWidget(tag)
+            row.addWidget(ms)
+            text_col.addLayout(row)
 
         self._latency_wrap = QWidget()
         self._latency_wrap.setLayout(text_col)
 
         self._compact_label = QLabel("未启动")
         self._compact_label.setObjectName("statusLatencyCompact")
-        compact_w = metrics.horizontalAdvance("网络 · 未启动")
-        content_w = max(line_w, compact_w)
+        compact_w = metrics.horizontalAdvance("断网")
+        content_w = max(row_w, compact_w)
         self._latency_wrap.setFixedSize(content_w, line_h * 2)
-        for lbl in (self.ba_label, self.ex_label):
-            lbl.setFixedSize(content_w, line_h)
         self._compact_label.setFixedSize(content_w, line_h * 2)
         self._compact_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -193,11 +204,11 @@ class NetworkStatusBadge(QFrame):
         layout.addWidget(self._latency_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._compact_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.setFixedSize(6 + 8 + 5 + content_w + 8, line_h * 2 + 4)
+        self.setFixedSize(4 + 8 + 4 + content_w + 5, line_h * 2 + 4)
 
         self._dot_name = "statusDotDisconnected"
-        self._ba_text = self.ba_label.text()
-        self._ex_text = self.ex_label.text()
+        self._ba_ms_text = self.ba_ms.text()
+        self._ex_ms_text = self.ex_ms.text()
         self._compact_text = ""
 
     def update_status(self, status: NetworkStatus) -> None:
@@ -216,14 +227,14 @@ class NetworkStatusBadge(QFrame):
             self._latency_wrap.setVisible(False)
             self._compact_label.setVisible(True)
         else:
-            ba_text = status.ba_latency_line()
-            ex_text = status.ex_latency_line()
-            if ba_text != self._ba_text:
-                self.ba_label.setText(ba_text)
-                self._ba_text = ba_text
-            if ex_text != self._ex_text:
-                self.ex_label.setText(ex_text)
-                self._ex_text = ex_text
+            ba_ms = status.ba_ms_text()
+            ex_ms = status.ex_ms_text()
+            if ba_ms != self._ba_ms_text:
+                self.ba_ms.setText(ba_ms)
+                self._ba_ms_text = ba_ms
+            if ex_ms != self._ex_ms_text:
+                self.ex_ms.setText(ex_ms)
+                self._ex_ms_text = ex_ms
             self._compact_label.setVisible(False)
             self._latency_wrap.setVisible(True)
         if dot_name != self._dot_name:
@@ -442,8 +453,14 @@ class MainWindow(QMainWindow):
         self.mt5_status = StatusBadge("Exness")
         self.network_status = NetworkStatusBadge()
         self.ws_status = WsStatusBadge()
-        row.addWidget(self.ba_status)
-        row.addWidget(self.mt5_status)
+        status_col = QVBoxLayout()
+        status_col.setContentsMargins(0, 0, 0, 0)
+        status_col.setSpacing(2)
+        status_col.addWidget(self.ba_status)
+        status_col.addWidget(self.mt5_status)
+        status_wrap = QWidget()
+        status_wrap.setLayout(status_col)
+        row.addWidget(status_wrap)
         row.addWidget(self.network_status)
         row.addWidget(self.ws_status)
         self.profit_btn = QPushButton("利润计算器")

@@ -88,6 +88,22 @@ class NetworkStatus:
             return "Ex ----ms"
         return f"Ex {self._fmt_ms_fixed(self.mt5_ms)}ms"
 
+    def ba_ms_text(self) -> str:
+        if not self._show_ba_latency():
+            return "--"
+        return self._fmt_ms_capped(self.ba_ms)
+
+    def ex_ms_text(self) -> str:
+        if not self._show_ex_latency():
+            return "--"
+        return self._fmt_ms_capped(self.mt5_ms)
+
+    def _fmt_ms_capped(self, ms: float | None) -> str:
+        if ms is None:
+            return "--"
+        value = min(max(int(round(ms)), 0), 9999)
+        return f"{value}ms"
+
     @property
     def compact_text(self) -> str:
         if not self.running:
