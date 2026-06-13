@@ -67,7 +67,7 @@ class PnlDetailPanel(QFrame):
         super().__init__(parent)
         self._preset_id = preset_id
         self._show_liq_buf = show_liq_buf
-        self._fields = ("pnl", "qty", "side", "liq", "buf", "lev") if show_liq_buf else (
+        self._fields = ("pnl", "qty", "side", "buf", "liq", "lev") if show_liq_buf else (
             "pnl",
             "qty",
             "side",
@@ -123,8 +123,8 @@ class PnlDetailPanel(QFrame):
         grid.setVerticalSpacing(0)
         col_titles = ["", "盈亏", "持仓", "方向"]
         if show_liq_buf:
-            # 强=爆仓价位（liq），爆=距爆仓的资金缓冲（buf，账户还能亏多少钱）
-            col_titles.extend(["强", "爆"])
+            # 爆=距爆仓的资金缓冲（buf，账户还能亏多少钱），强=爆仓价位（liq）
+            col_titles.extend(["爆", "强"])
         col_titles.append("杠")
         for col, text in enumerate(col_titles):
             lbl = QLabel(text)
@@ -152,8 +152,9 @@ class PnlDetailPanel(QFrame):
                 cell = QLabel("--")
                 cell.setObjectName("positionValue")
                 cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                # 字号与「跨平台点差」里 BA/EX 价格保持一致（10pt）
                 _cell_font = cell.font()
-                _cell_font.setPointSizeF(_cell_font.pointSizeF() + 1)
+                _cell_font.setPointSize(10)
                 cell.setFont(_cell_font)
                 cell.setFixedWidth(col_widths[field])
                 cell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)

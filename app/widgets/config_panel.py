@@ -226,6 +226,12 @@ class ConfigPanel(QFrame):
         self.mt5_spread_points.setRange(0, 50)
         self.mt5_spread_points.setDecimals(2)
         self.mt5_spread_points.setValue(0.25)
+        self.auto_trade_max_latency = ClickToEditSpinBox()
+        self.auto_trade_max_latency.setRange(0, 10000)
+        self.auto_trade_max_latency.setSingleStep(50)
+        self.auto_trade_max_latency.setValue(200)
+        self.auto_trade_max_latency.setSuffix(" ms")
+        self.auto_trade_max_latency.setButtonSymbols(ClickToEditSpinBox.ButtonSymbols.NoButtons)
         self.use_proxy = QCheckBox("启用 HTTP 代理")
         self.proxy_host = QLineEdit("127.0.0.1")
         self.proxy_port = ClickToEditSpinBox()
@@ -248,6 +254,11 @@ class ConfigPanel(QFrame):
                 ],
                 columns=3,
             )
+            self.fee_card.add_field(
+                "延迟>N取消自动",
+                self.auto_trade_max_latency,
+                "网络延迟超过该值自动取消已勾选的自动下单；0=不启用",
+            )
             self.fee_card.body.addWidget(self.use_proxy)
             self.fee_card.add_field("代理", proxy_wrap, "如 127.0.0.1:7897（Clash HTTP 端口）")
         else:
@@ -262,6 +273,12 @@ class ConfigPanel(QFrame):
                 "MT5 点差(点)",
                 self.mt5_spread_points,
                 "估算开平仓成本",
+                label_width=dialog_label_w,
+            )
+            self.fee_card.add_inline_field(
+                "延迟>N取消自动",
+                self.auto_trade_max_latency,
+                "延迟超此值取消自动下单；0=关闭",
                 label_width=dialog_label_w,
             )
             self.fee_card.add_inline_field(
@@ -397,6 +414,7 @@ class ConfigPanel(QFrame):
         self.ba_fee_rate.setValue(config.ba_fee_rate)
         self.mt5_commission.setValue(config.mt5_commission_per_lot)
         self.mt5_spread_points.setValue(config.mt5_spread_points)
+        self.auto_trade_max_latency.setValue(int(round(config.auto_trade_max_latency_ms)))
         self.ba_leverage.setValue(config.ba_leverage)
         self.mt5_leverage.setValue(config.mt5_leverage)
         self.sync_leverage_on_trade.setChecked(config.sync_leverage_on_trade)
@@ -431,6 +449,7 @@ class ConfigPanel(QFrame):
             ba_fee_rate=self.ba_fee_rate.value(),
             mt5_commission_per_lot=self.mt5_commission.value(),
             mt5_spread_points=self.mt5_spread_points.value(),
+            auto_trade_max_latency_ms=float(self.auto_trade_max_latency.value()),
             ba_leverage=self.ba_leverage.value(),
             mt5_leverage=self.mt5_leverage.value(),
             sync_leverage_on_trade=self.sync_leverage_on_trade.isChecked(),

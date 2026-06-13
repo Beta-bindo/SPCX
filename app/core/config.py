@@ -117,6 +117,7 @@ def load_config() -> AppConfig:
                 data.get("ba_refresh_interval_sec", BA_REFRESH_INTERVAL_DEFAULT)
             ),
             ba_maker_timeout_sec=float(data.get("ba_maker_timeout_sec", 5.0)),
+            auto_trade_max_latency_ms=float(data.get("auto_trade_max_latency_ms", 200.0)),
             xau_spread_alert_min=float(data.get("xau_spread_alert_min", 1.0)),
             xau_spread_alert_max=float(data.get("xau_spread_alert_max", 3.0)),
             xag_spread_alert_min=float(data.get("xag_spread_alert_min", -2.0)),
@@ -252,6 +253,7 @@ def save_config(config: AppConfig) -> None:
         "sync_leverage_on_trade": config.sync_leverage_on_trade,
         "ba_refresh_interval_sec": config.ba_refresh_interval_sec,
         "ba_maker_timeout_sec": config.ba_maker_timeout_sec,
+        "auto_trade_max_latency_ms": config.auto_trade_max_latency_ms,
         "xau_spread_alert_min": config.xau_spread_alert_min,
         "xau_spread_alert_max": config.xau_spread_alert_max,
         "xag_spread_alert_min": config.xag_spread_alert_min,

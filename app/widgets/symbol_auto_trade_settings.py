@@ -277,6 +277,27 @@ class SymbolAutoTradeSettings(QFrame):
             return None
         return widgets[4] if mode == "contraction" else widgets[5]
 
+    def disable_checked_auto_trades(self) -> int:
+        """取消本品种所有「已勾选」的自动开/平仓框，返回被取消的数量。
+
+        仅取消已勾选的（开收缩/开扩张/平收缩/平扩张，对应 _lane_widgets 索引 0/1/4/5），
+        未勾选的保持不动。用于网络延迟过高时一键停掉自动下单。blockSignals 批量处理，
+        由调用方统一持久化配置。
+        """
+        count = 0
+        for lane in ("maker", "market"):
+            widgets = self._lane_widgets(lane)
+            if not widgets:
+                continue
+            for idx in (0, 1, 4, 5):
+                cb = widgets[idx]
+                if cb.isChecked():
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                    cb.blockSignals(False)
+                    count += 1
+        return count
+
     def iter_watch_widgets(self):
         for lane in ("maker", "market"):
             for widget in self._lane_widgets(lane):

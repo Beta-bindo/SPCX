@@ -64,3 +64,4 @@ class ConnectionSettingsDialog(QDialog):
         config.mt5_leverage = panel_cfg.mt5_leverage
         config.sync_leverage_on_trade = panel_cfg.sync_leverage_on_trade
         config.ba_refresh_interval_sec = panel_cfg.ba_refresh_interval_sec
+        config.auto_trade_max_latency_ms = panel_cfg.auto_trade_max_latency_ms

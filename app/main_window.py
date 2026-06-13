@@ -157,7 +157,7 @@ class NetworkStatusBadge(QFrame):
         self.dot.setObjectName("statusDotDisconnected")
         layout.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        latency_font = ui_mono_font(point_size=8)
+        latency_font = ui_mono_font(point_size=11)
         metrics = QFontMetrics(latency_font)
         line_w = max(metrics.horizontalAdvance(s) for s in self._LATENCY_SAMPLE)
         line_h = metrics.height()
@@ -1402,6 +1402,47 @@ class MainWindow(QMainWindow):
 
     def _on_network_status(self, status: NetworkStatus) -> None:
         self.network_status.update_status(status)
+        self._enforce_latency_auto_trade_guard(status)
+
+    def _enforce_latency_auto_trade_guard(self, status: NetworkStatus) -> None:
+        """网络延迟超过设定阈值（或断网）时，自动取消所有已勾选的自动下单。
+
+        仅取消已勾选的，不会替用户勾选；阈值 auto_trade_max_latency_ms<=0 表示关闭该保护。
+        """
+        if not status.running:
+            return
+        limit = float(getattr(self.config, "auto_trade_max_latency_ms", 0.0) or 0.0)
+        if limit <= 0:
+            return
+        over: list[tuple[str, float]] = []
+        if status.ba_live and status.ba_ms is not None and status.ba_ms > limit:
+            over.append(("BA", status.ba_ms))
+        if status.mt5_live and status.mt5_ms is not None and status.mt5_ms > limit:
+            over.append(("Ex", status.mt5_ms))
+        offline = status.level == "offline"
+        if not over and not offline:
+            return
+        total = 0
+        for strip in (self.gold_actions, self.silver_actions):
+            total += strip.auto_trade_settings.disable_checked_auto_trades()
+        if total <= 0:
+            return
+        # 与人工取消一致：清掉计时/冷却，持久化并同步引擎
+        self._auto_trade_state.last_fire.clear()
+        self._auto_trade_state.last_close_fire.clear()
+        self._auto_trade_state.since.clear()
+        self._auto_trade_state.close_since.clear()
+        self.config = self._merge_config()
+        save_config(self.config)
+        self.engine.sync_config(self.config)
+        if offline:
+            detail = "网络断开"
+        else:
+            detail = "、".join(f"{name} {ms:.0f}ms" for name, ms in over)
+        self._append_log(
+            LogLevel.TRADE,
+            f"网络延迟过高（阈值 {limit:.0f}ms：{detail}），已自动取消 {total} 个自动下单勾选",
+        )
 
     def _on_ws_state(self, mode: str) -> None:
         if self._ui_bootstrapping:

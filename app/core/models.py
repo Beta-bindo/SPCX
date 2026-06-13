@@ -286,6 +286,8 @@ class AppConfig:
     sync_leverage_on_trade: bool = False
     ba_refresh_interval_sec: float = BA_REFRESH_INTERVAL_DEFAULT
     ba_maker_timeout_sec: float = 5.0   # Maker 委托等待成交超时（秒），超时撤单
+    # 网络延迟超过该毫秒数时，自动取消所有已勾选的自动下单（0=不启用该保护）
+    auto_trade_max_latency_ms: float = 200.0
     # —— 点差 / 爆仓告警阈值与开关 ——
     xau_spread_alert_min: float = 1.0
     xau_spread_alert_max: float = 3.0
