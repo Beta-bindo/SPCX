@@ -25,8 +25,10 @@
       <div class="topnav">
         <div class="topnav-links">
           <a href="/admin" class="active">授权管理</a>
+          <a href="/admin/dashboard">数据看板</a>
           <a href="/admin/trades">交易明细</a>
           <a href="/admin/positions">持仓列表</a>
+          <a href="/admin/audit">操作日志</a>
         </div>
         <div class="topnav-actions">
           <button class="secondary" onclick="openChangePasswordDialog(adminToken)">修改密码</button>
@@ -46,8 +48,14 @@
             <option value="disabled">已停用</option>
           </select>
         </label>
+        <label>搜索
+          <input id="searchInput" type="search" placeholder="昵称 / 手机 / 机器码 / 账号" style="min-width:240px" />
+        </label>
+        <label class="modal-check" style="margin:0">
+          <input id="expiringFilter" type="checkbox" onchange="loadDevices(1)" /> 仅看 7 天内到期
+        </label>
         <div class="filter-actions">
-          <button class="secondary" onclick="loadDevices(devicePage)">刷新</button>
+          <button class="secondary" onclick="loadDevices(1)">查询</button>
           <button class="secondary" onclick="resetFilters()">重置</button>
         </div>
       </div>
@@ -104,13 +112,13 @@ async function login() {
 }
 
 function logout() {
-  adminToken = '';
-  localStorage.removeItem('ta_admin_token');
-  location.reload();
+  serverLogout(adminToken);
 }
 
 function resetFilters() {
   document.getElementById('statusFilter').value = '';
+  document.getElementById('searchInput').value = '';
+  document.getElementById('expiringFilter').checked = false;
   document.getElementById('pageSize').value = '20';
   loadDevices(1);
 }
@@ -128,6 +136,9 @@ async function loadStats() {
   document.getElementById('stats').innerHTML = `
     <div class="stat"><span class="sub">待审核</span><b>${by.pending||0}</b></div>
     <div class="stat"><span class="sub">已通过</span><b>${by.approved||0}</b></div>
+    <div class="stat"><span class="sub">在线</span><b>${data.online||0}</b></div>
+    <div class="stat"><span class="sub">7天内到期</span><b class="${(data.expiring_soon||0)>0?'warn':''}">${data.expiring_soon||0}</b></div>
+    <div class="stat"><span class="sub">已到期</span><b class="${(data.expired||0)>0?'err':''}">${data.expired||0}</b></div>
     <div class="stat"><span class="sub">已拒绝</span><b>${by.rejected||0}</b></div>
     <div class="stat"><span class="sub">已停用</span><b>${by.disabled||0}</b></div>
     <div class="stat"><span class="sub">交易笔数</span><b>${data.trade_count||0}</b></div>
@@ -185,9 +196,13 @@ async function editExpiresAt(deviceId, current) {
 async function loadDevices(page) {
   const status = document.getElementById('statusFilter').value;
   const pageSize = document.getElementById('pageSize').value;
+  const q = document.getElementById('searchInput').value.trim();
+  const expiring = document.getElementById('expiringFilter').checked;
   devicePage = Math.max(1, page);
   let url = `/api/v1/admin/devices?page=${devicePage}&page_size=${pageSize}`;
   if (status) url += `&status=${encodeURIComponent(status)}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (expiring) url += `&expiring=7`;
   const res = await fetch(url, { headers: authHeaders(adminToken) });
   if (res.status === 401) return logout();
   const data = await res.json();
@@ -225,6 +240,15 @@ async function loadDevices(page) {
     tr.querySelector('[data-action="expires"]')?.addEventListener('click', () => {
       editExpiresAt(id, d.expires_at || '');
     });
+    // 通过 data-act + 事件绑定操作按钮：device_id 不进入 HTML，杜绝注入
+    tr.querySelectorAll('[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const a = btn.getAttribute('data-act');
+        if (a === 'reject') reject(id);
+        else if (a === 'delete') removeDevice(id);
+        else act(id, a);
+      });
+    });
     tbody.appendChild(tr);
   }
   const pages = data.pages || 1;
@@ -234,20 +258,21 @@ async function loadDevices(page) {
 }
 
 function actionButtons(d) {
-  const id = d.device_id;
-  let html = '';
+  // 仅输出静态按钮（含 data-act 标记）；device_id 不拼入 HTML，避免存储型 XSS。
+  // 实际点击行为在 loadDevices 中用 addEventListener 绑定，device_id 走闭包传参。
+  const btns = [];
   if (d.status === 'pending') {
-    html += `<button class="ok" onclick="act('${id}','approve')">通过</button> `;
-    html += `<button class="danger" onclick="reject('${id}')">拒绝</button> `;
+    btns.push('<button class="ok" data-act="approve">通过</button>');
+    btns.push('<button class="danger" data-act="reject">拒绝</button>');
   }
   if (d.status === 'approved') {
-    html += `<button class="danger" onclick="act('${id}','disable')">停用</button> `;
+    btns.push('<button class="danger" data-act="disable">停用</button>');
   }
   if (d.status === 'disabled' || d.status === 'rejected') {
-    html += `<button class="ok" onclick="act('${id}','approve')">重新通过</button> `;
+    btns.push('<button class="ok" data-act="approve">重新通过</button>');
   }
-  html += `<button class="danger" onclick="removeDevice('${id}')">删除</button>`;
-  return html;
+  btns.push('<button class="danger" data-act="delete">删除</button>');
+  return btns.join(' ');
 }
 
 async function act(deviceId, action) {
@@ -284,6 +309,10 @@ async function removeDevice(deviceId) {
   if (!res.ok) { alert('删除失败'); return; }
   await refreshAll();
 }
+
+document.getElementById('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadDevices(1);
+});
 
 if (adminToken) {
   document.getElementById('loginCard').classList.add('hidden');

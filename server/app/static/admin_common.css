@@ -258,6 +258,19 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 
 .hidden { display: none; }
 .err { color: var(--bad); font-size: 0.85rem; }
+.warn { color: #f59e0b; }
+b.err, b.warn { font-size: inherit; }
+
+/* 看板图表 */
+.chart-wrap { width: 100%; overflow-x: auto; }
+.chart-svg { display: block; width: 100%; min-width: 640px; height: auto; }
+.chart-svg .bar-pos { fill: #22c55e; }
+.chart-svg .bar-neg { fill: #ef4444; }
+.chart-svg .axis { stroke: var(--border, #888); stroke-width: 1; opacity: 0.4; }
+.chart-svg .lbl { fill: var(--muted, #888); font-size: 10px; }
+.chart-svg .line { fill: none; stroke: #3b82f6; stroke-width: 2; }
+.chart-legend { display: flex; gap: 16px; font-size: 0.8rem; margin: 8px 0; color: var(--muted, #888); }
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 .pager {
   display: flex;
   gap: 8px;

@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 from app.config import validate_production_settings
 from app.database import init_db
 from app.routes import admin, client
 
-app = FastAPI(title="TradeAssistant License Server", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    validate_production_settings()
+    init_db()
+    yield
+
+
+app = FastAPI(title="TradeAssistant License Server", version="1.0.0", lifespan=lifespan)
 app.include_router(client.router)
 app.include_router(admin.router)
 
@@ -18,10 +28,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    validate_production_settings()
-    init_db()
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 @app.get("/health")
@@ -42,3 +55,13 @@ def trades_page() -> FileResponse:
 @app.get("/admin/positions", response_class=HTMLResponse)
 def positions_page() -> FileResponse:
     return FileResponse(TEMPLATE_DIR / "positions.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+def dashboard_page() -> FileResponse:
+    return FileResponse(TEMPLATE_DIR / "dashboard.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin/audit", response_class=HTMLResponse)
+def audit_page() -> FileResponse:
+    return FileResponse(TEMPLATE_DIR / "audit.html", media_type="text/html; charset=utf-8")

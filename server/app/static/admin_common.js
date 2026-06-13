@@ -120,6 +120,17 @@ function authHeaders(adminToken) {
   return { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
 }
 
+async function serverLogout(adminToken) {
+  // 通知服务端吊销令牌版本，使本次会话令牌立即失效，再清本地
+  try {
+    await fetch('/api/v1/admin/logout', { method: 'POST', headers: authHeaders(adminToken) });
+  } catch (_) {
+    /* 网络失败也继续本地登出 */
+  }
+  localStorage.removeItem('ta_admin_token');
+  location.reload();
+}
+
 function beijingTodayDate() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',

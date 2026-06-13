@@ -24,6 +24,13 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     admin_password: str
@@ -33,6 +40,12 @@ class Settings:
     db_path: str
     host: str
     port: int
+    # 免授权版「暗号备注自动通过」开关：付费服务器建议设 TA_NOLICENSE_AUTO_APPROVE=0 关闭
+    nolicense_auto_approve: bool
+    # 是否信任反向代理传来的 X-Forwarded-For（仅在确有可信反代时开启，防止伪造限流键）
+    trust_forwarded: bool
+    # CSV 导出最大行数上限，防止超大导出拖垮内存
+    export_max_rows: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -44,7 +57,24 @@ class Settings:
             db_path=os.environ.get("TA_DB_PATH", "data/license.db"),
             host=os.environ.get("TA_HOST", "127.0.0.1"),
             port=int(os.environ.get("TA_PORT", "8787")),
+            nolicense_auto_approve=_env_bool("TA_NOLICENSE_AUTO_APPROVE", True),
+            trust_forwarded=_env_bool("TA_TRUST_FORWARDED", False),
+            export_max_rows=int(os.environ.get("TA_EXPORT_MAX_ROWS", "100000")),
         )
+
+
+def admin_token_version() -> int:
+    """管理员令牌版本号：改密/退出时自增，使旧令牌立即失效。"""
+    try:
+        return int(os.environ.get("TA_ADMIN_TOKEN_VERSION", "0"))
+    except ValueError:
+        return 0
+
+
+def bump_admin_token_version() -> int:
+    new_version = admin_token_version() + 1
+    update_env_value("TA_ADMIN_TOKEN_VERSION", str(new_version))
+    return new_version
 
 
 settings = Settings.from_env()

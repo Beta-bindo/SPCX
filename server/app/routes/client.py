@@ -11,6 +11,7 @@ from app.database import (
     device_is_expired,
     enrich_device,
     get_conn,
+    log_audit,
     normalize_expires_at,
     row_to_dict,
 )
@@ -71,8 +72,18 @@ def register(body: RegisterRequest) -> dict:
                 (body.display_name, body.contact, body.note, now, body.device_id),
             )
             status = device["status"]
-            if _should_auto_approve(body.note) and status == "pending":
+            if (
+                status == "pending"
+                and _should_auto_approve(body.note)
+                and settings.nolicense_auto_approve
+            ):
                 _approve_device(conn, body.device_id, now)
+                log_audit(
+                    conn,
+                    "auto_approve",
+                    target_device_id=body.device_id,
+                    detail="免授权版自动注册",
+                )
                 status = "approved"
             message = {
                 "pending": "申请已提交，等待管理员审核",
@@ -92,7 +103,8 @@ def register(body: RegisterRequest) -> dict:
                 "expires_in_hours": settings.jwt_expire_hours,
             }
 
-        initial_status = "approved" if _should_auto_approve(body.note) else "pending"
+        auto_approve = _should_auto_approve(body.note) and settings.nolicense_auto_approve
+        initial_status = "approved" if auto_approve else "pending"
         conn.execute(
             """
             INSERT INTO devices (device_id, display_name, contact, note, status, created_at, last_seen_at, approved_at)
@@ -109,6 +121,13 @@ def register(body: RegisterRequest) -> dict:
                 now if initial_status == "approved" else None,
             ),
         )
+        if auto_approve:
+            log_audit(
+                conn,
+                "auto_approve",
+                target_device_id=body.device_id,
+                detail="免授权版自动注册（新设备）",
+            )
     if initial_status == "approved":
         return {
             "status": "approved",
@@ -130,6 +149,12 @@ def heartbeat(
     authorization: Optional[str] = Header(default=None),
 ) -> HeartbeatResponse:
     now = _utc_now()
+    # 仅当请求携带与该设备匹配的有效令牌时，才接受账号/持仓/委托等敏感字段写入，
+    # 否则任何人都能用 device_id 伪造覆盖他人数据。无令牌时只刷新在线时间。
+    authed = False
+    if authorization and authorization.startswith("Bearer "):
+        _payload = decode_device_token(authorization.removeprefix("Bearer ").strip())
+        authed = bool(_payload and _payload.get("sub") == body.device_id)
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM devices WHERE device_id = ?", (body.device_id,)
@@ -138,33 +163,41 @@ def heartbeat(
             raise HTTPException(status_code=404, detail="设备未注册，请先提交申请")
         device = row_to_dict(row)
         assert device
-        conn.execute(
-            """
-            UPDATE devices SET
-                last_seen_at = ?,
-                ba_account = COALESCE(NULLIF(?, ''), ba_account),
-                mt5_account = COALESCE(NULLIF(?, ''), mt5_account),
-                position_summary = ?,
-                xau_position = ?,
-                xag_position = ?,
-                open_orders_summary = ?,
-                xau_open_orders = ?,
-                xag_open_orders = ?
-            WHERE device_id = ?
-            """,
-            (
-                now,
-                body.ba_account,
-                body.mt5_account,
-                body.position_summary,
-                body.xau_position,
-                body.xag_position,
-                body.open_orders_summary,
-                body.xau_open_orders,
-                body.xag_open_orders,
-                body.device_id,
-            ),
-        )
+        # 仅「已通过」设备且令牌有效才接受敏感字段写入；
+        # 即便持有未过期旧令牌，被拒绝/停用/待审的设备也不能回写持仓账号
+        if authed and device["status"] == "approved":
+            conn.execute(
+                """
+                UPDATE devices SET
+                    last_seen_at = ?,
+                    ba_account = COALESCE(NULLIF(?, ''), ba_account),
+                    mt5_account = COALESCE(NULLIF(?, ''), mt5_account),
+                    position_summary = ?,
+                    xau_position = ?,
+                    xag_position = ?,
+                    open_orders_summary = ?,
+                    xau_open_orders = ?,
+                    xag_open_orders = ?
+                WHERE device_id = ?
+                """,
+                (
+                    now,
+                    body.ba_account,
+                    body.mt5_account,
+                    body.position_summary,
+                    body.xau_position,
+                    body.xag_position,
+                    body.open_orders_summary,
+                    body.xau_open_orders,
+                    body.xag_open_orders,
+                    body.device_id,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE devices SET last_seen_at = ? WHERE device_id = ?",
+                (now, body.device_id),
+            )
 
     status = device["status"]
     messages = {
@@ -221,15 +254,18 @@ def upload_trades(
         raise HTTPException(status_code=401, detail="授权无效或已过期")
     device_id = payload["sub"]
     device = _device_from_auth(authorization, device_id)
-    if device["status"] == "disabled":
-        raise HTTPException(status_code=403, detail="账号已停用，无法上报交易")
+    status = device["status"]
+    if status in ("disabled", "rejected"):
+        raise HTTPException(status_code=403, detail="账号不可用，无法上报交易")
+    if status == "approved" and device_is_expired(device.get("expires_at")):
+        raise HTTPException(status_code=403, detail="授权已到期，无法上报交易")
 
     inserted = 0
     now = _utc_now()
     with get_conn() as conn:
         for trade in body.trades:
             try:
-                conn.execute(
+                cur = conn.execute(
                     """
                     INSERT OR IGNORE INTO trades (
                         device_id, settled_at, preset_id, mode, action,
@@ -264,7 +300,9 @@ def upload_trades(
                         now,
                     ),
                 )
-                inserted += 1
+                # INSERT OR IGNORE 命中唯一约束时 rowcount=0，避免把去重当成新增
+                if cur.rowcount and cur.rowcount > 0:
+                    inserted += 1
             except Exception:
                 pass
     return {"ok": True, "inserted": inserted, "total": len(body.trades)}

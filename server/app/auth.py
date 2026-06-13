@@ -57,11 +57,13 @@ def change_admin_password(old_password: str, new_password: str) -> None:
     new_password = new_password.strip()
     if len(new_password) < 12:
         raise ValueError("新密码至少 12 位")
-    from app.config import remove_env_key, update_env_value
+    from app.config import bump_admin_token_version, remove_env_key, update_env_value
 
     new_hash = hash_admin_password(new_password)
     update_env_value("TA_ADMIN_PASSWORD_HASH", new_hash)
     remove_env_key("TA_ADMIN_PASSWORD")
+    # 改密后吊销所有旧管理员令牌
+    bump_admin_token_version()
 
 
 def create_device_token(device_id: str, status: str) -> str:
@@ -86,14 +88,26 @@ def decode_device_token(token: str) -> Optional[dict]:
 
 
 def create_admin_token() -> str:
+    from app.config import admin_token_version
+
     expire = datetime.now(timezone.utc) + timedelta(hours=8)
-    payload = {"sub": "admin", "exp": expire, "typ": "admin"}
+    payload = {
+        "sub": "admin",
+        "exp": expire,
+        "typ": "admin",
+        "ver": admin_token_version(),
+    }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
 def decode_admin_token(token: str) -> bool:
+    from app.config import admin_token_version
+
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
-        return payload.get("typ") == "admin" and payload.get("sub") == "admin"
-    except JWTError:
+        if payload.get("typ") != "admin" or payload.get("sub") != "admin":
+            return False
+        # 令牌版本与当前版本不一致（改密/退出后）即视为失效
+        return int(payload.get("ver", 0)) == admin_token_version()
+    except (JWTError, ValueError, TypeError):
         return False

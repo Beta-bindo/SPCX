@@ -15,6 +15,7 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
@@ -41,6 +42,7 @@ from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
 from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_ba_symbols
 from app.core.trade_result import LegResult
 from app.connectors.binance_ws_stream import BinanceWsStream, WS_STALE_SEC
+from app.connectors.binance_user_stream import BinanceUserStream
 from app.core.app_log import (
     LogLevel,
     hedge_action_label,
@@ -54,6 +56,20 @@ import importlib.util
 # binance 包的 __init__ 较重（~270ms）。启动阶段不需要它，改为首次连实盘时
 # 在后台线程懒加载，避免拖慢窗口显示。这里仅用 find_spec 探测是否可用，不触发加载。
 HAS_BINANCE = importlib.util.find_spec("binance") is not None
+
+# listenKey 有效期约 60 分钟，每 30 分钟续期一次（留足余量）
+LISTEN_KEY_KEEPALIVE_SEC = 30 * 60
+
+
+@dataclass
+class _OrderStreamState:
+    """User Data Stream 累积的单个委托成交状态（按 orderId 维护）。"""
+
+    symbol: str = ""
+    executed_qty: float = 0.0   # 累计已成交量（ORDER_TRADE_UPDATE 的 z 字段）
+    avg_price: float = 0.0      # 成交均价（ap 字段）
+    status: str = ""            # 委托状态（X 字段：NEW/PARTIALLY_FILLED/FILLED/...）
+    updated_at: float = field(default_factory=time.monotonic)
 
 
 class _BinanceNotLoaded(Exception):
@@ -156,6 +172,22 @@ class BinanceConnector(QObject):
         self._ws_latency_emit_at = 0.0
         self._open_order_symbols: frozenset[str] = frozenset()  # 当前挂单交易对快照
         self._open_orders_cache: list[OpenOrder] = []
+        # ---- User Data Stream（账户私有推送）相关 ----
+        self._user_stream: BinanceUserStream | None = None
+        self._listen_key: str | None = None
+        self._listen_key_at: float = 0.0
+        # 按 orderId 累积的成交状态 + 条件变量（WS 线程推送、下单线程等待）
+        self._order_cond = threading.Condition()
+        self._order_states: dict[str, _OrderStreamState] = {}
+        # 正在 _stream_wait_fills 中等待的 orderId，prune 时跳过避免误删等待者状态对象
+        self._waiting_orders: set[str] = set()
+        # 推送驱动的"各交易对存活委托集合"，用于委托指示灯（替代 REST 轮询）
+        self._stream_active_orders: dict[str, set[str]] = {}
+        self._open_orders_emit_lock = threading.RLock()
+        # 指示灯是否已用 REST 现存挂单打底（断线重连后需重新打底，置 False）
+        self._user_stream_seeded = False
+        # ACCOUNT_UPDATE 到达后置脏，poll 循环据此尽快强刷一次持仓
+        self._account_dirty = threading.Event()
 
     @property
     def ws_mode(self) -> str:
@@ -239,6 +271,7 @@ class BinanceConnector(QObject):
         with self._ws_pending_lock:
             self._ws_pending_quotes.clear()
         self._stop_ws_stream()
+        self._stop_user_stream()
         if self._demo_timer:
             self._demo_timer.stop()
             self._demo_timer = None
@@ -321,6 +354,22 @@ class BinanceConnector(QObject):
         *,
         min_executed: float,
     ) -> bool:
+        """等待限价/Maker 委托成交至 min_executed：优先 User Data Stream 推送，
+        无推送时回退 REST 轮询。"""
+        if self._user_stream_active():
+            confirmed, _ = self._stream_wait_fills(
+                symbol, order_id, target_qty=min_executed, on_fill_delta=None
+            )
+            return confirmed
+        return self._poll_wait_for_limit_order(symbol, order_id, min_executed=min_executed)
+
+    def _poll_wait_for_limit_order(
+        self,
+        symbol: str,
+        order_id: str,
+        *,
+        min_executed: float,
+    ) -> bool:
         """轮询限价/Maker 委托直到成交或超时；达到最小成交量即视为成功。"""
         timeout = self._maker_timeout_sec()
         poll_sec = self._maker_poll_sec()
@@ -395,10 +444,14 @@ class BinanceConnector(QObject):
         return orders
 
     def _emit_open_orders(self, symbols: frozenset[str]) -> None:
-        """挂单交易对集合变化时通知 UI（用于委托指示灯）。"""
-        if symbols == self._open_order_symbols:
-            return
-        self._open_order_symbols = symbols
+        """挂单交易对集合变化时通知 UI（用于委托指示灯）。
+
+        REST 轮询线程与 User Data Stream 线程都可能调用，故加锁保护快照比较。
+        """
+        with self._open_orders_emit_lock:
+            if symbols == self._open_order_symbols:
+                return
+            self._open_order_symbols = symbols
         self.open_orders_changed.emit(symbols)
 
     def _poll_open_orders(self, watched: set[str]) -> None:
@@ -410,6 +463,26 @@ class BinanceConnector(QObject):
         self._emit_open_orders(frozenset(active))
 
     def _wait_for_limit_order_fills(
+        self,
+        symbol: str,
+        order_id: str,
+        *,
+        target_qty: float,
+        on_fill_delta: Callable[[float], bool] | None = None,
+    ) -> tuple[bool, float]:
+        """等待 Maker/限价委托成交，按新增成交量回调；返回(是否全成, 总成交量)。
+
+        优先用 User Data Stream 推送的成交（毫秒级触发 Exness 补腿），无推送时
+        回退 REST 轮询。"""
+        if self._user_stream_active():
+            return self._stream_wait_fills(
+                symbol, order_id, target_qty=target_qty, on_fill_delta=on_fill_delta
+            )
+        return self._poll_wait_for_limit_order_fills(
+            symbol, order_id, target_qty=target_qty, on_fill_delta=on_fill_delta
+        )
+
+    def _poll_wait_for_limit_order_fills(
         self,
         symbol: str,
         order_id: str,
@@ -442,6 +515,67 @@ class BinanceConnector(QObject):
                 return False, executed
             time.sleep(poll_sec)
         return False, last_executed
+
+    def _stream_wait_fills(
+        self,
+        symbol: str,
+        order_id: str,
+        *,
+        target_qty: float,
+        on_fill_delta: Callable[[float], bool] | None = None,
+    ) -> tuple[bool, float]:
+        """事件驱动等待委托成交：阻塞在条件变量上等 ORDER_TRADE_UPDATE 推送，
+        并以 REST 作低频安全兜底（防止漏推/延迟），返回(是否达到目标, 总成交量)。"""
+        timeout = self._maker_timeout_sec()
+        safety_interval = self._maker_poll_sec()
+        deadline = time.monotonic() + timeout
+        st = self._register_order_state(order_id, symbol)
+        last_executed = 0.0
+        last_safety = time.monotonic()
+        # 标记为等待中：prune 不得回收该订单状态对象，否则推送写入新对象、本线程持旧对象将漏唤醒
+        with self._order_cond:
+            self._waiting_orders.add(order_id)
+        try:
+            while True:
+                now = time.monotonic()
+                remaining = deadline - now
+                if remaining <= 0:
+                    break
+                with self._order_cond:
+                    self._order_cond.wait(timeout=min(0.2, remaining))
+                    executed = st.executed_qty
+                    status = st.status
+                # 安全兜底：距上次校验超过一个轮询周期，用 REST 校一次，弥补推送缺口
+                now = time.monotonic()
+                if now - last_safety >= safety_interval:
+                    last_safety = now
+                    try:
+                        order = self._fetch_order_status(symbol, order_id)
+                        rest_exec = float(order.get("executedQty", 0) or 0)
+                        rest_status = str(order.get("status", "")).upper()
+                        if rest_exec > executed or (rest_status and not status):
+                            executed = max(executed, rest_exec)
+                            status = rest_status or status
+                            with self._order_cond:
+                                if executed > st.executed_qty:
+                                    st.executed_qty = executed
+                                if rest_status:
+                                    st.status = rest_status
+                    except Exception:
+                        pass
+                delta = max(0.0, executed - last_executed)
+                if delta > 1e-9:
+                    if on_fill_delta is not None and not on_fill_delta(delta):
+                        return False, executed
+                    last_executed = executed
+                if status == "FILLED" or executed + 1e-9 >= target_qty:
+                    return True, executed
+                if status in ("CANCELED", "REJECTED", "EXPIRED"):
+                    return False, executed
+            return False, last_executed
+        finally:
+            with self._order_cond:
+                self._waiting_orders.discard(order_id)
 
     def _position_cache_ttl(self) -> float:
         """仅用于合并同一时刻的重复 force 请求，不替代定时拉取。"""
@@ -1219,6 +1353,220 @@ class BinanceConnector(QObject):
         stream = self._ws_stream
         return stream is not None and stream.is_live(stale_sec=WS_STALE_SEC)
 
+    # ------------------------------------------------------------------
+    # User Data Stream（账户私有推送）：listenKey 生命周期 + 事件处理
+    # ------------------------------------------------------------------
+
+    def _create_listen_key(self) -> str | None:
+        """申请（或刷新）listenKey；供启动与重连时调用。失败返回 None。"""
+        if not self._client:
+            return None
+
+        def _do() -> str | None:
+            fn = getattr(self._client, "futures_stream_get_listen_key", None)
+            if fn is None:
+                return None
+            return fn()
+
+        try:
+            key = self._run_ba_api(_do, log_failures=False)
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"BA listenKey 申请失败: {exc}")
+            return None
+        if key:
+            self._listen_key = str(key)
+            self._listen_key_at = time.monotonic()
+            return self._listen_key
+        return None
+
+    def _keepalive_listen_key(self) -> None:
+        """续期 listenKey，避免 60 分钟后自动失效。"""
+        if not self._client or not self._listen_key:
+            return
+
+        def _do():
+            fn = getattr(self._client, "futures_stream_keepalive", None)
+            if fn is None:
+                return None
+            try:
+                return fn(listenKey=self._listen_key)
+            except TypeError:
+                return fn(self._listen_key)
+
+        try:
+            self._run_ba_api(_do, log_failures=False)
+            self._listen_key_at = time.monotonic()
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"BA listenKey 续期失败: {exc}")
+
+    def _maybe_keepalive_listen_key(self) -> None:
+        if not self._user_stream or not self._listen_key:
+            return
+        if time.monotonic() - self._listen_key_at < LISTEN_KEY_KEEPALIVE_SEC:
+            return
+        self._keepalive_listen_key()
+
+    def _close_listen_key(self, key: str | None = None) -> None:
+        """主动释放 listenKey（停止连接时）。key=None 时释放当前 key 并清空。"""
+        target = key if key is not None else self._listen_key
+        if key is None:
+            self._listen_key = None
+        if not self._client or not target:
+            return
+
+        def _do():
+            for name in ("futures_stream_close", "futures_stream_close_listen_key"):
+                fn = getattr(self._client, name, None)
+                if fn is None:
+                    continue
+                try:
+                    return fn(listenKey=target)
+                except TypeError:
+                    return fn(target)
+            return None
+
+        try:
+            self._run_ba_api(_do, log_failures=False)
+        except Exception:
+            pass
+
+    def _user_stream_active(self) -> bool:
+        """User Data Stream 是否已建立连接（决定走推送还是 REST）。"""
+        stream = self._user_stream
+        return stream is not None and stream.is_active()
+
+    def _start_user_stream(self) -> None:
+        """申请 listenKey 并拉起账户私有推送线程；失败则静默回退 REST。"""
+        self._stop_user_stream()
+        key = self._create_listen_key()
+        if not key:
+            self._log(
+                LogLevel.DEBUG,
+                "BA User Data Stream 未启用（listenKey 申请失败），账户/成交回退 REST 轮询",
+            )
+            return
+        self._user_stream = BinanceUserStream(
+            use_proxy=bool(self.config.use_proxy),
+            proxy_host=self.config.proxy_host,
+            proxy_port=self.config.proxy_port,
+            get_listen_key=self._create_listen_key,
+            on_order_update=self._on_user_order_update,
+            on_account_update=self._on_user_account_update,
+        )
+        self._user_stream.start()
+        self._log(LogLevel.INFO, "BA User Data Stream 已启动 · 成交/持仓实时推送")
+
+    def _stop_user_stream(self) -> None:
+        stream = self._user_stream
+        self._user_stream = None
+        if stream is not None:
+            stream.stop()
+        # 释放 listenKey 走后台线程，避免网络慢时阻塞"停止监控"/退出
+        key = self._listen_key
+        self._listen_key = None
+        if key and self._client:
+            threading.Thread(
+                target=self._close_listen_key,
+                args=(key,),
+                daemon=True,
+                name="ba-listenkey-close",
+            ).start()
+        with self._order_cond:
+            self._order_states.clear()
+            self._order_cond.notify_all()
+        with self._open_orders_emit_lock:
+            self._stream_active_orders.clear()
+        self._account_dirty.clear()
+        self._user_stream_seeded = False
+
+    def _prune_order_states_locked(self) -> None:
+        """防止 _order_states 无限增长：超量时丢弃最旧条目（须持有 _order_cond）。
+        正在等待成交的订单（_waiting_orders）必须保留，否则等待线程会漏收推送唤醒。"""
+        if len(self._order_states) <= 256:
+            return
+        items = sorted(self._order_states.items(), key=lambda kv: kv[1].updated_at)
+        for oid, _st in items:
+            if len(self._order_states) <= 128:
+                break
+            if oid in self._waiting_orders:
+                continue
+            self._order_states.pop(oid, None)
+
+    def _register_order_state(self, order_id: str, symbol: str) -> _OrderStreamState:
+        """注册/取回某委托的成交状态对象（推送可能早于注册，故取已有优先）。"""
+        with self._order_cond:
+            st = self._order_states.get(order_id)
+            if st is None:
+                st = _OrderStreamState(symbol=symbol)
+                self._order_states[order_id] = st
+            return st
+
+    def _on_user_order_update(self, payload: dict) -> None:
+        """WS 线程：处理 ORDER_TRADE_UPDATE，更新成交状态并唤醒等待者。"""
+        o = payload.get("o") or {}
+        oid = str(o.get("i", "") or "")
+        if not oid:
+            return
+        symbol = str(o.get("s", "") or "")
+        status = str(o.get("X", "") or "").upper()
+        try:
+            executed = float(o.get("z", 0) or 0)
+            avg = float(o.get("ap", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        with self._order_cond:
+            st = self._order_states.get(oid)
+            if st is None:
+                st = _OrderStreamState(symbol=symbol)
+                self._order_states[oid] = st
+                self._prune_order_states_locked()
+            if executed > st.executed_qty:
+                st.executed_qty = executed
+            if avg > 0:
+                st.avg_price = avg
+            st.status = status
+            st.updated_at = time.monotonic()
+            self._order_cond.notify_all()
+        self._update_stream_open_orders(symbol, oid, status)
+
+    def _update_stream_open_orders(self, symbol: str, order_id: str, status: str) -> None:
+        """按推送的委托状态维护"存活委托集合"，驱动委托指示灯。"""
+        if not symbol:
+            return
+        with self._open_orders_emit_lock:
+            bag = self._stream_active_orders.setdefault(symbol, set())
+            if status in ("NEW", "PARTIALLY_FILLED"):
+                bag.add(order_id)
+            else:  # FILLED / CANCELED / EXPIRED / REJECTED 等终态
+                bag.discard(order_id)
+            active = frozenset(
+                sym for sym, ids in self._stream_active_orders.items() if ids
+            )
+        self._emit_open_orders(active)
+
+    def _seed_stream_open_orders(self, watched: set[str]) -> None:
+        """启动推送后用一次 REST 现存挂单为指示灯打底（推送只覆盖增量变化）。"""
+        try:
+            orders = self.get_open_orders()
+        except Exception:
+            return
+        with self._open_orders_emit_lock:
+            self._stream_active_orders.clear()
+            for o in orders:
+                if o.symbol in watched:
+                    self._stream_active_orders.setdefault(o.symbol, set()).add(
+                        str(o.order_id)
+                    )
+            active = frozenset(
+                sym for sym, ids in self._stream_active_orders.items() if ids
+            )
+        self._emit_open_orders(active)
+
+    def _on_user_account_update(self, payload: dict) -> None:
+        """WS 线程：持仓/余额变化，失效缓存并置脏，由 poll 循环尽快强刷。"""
+        self._invalidate_positions_cache()
+        self._account_dirty.set()
+
     def _rest_quote_fallback_interval(self) -> float:
         """WS 可用时不轮询；兜底时按配置间隔拉 REST。"""
         return self.config.ba_refresh_interval_sec
@@ -1344,6 +1692,7 @@ class BinanceConnector(QObject):
                 f"BA 已连接 · {', '.join(symbols)} · 行情 WebSocket 推流 + REST 兜底",
             )
             self._start_ws_stream(symbols)
+            self._start_user_stream()
             for sym in symbols:
                 try:
                     self._run_ba_api(
@@ -1403,9 +1752,26 @@ class BinanceConnector(QObject):
                                 )
                             except Exception:
                                 pass
-                    # 每 ~2 秒刷新一次挂单状态（委托指示灯）；权重很低
-                    if self._quote_poll_count % 2 == 0:
-                        self._poll_open_orders(watched)
+                    if self._user_stream_active():
+                        # 推送（重）连上后用一次 REST 现存挂单为指示灯打底，
+                        # 之后由 ORDER_TRADE_UPDATE 增量维护，避免重连后指示灯漂移。
+                        if not self._user_stream_seeded:
+                            self._seed_stream_open_orders(watched)
+                            self._user_stream_seeded = True
+                        # ACCOUNT_UPDATE 置脏时尽快强刷一次持仓
+                        if self._account_dirty.is_set():
+                            self._account_dirty.clear()
+                            try:
+                                self.get_positions(force=True)
+                            except Exception:
+                                # 强刷失败则保留脏标记，下一轮继续重试，避免持仓长时间过期
+                                self._account_dirty.set()
+                        self._maybe_keepalive_listen_key()
+                    else:
+                        # 推送不可用：回退 REST，每 ~2 秒刷新一次挂单状态（权重很低）
+                        self._user_stream_seeded = False
+                        if self._quote_poll_count % 2 == 0:
+                            self._poll_open_orders(watched)
                 except BinanceAPIException as exc:
                     if getattr(exc, "code", None) in (-1003, 418):
                         self._log(

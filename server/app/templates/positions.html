@@ -24,8 +24,10 @@
       <div class="topnav">
         <div class="topnav-links">
           <a href="/admin">授权管理</a>
+          <a href="/admin/dashboard">数据看板</a>
           <a href="/admin/trades">交易明细</a>
           <a href="/admin/positions" class="active">持仓列表</a>
+          <a href="/admin/audit">操作日志</a>
         </div>
         <div class="topnav-actions">
           <button class="secondary" onclick="openChangePasswordDialog(adminToken)">修改密码</button>
@@ -88,9 +90,7 @@ async function login() {
 }
 
 function logout() {
-  adminToken = '';
-  localStorage.removeItem('ta_admin_token');
-  location.reload();
+  serverLogout(adminToken);
 }
 
 async function loadPositions(page) {

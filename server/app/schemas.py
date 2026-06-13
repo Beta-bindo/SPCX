@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+# 机器码为 sha256 截断（纯十六进制）；限制字符集防止注入类内容混入
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
+
+
+def _validate_device_id(value: str) -> str:
+    v = value.strip()
+    if not _DEVICE_ID_RE.fullmatch(v):
+        raise ValueError("device_id 含非法字符")
+    return v
 
 
 class RegisterRequest(BaseModel):
@@ -12,6 +23,11 @@ class RegisterRequest(BaseModel):
     contact: str = Field(min_length=11, max_length=11)
     note: str = Field(default="", max_length=512)
     app_version: str = Field(default="", max_length=32)
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, value: str) -> str:
+        return _validate_device_id(value)
 
     @field_validator("contact")
     @classmethod
@@ -24,6 +40,11 @@ class RegisterRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     device_id: str = Field(min_length=8, max_length=128)
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, value: str) -> str:
+        return _validate_device_id(value)
     app_version: str = Field(default="", max_length=32)
     ba_account: str = Field(default="", max_length=128)
     mt5_account: str = Field(default="", max_length=128)

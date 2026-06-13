@@ -64,12 +64,46 @@ def init_db() -> None:
                 UNIQUE(device_id, settled_at, preset_id, mode, action)
             );
 
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL,
+                actor TEXT NOT NULL DEFAULT 'admin',
+                action TEXT NOT NULL,
+                target_device_id TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                ip TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
             CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id);
+            CREATE INDEX IF NOT EXISTS idx_trades_settled ON trades(settled_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
             """
         )
         _migrate_devices(conn)
         _migrate_trades(conn)
+
+
+def log_audit(
+    conn: sqlite3.Connection,
+    action: str,
+    *,
+    target_device_id: str = "",
+    detail: str = "",
+    ip: str = "",
+    actor: str = "admin",
+) -> None:
+    """写一条运营审计记录；失败不应影响主流程。"""
+    try:
+        conn.execute(
+            """
+            INSERT INTO audit_log (at, actor, action, target_device_id, detail, ip)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (_utc_now(), actor, action, target_device_id or "", detail or "", ip or ""),
+        )
+    except Exception:
+        pass
 
 
 def _migrate_trades(conn: sqlite3.Connection) -> None:
@@ -240,11 +274,21 @@ def enrich_device(row: sqlite3.Row | dict | None) -> dict | None:
     return device
 
 
+_pragma_initialized = False
+
+
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(settings.db_path)
+    global _pragma_initialized
+    conn = sqlite3.connect(settings.db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     try:
+        # WAL 提升读写并发；busy_timeout 缓解并发写锁；NORMAL 在 WAL 下兼顾安全与性能
+        conn.execute("PRAGMA busy_timeout=5000")
+        if not _pragma_initialized:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _pragma_initialized = True
         yield conn
         conn.commit()
     finally:
