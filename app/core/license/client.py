@@ -132,6 +132,9 @@ class LicenseClient:
         position_summary: str = "",
         xau_position: str = "",
         xag_position: str = "",
+        open_orders_summary: str = "",
+        xau_open_orders: str = "",
+        xag_open_orders: str = "",
     ) -> LicenseState:
         payload = {
             "device_id": self.state.device_id,
@@ -141,6 +144,9 @@ class LicenseClient:
             "position_summary": position_summary,
             "xau_position": xau_position,
             "xag_position": xag_position,
+            "open_orders_summary": open_orders_summary,
+            "xau_open_orders": xau_open_orders,
+            "xag_open_orders": xag_open_orders,
         }
         try:
             res = self._post(

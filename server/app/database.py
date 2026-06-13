@@ -165,6 +165,18 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
         ),
         ("xau_position", "ALTER TABLE devices ADD COLUMN xau_position TEXT NOT NULL DEFAULT ''"),
         ("xag_position", "ALTER TABLE devices ADD COLUMN xag_position TEXT NOT NULL DEFAULT ''"),
+        (
+            "open_orders_summary",
+            "ALTER TABLE devices ADD COLUMN open_orders_summary TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "xau_open_orders",
+            "ALTER TABLE devices ADD COLUMN xau_open_orders TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "xag_open_orders",
+            "ALTER TABLE devices ADD COLUMN xag_open_orders TEXT NOT NULL DEFAULT ''",
+        ),
     ):
         if name not in cols:
             conn.execute(ddl)

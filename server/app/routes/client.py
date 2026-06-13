@@ -146,7 +146,10 @@ def heartbeat(
                 mt5_account = COALESCE(NULLIF(?, ''), mt5_account),
                 position_summary = ?,
                 xau_position = ?,
-                xag_position = ?
+                xag_position = ?,
+                open_orders_summary = ?,
+                xau_open_orders = ?,
+                xag_open_orders = ?
             WHERE device_id = ?
             """,
             (
@@ -156,6 +159,9 @@ def heartbeat(
                 body.position_summary,
                 body.xau_position,
                 body.xag_position,
+                body.open_orders_summary,
+                body.xau_open_orders,
+                body.xag_open_orders,
                 body.device_id,
             ),
         )

@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.core.exchange_utils import get_mt5_filling_mode
-from app.core.models import AppConfig, ConnectionState, GoldOrderMode, Position, Quote, Side
+from app.core.models import AppConfig, ConnectionState, GoldOrderMode, OpenOrder, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.mt5_terminal import find_mt5_terminal, mt5_terminal_hint
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
@@ -380,6 +380,60 @@ class MT5Connector(QObject):
             return self._call_on_mt5_thread(_fetch)
         except Exception as exc:
             self._log(LogLevel.ERROR, f"Exness 持仓查询失败: {exc}")
+            return []
+
+    def get_open_orders(self) -> list[OpenOrder]:
+        """查询受监控交易对的全部未成交挂单（pending orders）。"""
+        if not self.config.use_live_mt5:
+            return []
+        if not self._connected or not HAS_MT5:
+            return []
+
+        def _fetch() -> list[OpenOrder]:
+            orders: list[OpenOrder] = []
+            buy_types = {
+                mt5.ORDER_TYPE_BUY,
+                mt5.ORDER_TYPE_BUY_LIMIT,
+                mt5.ORDER_TYPE_BUY_STOP,
+                mt5.ORDER_TYPE_BUY_STOP_LIMIT,
+            }
+            sell_types = {
+                mt5.ORDER_TYPE_SELL,
+                mt5.ORDER_TYPE_SELL_LIMIT,
+                mt5.ORDER_TYPE_SELL_STOP,
+                mt5.ORDER_TYPE_SELL_STOP_LIMIT,
+            }
+            for symbol in watched_mt5_symbols():
+                for order in mt5.orders_get(symbol=symbol) or []:
+                    order_type = int(order.type)
+                    if order_type in buy_types:
+                        side = Side.BUY
+                    elif order_type in sell_types:
+                        side = Side.SELL
+                    else:
+                        side = Side.NONE
+                    total = float(order.volume_initial)
+                    remaining = float(order.volume_current)
+                    filled = max(0.0, total - remaining)
+                    orders.append(
+                        OpenOrder(
+                            platform="MT5",
+                            symbol=str(order.symbol),
+                            order_id=str(order.ticket),
+                            side=side,
+                            order_type=str(order_type),
+                            total_quantity=total,
+                            filled_quantity=filled,
+                            remaining_quantity=remaining,
+                            price=float(order.price_open),
+                        )
+                    )
+            return orders
+
+        try:
+            return self._call_on_mt5_thread(_fetch)
+        except Exception as exc:
+            self._log(LogLevel.ERROR, f"Exness 委托查询失败: {exc}")
             return []
 
     def replace_demo_positions(self, positions: list[Position]) -> None:

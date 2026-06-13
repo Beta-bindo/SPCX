@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.core.models import (
     AppConfig,
+    OpenOrder,
     OrderBook,
     Position,
     Quote,
@@ -245,6 +246,12 @@ class SymbolActionStrip(QFrame):
             lambda repair, pid=preset_id: self.hedge_repair_requested.emit(pid, repair)
         )
         self.position_repair_btn.clicked.connect(self.pnl_detail.request_hedge_repair)
+        self.pending_label = QLabel("委托 —")
+        self.pending_label.setObjectName("pendingHint")
+        self.pending_label.setWordWrap(True)
+        self.pending_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         risk_row = QHBoxLayout()
         risk_row.setContentsMargins(0, 0, 0, 0)
         risk_row.setSpacing(6)
@@ -268,6 +275,7 @@ class SymbolActionStrip(QFrame):
         risk_row.addWidget(self.refresh_positions_btn)
         self._risk_row = risk_wrap
         self._last_risk_text = ""
+        self._last_pending_text = ""
 
         # 「当前持仓 / 盈利」板块（可配置）
         self._position_block = QWidget()
@@ -276,6 +284,7 @@ class SymbolActionStrip(QFrame):
         position_block_layout.setSpacing(6)
         position_block_layout.addWidget(self._position_header)
         position_block_layout.addWidget(self.pnl_detail)
+        position_block_layout.addWidget(self.pending_label)
         position_block_layout.addWidget(self._risk_row)
 
         # 「自动交易」板块（可配置）
@@ -445,6 +454,56 @@ class SymbolActionStrip(QFrame):
         if text != self._last_risk_text:
             self.risk_label.setText(text)
             self._last_risk_text = text
+
+    def update_open_orders(self, orders: list[OpenOrder]) -> None:
+        """刷新本品种两端的委托明细（总量 / 已成交 / 剩余）。"""
+        preset = find_preset(self.preset_id)
+        ba_orders = [
+            o for o in orders if o.platform == "BA" and o.symbol == preset.symbol_ba
+        ]
+        mt5_orders = [
+            o for o in orders if o.platform == "MT5" and o.symbol == preset.symbol_mt5
+        ]
+
+        def _aggregate(platform_orders: list[OpenOrder]) -> tuple[float, float, float]:
+            total = sum(o.total_quantity for o in platform_orders)
+            filled = sum(o.filled_quantity for o in platform_orders)
+            remaining = sum(o.remaining_quantity for o in platform_orders)
+            return total, filled, remaining
+
+        def _fmt_ba(platform_orders: list[OpenOrder]) -> str:
+            if not platform_orders:
+                return "BA —"
+            open_orders = [o for o in platform_orders if not o.reduce_only]
+            close_orders = [o for o in platform_orders if o.reduce_only]
+            parts: list[str] = []
+            if open_orders:
+                total, filled, remaining = _aggregate(open_orders)
+                parts.append(
+                    f"开 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
+                )
+            if close_orders:
+                total, filled, remaining = _aggregate(close_orders)
+                parts.append(
+                    f"平 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
+                )
+            return "BA " + " · ".join(parts)
+
+        def _fmt_ex(platform: str, platform_orders: list[OpenOrder]) -> str:
+            if not platform_orders:
+                return f"{platform} —"
+            total, filled, remaining = _aggregate(platform_orders)
+            return (
+                f"{platform} 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
+            )
+
+        if not ba_orders and not mt5_orders:
+            text = "委托 —"
+        else:
+            text = f"委托 · {_fmt_ba(ba_orders)} · {_fmt_ex('Ex', mt5_orders)}"
+        if text != self._last_pending_text:
+            self.pending_label.setText(text)
+            self._last_pending_text = text
 
     def load_settings_from(self, config: AppConfig) -> None:
         """加载告警/自动交易/区块布局设置（加载期间屏蔽信号防误触发自动保存）。"""

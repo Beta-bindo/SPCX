@@ -30,6 +30,9 @@ class HeartbeatRequest(BaseModel):
     position_summary: str = Field(default="", max_length=1024)
     xau_position: str = Field(default="", max_length=256)
     xag_position: str = Field(default="", max_length=256)
+    open_orders_summary: str = Field(default="", max_length=1024)
+    xau_open_orders: str = Field(default="", max_length=256)
+    xag_open_orders: str = Field(default="", max_length=256)
 
 
 class HeartbeatResponse(BaseModel):

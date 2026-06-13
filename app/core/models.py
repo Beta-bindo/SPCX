@@ -190,6 +190,22 @@ class Position:
 
 
 @dataclass
+class OpenOrder:
+    """单平台未完全成交的委托单快照。"""
+
+    platform: str               # "BA" 或 "MT5"
+    symbol: str
+    order_id: str = ""
+    side: Side = Side.NONE
+    order_type: str = ""
+    total_quantity: float = 0.0       # 委托总量
+    filled_quantity: float = 0.0      # 已成交量
+    remaining_quantity: float = 0.0   # 剩余量
+    price: float = 0.0
+    reduce_only: bool = False         # BA：True 表示平仓委托（reduceOnly）
+
+
+@dataclass
 class SpreadSnapshot:
     """两端报价构成的点差快照（详见 pnl_calculator.build_spread_snapshot）。"""
 

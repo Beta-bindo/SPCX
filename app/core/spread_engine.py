@@ -23,6 +23,7 @@ from app.core.models import (
     ConnectionMode,
     ConnectionState,
     MarketUpdate,
+    OpenOrder,
     Position,
     Quote,
     SpreadSnapshot,
@@ -48,17 +49,19 @@ class SpreadEngine(QObject):
     network_status_changed = Signal(object)    # 网络状态快照
     log_message = Signal(str)                  # 日志行
     positions_updated = Signal(list, object)   # (持仓列表, 盈亏汇总)
+    open_orders_updated = Signal(list)         # 委托单列表 OpenOrder[]
     trade_finished = Signal(object)            # 交易完成结果
     trade_started = Signal(str, str, str)      # (动作, 品种, 下单模式)
     alert_triggered = Signal(str)              # 告警文字
     trade_recorded = Signal(object)            # 成交/结算记录
-    _positions_refresh_ready = Signal(list, object, object)  # 内部：后台刷新结果回主线程
+    _positions_refresh_ready = Signal(list, object, object, list)  # 内部：后台刷新结果回主线程
 
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
         self.config = config
         self._running = False
         self._positions: list[Position] = []
+        self._open_orders: list[OpenOrder] = []
         self._last_summary = PnlSummary()
         self._ba_quotes: dict[str, Quote] = {}
         self._mt5_quotes: dict[str, Quote] = {}
@@ -441,6 +444,8 @@ class SpreadEngine(QObject):
         self._ba_quotes.clear()
         self._mt5_quotes.clear()
         self._spreads.clear()
+        self._open_orders.clear()
+        self.open_orders_updated.emit([])
         self.alerts.stop()
         self._emit_network_status()
         self._log(LogLevel.INFO, "已停止连接")
@@ -496,11 +501,14 @@ class SpreadEngine(QObject):
                 positions: list[Position] = []
                 positions.extend(self.binance.get_positions(force=True))
                 positions.extend(self.mt5.get_positions())
+                open_orders: list[OpenOrder] = []
+                open_orders.extend(self.binance.get_open_orders())
+                open_orders.extend(self.mt5.get_open_orders())
                 updated, summary = calculate_pnl(
                     positions, ba_quotes, mt5_quotes, config, primary
                 )
                 risk = build_risk_snapshot(updated, ba_quotes, mt5_quotes, config)
-                self._positions_refresh_ready.emit(updated, summary, risk)
+                self._positions_refresh_ready.emit(updated, summary, risk, open_orders)
             except Exception as exc:
                 self._log(LogLevel.ERROR, f"刷新持仓失败: {exc}")
             finally:
@@ -509,13 +517,15 @@ class SpreadEngine(QObject):
         threading.Thread(target=_work, daemon=True, name="refresh-positions").start()
 
     def _apply_positions_refresh(
-        self, updated: list[Position], summary: PnlSummary, risk
+        self, updated: list[Position], summary: PnlSummary, risk, open_orders: list[OpenOrder]
     ) -> None:
         """主线程槽：接收后台刷新结果，更新缓存、重判告警并推送 UI。"""
         self._positions = updated
+        self._open_orders = open_orders
         self._last_summary = summary
         self.alerts.evaluate(self.config, self._spreads, risk)
         self.positions_updated.emit(updated, summary)
+        self.open_orders_updated.emit(open_orders)
         self._emit_market(risk)
 
     @property
@@ -525,6 +535,10 @@ class SpreadEngine(QObject):
     @property
     def positions(self) -> list[Position]:
         return list(self._positions)
+
+    @property
+    def open_orders(self) -> list[OpenOrder]:
+        return list(self._open_orders)
 
     @property
     def ba_order_books(self) -> dict:

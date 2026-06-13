@@ -35,7 +35,7 @@ from app.core.exchange_utils import (
     get_binance_price_tick,
     get_binance_symbol_meta,
 )
-from app.core.models import AppConfig, ConnectionState, GoldOrderMode, OrderBook, OrderBookLevel, Position, Quote, Side
+from app.core.models import AppConfig, ConnectionState, GoldOrderMode, OpenOrder, OrderBook, OrderBookLevel, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
 from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_ba_symbols
@@ -155,6 +155,7 @@ class BinanceConnector(QObject):
         self._ws_coalesce_timer.timeout.connect(self._flush_ws_coalesce)
         self._ws_latency_emit_at = 0.0
         self._open_order_symbols: frozenset[str] = frozenset()  # 当前挂单交易对快照
+        self._open_orders_cache: list[OpenOrder] = []
 
     @property
     def ws_mode(self) -> str:
@@ -348,6 +349,51 @@ class BinanceConnector(QObject):
         """读取单个 BA 委托状态；调用方需在 BA API 执行上下文中使用。"""
         return self._client.futures_get_order(symbol=symbol, orderId=int(order_id))
 
+    @staticmethod
+    def _parse_open_order(raw: dict) -> OpenOrder:
+        """将 BA futures_get_open_orders 返回项解析为 OpenOrder。"""
+        total = float(raw.get("origQty", 0) or 0)
+        filled = float(raw.get("executedQty", 0) or 0)
+        side_raw = str(raw.get("side", "")).upper()
+        if side_raw == "BUY":
+            side = Side.BUY
+        elif side_raw == "SELL":
+            side = Side.SELL
+        else:
+            side = Side.NONE
+        return OpenOrder(
+            platform="BA",
+            symbol=str(raw.get("symbol", "")),
+            order_id=str(raw.get("orderId", "")),
+            side=side,
+            order_type=str(raw.get("type", "")),
+            total_quantity=total,
+            filled_quantity=filled,
+            remaining_quantity=max(0.0, total - filled),
+            price=float(raw.get("price", 0) or 0),
+            reduce_only=bool(raw.get("reduceOnly")),
+        )
+
+    def get_open_orders(self) -> list[OpenOrder]:
+        """查询受监控交易对的全部未成交委托。"""
+        if not self.config.use_live_ba or not self._client:
+            return []
+        if self._api.priority_pending():
+            return list(self._open_orders_cache)
+        orders: list[OpenOrder] = []
+        for symbol in watched_ba_symbols():
+            try:
+                raw_orders = self._run_ba_api(
+                    lambda s=symbol: self._client.futures_get_open_orders(symbol=s),
+                    log_failures=False,
+                ) or []
+            except Exception:
+                continue
+            for raw in raw_orders:
+                orders.append(self._parse_open_order(raw))
+        self._open_orders_cache = orders
+        return orders
+
     def _emit_open_orders(self, symbols: frozenset[str]) -> None:
         """挂单交易对集合变化时通知 UI（用于委托指示灯）。"""
         if symbols == self._open_order_symbols:
@@ -356,23 +402,11 @@ class BinanceConnector(QObject):
         self.open_orders_changed.emit(symbols)
 
     def _poll_open_orders(self, watched: set[str]) -> None:
-        """逐个查询受监控交易对是否存在未成交挂单，刷新委托指示灯状态。"""
+        """刷新委托指示灯：复用 get_open_orders 结果。"""
         if not self._client:
             return
-        active: set[str] = set()
-        for symbol in watched:
-            if self._api.priority_pending():
-                # 有下单/撤单等优先请求待处理，本轮让路，保留上次快照
-                return
-            try:
-                orders = self._run_ba_api(
-                    lambda s=symbol: self._client.futures_get_open_orders(symbol=s),
-                    log_failures=False,
-                )
-            except Exception:
-                return
-            if orders:
-                active.add(symbol)
+        orders = self.get_open_orders()
+        active = {o.symbol for o in orders if o.symbol in watched}
         self._emit_open_orders(frozenset(active))
 
     def _wait_for_limit_order_fills(

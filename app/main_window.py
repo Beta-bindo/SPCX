@@ -268,6 +268,7 @@ class MainWindow(QMainWindow):
         self._pending_demo_start = False
         self._demo_start_scheduled = False
         self._ui_bootstrapping = True
+        self._last_open_orders_log = ""
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -794,6 +795,7 @@ class MainWindow(QMainWindow):
         self.engine.binance.open_orders_changed.connect(self._on_open_orders_changed)
         self.engine.log_message.connect(self.log_panel.append)
         self.engine.positions_updated.connect(self._on_positions)
+        self.engine.open_orders_updated.connect(self._on_open_orders)
         self.engine.trade_started.connect(self._on_trade_started)
         self.engine.trade_finished.connect(self._on_trade_finished)
         self.engine.alert_triggered.connect(self._on_alert)
@@ -957,7 +959,9 @@ class MainWindow(QMainWindow):
     def _license_telemetry(self) -> dict[str, str]:
         from app.core.license.telemetry import build_license_telemetry
 
-        return build_license_telemetry(self.config, self.engine.positions)
+        return build_license_telemetry(
+            self.config, self.engine.positions, self.engine.open_orders
+        )
 
     def _refresh_trade_dialog_pnl(self, dlg: TradeConfirmDialog | None = None) -> None:
         positions = self.engine.positions
@@ -1261,7 +1265,32 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_positions(self) -> None:
         self.engine.refresh_positions()
-        self._append_log(LogLevel.INFO, "已刷新持仓与盈亏")
+        self._append_log(LogLevel.INFO, "已刷新持仓、委托与盈亏")
+
+    def _on_open_orders(self, orders) -> None:
+        """委托单刷新：更新各品种委托明细行，并同步 Maker 委托指示灯。"""
+        from app.core.license.telemetry import build_open_orders_summary
+        from app.core.symbols import find_preset
+
+        self.gold_actions.update_open_orders(orders)
+        self.silver_actions.update_open_orders(orders)
+        for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
+            preset = find_preset(preset_id)
+            has_ba_pending = any(
+                o.platform == "BA"
+                and o.symbol == preset.symbol_ba
+                and o.remaining_quantity > 0
+                for o in orders
+            )
+            strip.auto_trade_settings.set_pending_order(has_ba_pending)
+
+        summary = build_open_orders_summary(orders)
+        if summary != self._last_open_orders_log:
+            self._last_open_orders_log = summary
+            if orders:
+                self._append_log(LogLevel.INFO, f"委托同步 · {summary}")
+            else:
+                self._append_log(LogLevel.INFO, "委托同步 · 当前无挂单")
 
     def _open_profit_calculator(self) -> None:
         dlg = ProfitCalculatorDialog(self)
