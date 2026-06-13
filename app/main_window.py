@@ -157,7 +157,7 @@ class NetworkStatusBadge(QFrame):
         self.dot.setObjectName("statusDotDisconnected")
         layout.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        latency_font = ui_mono_font(point_size=11)
+        latency_font = ui_mono_font(point_size=18)
         metrics = QFontMetrics(latency_font)
         line_w = max(metrics.horizontalAdvance(s) for s in self._LATENCY_SAMPLE)
         line_h = metrics.height()

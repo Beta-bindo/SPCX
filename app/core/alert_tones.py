@@ -9,7 +9,6 @@ import wave
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
-from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import QApplication
 
 from app.core.paths import user_data_dir
@@ -78,15 +77,26 @@ def _tone_cache_path(name: str, payload: bytes) -> Path:
 
 
 class AlertTonePlayer:
-    """Play spread / liquidation tones via cached WAV files (lazy init)."""
+    """播放点差/爆仓告警音。
+
+    双通道发声以最大化可闻性：
+    1) QMediaPlayer + QAudioOutput 循环播放自定义音色（走系统“媒体”音量）；
+    2) 同时叠加 QApplication.beep() 系统提示音（走系统“提示音”音量、NSBeep/MessageBeep，
+       绕开整个多媒体栈）。只要两条音量通道任一开着，就能听到告警。
+    """
 
     def __init__(self) -> None:
-        self._spread: QSoundEffect | None = None
-        self._liq: QSoundEffect | None = None
+        self._spread = None  # QMediaPlayer
+        self._liq = None     # QMediaPlayer
+        self._spread_out = None  # QAudioOutput
+        self._liq_out = None     # QAudioOutput
 
     def _ensure(self) -> None:
         if self._spread is not None and self._liq is not None:
             return
+        # 延迟到首次告警才加载 QtMultimedia（FFmpeg 后端），避免启动期就拉起音频后端
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
         spread_path = _tone_cache_path(
             "alert_spread_loud",
             _generate_tone_wav(_SPREAD_HZ, 600, volume=0.6, sharp=False),
@@ -104,36 +114,42 @@ class AlertTonePlayer:
                 tremolo_depth=0.6,
             ),
         )
-        self._spread = QSoundEffect()
-        self._liq = QSoundEffect()
+        self._spread_out = QAudioOutput()
+        self._liq_out = QAudioOutput()
+        self._spread_out.setVolume(1.0)
+        self._liq_out.setVolume(1.0)
+        self._spread = QMediaPlayer()
+        self._liq = QMediaPlayer()
+        self._spread.setAudioOutput(self._spread_out)
+        self._liq.setAudioOutput(self._liq_out)
         self._spread.setSource(QUrl.fromLocalFile(str(spread_path)))
         self._liq.setSource(QUrl.fromLocalFile(str(liq_path)))
-        self._spread.setLoopCount(QSoundEffect.Loop.Infinite.value)
-        self._liq.setLoopCount(QSoundEffect.Loop.Infinite.value)
-        self._spread.setVolume(1.0)
-        self._liq.setVolume(1.0)
+        self._spread.setLoops(QMediaPlayer.Loops.Infinite)
+        self._liq.setLoops(QMediaPlayer.Loops.Infinite)
+
+    @staticmethod
+    def _is_playing(player) -> bool:
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        return player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 
     def play_spread(self) -> None:
         self._ensure()
-        assert self._spread is not None and self._liq is not None
-        if self._spread.status() == QSoundEffect.Status.Error:
-            self._fallback_beep()
-            return
-        if self._liq.isPlaying():
+        if self._is_playing(self._liq):
             self._liq.stop()
-        if not self._spread.isPlaying():
+        if not self._is_playing(self._spread):
             self._spread.play()
+        # 叠加系统提示音兜底，保证可闻
+        self._system_beep()
 
     def play_liq(self) -> None:
         self._ensure()
-        assert self._spread is not None and self._liq is not None
-        if self._liq.status() == QSoundEffect.Status.Error:
-            self._fallback_beep(double=True)
-            return
-        if self._spread.isPlaying():
+        if self._is_playing(self._spread):
             self._spread.stop()
-        if not self._liq.isPlaying():
+        if not self._is_playing(self._liq):
             self._liq.play()
+        # 爆仓更紧迫：双响系统提示音
+        self._system_beep(double=True)
 
     def stop(self) -> None:
         if self._spread is not None:
@@ -142,7 +158,7 @@ class AlertTonePlayer:
             self._liq.stop()
 
     @staticmethod
-    def _fallback_beep(*, double: bool = False) -> None:
+    def _system_beep(*, double: bool = False) -> None:
         app = QApplication.instance()
         if app is None:
             return

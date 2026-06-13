@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -28,7 +29,7 @@ from app.core.position_detail import (
     build_platform_details_for_preset,
 )
 from app.core.symbols import find_preset
-from app.core.theme import set_flag
+from app.core.theme import set_flag, ui_mono_font
 from app.core.trading_service import detect_hedge_mode, hedge_strategy_label_for_platform
 
 
@@ -37,8 +38,8 @@ _COL_WIDTHS = {
     "pnl": 76,
     "qty": 58,
     "side": 50,
-    "liq": 64,
-    "buf": 50,
+    "liq": 72,
+    "buf": 56,
     "lev": 42,
 }
 
@@ -152,10 +153,8 @@ class PnlDetailPanel(QFrame):
                 cell = QLabel("--")
                 cell.setObjectName("positionValue")
                 cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                # 字号与「跨平台点差」里 BA/EX 价格保持一致（10pt）
-                _cell_font = cell.font()
-                _cell_font.setPointSize(10)
-                cell.setFont(_cell_font)
+                # 字体与「跨平台点差」里 BA/EX 价格完全一致（等宽 10pt 加粗）
+                cell.setFont(ui_mono_font(point_size=10, weight=QFont.Weight.Bold))
                 cell.setFixedWidth(col_widths[field])
                 cell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 grid.addWidget(cell, row, col)

@@ -74,8 +74,9 @@ class AlertService(QObject):
             snap = spreads.get(preset_id)
             if not snap:
                 continue
-            lo = min(config.spread_alert_min(preset_id), config.spread_alert_max(preset_id))
-            hi = max(config.spread_alert_min(preset_id), config.spread_alert_max(preset_id))
+            # 按界面字面取值：「<=」框→低于即报警，「>=」框→高于即报警（不再排序归一化）
+            lo = config.spread_alert_min(preset_id)
+            hi = config.spread_alert_max(preset_id)
             if _spread_at_warning_edge(snap.mid_spread, lo, hi):
                 spread_active = True
                 key = f"spread_{preset_id}"
