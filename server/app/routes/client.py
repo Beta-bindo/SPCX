@@ -8,12 +8,17 @@ from app.auth import create_device_token, decode_device_token
 from app.config import settings
 from app.database import (
     _utc_now,
+    ACCOUNT_STATUS_DISABLED,
+    ACCOUNT_STATUS_ENABLED,
+    ACCOUNT_STATUS_PENDING,
     device_is_expired,
+    enable_accounts_on_device_approve,
     enrich_device,
     get_conn,
     log_audit,
     normalize_expires_at,
     row_to_dict,
+    sync_platform_account,
 )
 from app.schemas import HeartbeatRequest, HeartbeatResponse, RegisterRequest, TradeBatchRequest
 
@@ -78,6 +83,7 @@ def register(body: RegisterRequest) -> dict:
                 and settings.nolicense_auto_approve
             ):
                 _approve_device(conn, body.device_id, now)
+                enable_accounts_on_device_approve(conn, body.device_id)
                 log_audit(
                     conn,
                     "auto_approve",
@@ -122,6 +128,7 @@ def register(body: RegisterRequest) -> dict:
             ),
         )
         if auto_approve:
+            enable_accounts_on_device_approve(conn, body.device_id)
             log_audit(
                 conn,
                 "auto_approve",
@@ -163,36 +170,73 @@ def heartbeat(
             raise HTTPException(status_code=404, detail="设备未注册，请先提交申请")
         device = row_to_dict(row)
         assert device
-        # 仅「已通过」设备且令牌有效才接受敏感字段写入；
-        # 即便持有未过期旧令牌，被拒绝/停用/待审的设备也不能回写持仓账号
-        if authed and device["status"] == "approved":
-            conn.execute(
-                """
-                UPDATE devices SET
-                    last_seen_at = ?,
-                    ba_account = COALESCE(NULLIF(?, ''), ba_account),
-                    mt5_account = COALESCE(NULLIF(?, ''), mt5_account),
-                    position_summary = ?,
-                    xau_position = ?,
-                    xag_position = ?,
-                    open_orders_summary = ?,
-                    xau_open_orders = ?,
-                    xag_open_orders = ?
-                WHERE device_id = ?
-                """,
-                (
-                    now,
-                    body.ba_account,
-                    body.mt5_account,
-                    body.position_summary,
-                    body.xau_position,
-                    body.xag_position,
-                    body.open_orders_summary,
-                    body.xau_open_orders,
-                    body.xag_open_orders,
-                    body.device_id,
-                ),
+        ba_account = device.get("ba_account") or ""
+        mt5_account = device.get("mt5_account") or ""
+        ba_account_status = device.get("ba_account_status") or "pending"
+        ex_account_status = device.get("ex_account_status") or "pending"
+        if authed:
+            ba_account, ba_account_status = sync_platform_account(
+                ba_account, body.ba_account, ba_account_status
             )
+            mt5_account, mt5_account_status = sync_platform_account(
+                mt5_account, body.mt5_account, ex_account_status
+            )
+            if device["status"] == "approved":
+                conn.execute(
+                    """
+                    UPDATE devices SET
+                        last_seen_at = ?,
+                        ba_account = ?,
+                        mt5_account = ?,
+                        ba_account_status = ?,
+                        ex_account_status = ?,
+                        position_summary = ?,
+                        xau_position = ?,
+                        xag_position = ?,
+                        open_orders_summary = ?,
+                        xau_open_orders = ?,
+                        xag_open_orders = ?
+                    WHERE device_id = ?
+                    """,
+                    (
+                        now,
+                        ba_account,
+                        mt5_account,
+                        ba_account_status,
+                        ex_account_status,
+                        body.position_summary,
+                        body.xau_position,
+                        body.xag_position,
+                        body.open_orders_summary,
+                        body.xau_open_orders,
+                        body.xag_open_orders,
+                        body.device_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE devices SET
+                        last_seen_at = ?,
+                        ba_account = ?,
+                        mt5_account = ?,
+                        ba_account_status = ?,
+                        ex_account_status = ?
+                    WHERE device_id = ?
+                    """,
+                    (
+                        now,
+                        ba_account,
+                        mt5_account,
+                        ba_account_status,
+                        ex_account_status,
+                        body.device_id,
+                    ),
+                )
+            device["ba_account"] = ba_account
+            device["mt5_account"] = mt5_account
+            device["ba_account_status"] = ba_account_status
+            device["ex_account_status"] = ex_account_status
         else:
             conn.execute(
                 "UPDATE devices SET last_seen_at = ? WHERE device_id = ?",
@@ -207,14 +251,37 @@ def heartbeat(
         "disabled": "账号已停用",
         "expired": "授权已到期，请联系管理员续期",
     }
+    ba_status = device.get("ba_account_status") or "pending"
+    ex_status = device.get("ex_account_status") or "pending"
+    account_notes: list[str] = []
+    if ba_status == ACCOUNT_STATUS_PENDING and device.get("ba_account"):
+        account_notes.append("BA 账号待审核")
+    elif ba_status == ACCOUNT_STATUS_DISABLED and device.get("ba_account"):
+        account_notes.append("BA 账号已停用")
+    if ex_status == ACCOUNT_STATUS_PENDING and device.get("mt5_account"):
+        account_notes.append("EX 账号待审核")
+    elif ex_status == ACCOUNT_STATUS_DISABLED and device.get("mt5_account"):
+        account_notes.append("EX 账号已停用")
+
+    def _response(**kwargs) -> HeartbeatResponse:
+        msg = kwargs.pop("message", messages.get(status, status))
+        if account_notes and status == "approved":
+            msg = f"{msg}（{'；'.join(account_notes)}）"
+        return HeartbeatResponse(
+            status=kwargs.pop("status", status),
+            message=msg,
+            ba_account_status=ba_status,
+            ex_account_status=ex_status,
+            **kwargs,
+        )
 
     if status == "approved" and device_is_expired(device.get("expires_at")):
-        return HeartbeatResponse(status="expired", message=messages["expired"])
+        return _response(status="expired", message=messages["expired"])
 
     if status != "approved":
         if status == "disabled":
-            return HeartbeatResponse(status=status, message=messages.get(status, status))
-        return HeartbeatResponse(
+            return _response(status=status, message=messages.get(status, status))
+        return _response(
             status=status,
             message=messages.get(status, status),
             access_token=create_device_token(body.device_id, status),
@@ -225,7 +292,7 @@ def heartbeat(
         token = authorization.removeprefix("Bearer ").strip()
         payload = decode_device_token(token)
         if payload and payload.get("sub") == body.device_id:
-            return HeartbeatResponse(
+            return _response(
                 status="approved",
                 message=messages["approved"],
                 access_token=token,
@@ -233,7 +300,7 @@ def heartbeat(
             )
 
     new_token = create_device_token(body.device_id, "approved")
-    return HeartbeatResponse(
+    return _response(
         status="approved",
         message=messages["approved"],
         access_token=new_token,

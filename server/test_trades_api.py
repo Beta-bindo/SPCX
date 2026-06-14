@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from app.auth import create_device_token
-from app.database import get_conn, init_db
+from app.database import enable_accounts_on_device_approve, get_conn, init_db
 from app.routes.client import heartbeat, register, upload_trades
 from app.schemas import (
     HeartbeatRequest,
@@ -281,6 +281,96 @@ class ServerTradeApiTests(unittest.TestCase):
                         "SELECT xau_position FROM devices WHERE device_id = ?", (dev,)
                     ).fetchone()
                 self.assertEqual(dict(row)["xau_position"], "")
+
+    def test_heartbeat_syncs_accounts_when_pending_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            with patched_settings(db_path):
+                init_db()
+                dev = "pending-acct-dev"
+                with get_conn() as conn:
+                    _insert_device(conn, dev, status="pending")
+                token = create_device_token(dev, "pending")
+                heartbeat(
+                    HeartbeatRequest(
+                        device_id=dev,
+                        ba_account="ABCD...WXYZ",
+                        mt5_account="12345@Exness",
+                    ),
+                    authorization=f"Bearer {token}",
+                )
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT ba_account, mt5_account, ba_account_status, ex_account_status FROM devices WHERE device_id = ?",
+                        (dev,),
+                    ).fetchone()
+                data = dict(row)
+                self.assertEqual(data["ba_account"], "ABCD...WXYZ")
+                self.assertEqual(data["mt5_account"], "12345@Exness")
+                self.assertEqual(data["ba_account_status"], "pending")
+                self.assertEqual(data["ex_account_status"], "pending")
+
+    def test_heartbeat_account_change_sets_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            with patched_settings(db_path):
+                init_db()
+                dev = "change-acct-dev"
+                with get_conn() as conn:
+                    _insert_device(conn, dev, status="approved")
+                    conn.execute(
+                        """
+                        UPDATE devices SET ba_account = ?, ba_account_status = 'enabled',
+                        mt5_account = ?, ex_account_status = 'enabled'
+                        WHERE device_id = ?
+                        """,
+                        ("OLD1...OLD2", "100@Exness", dev),
+                    )
+                token = create_device_token(dev, "approved")
+                resp = heartbeat(
+                    HeartbeatRequest(
+                        device_id=dev,
+                        ba_account="NEW1...NEW2",
+                        mt5_account="100@Exness",
+                    ),
+                    authorization=f"Bearer {token}",
+                )
+                self.assertEqual(resp.ba_account_status, "pending")
+                self.assertEqual(resp.ex_account_status, "enabled")
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT ba_account_status, ex_account_status FROM devices WHERE device_id = ?",
+                        (dev,),
+                    ).fetchone()
+                self.assertEqual(dict(row)["ba_account_status"], "pending")
+
+    def test_enable_accounts_on_device_approve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            with patched_settings(db_path):
+                init_db()
+                dev = "approve-acct-dev"
+                with get_conn() as conn:
+                    _insert_device(conn, dev, status="pending")
+                    conn.execute(
+                        """
+                        UPDATE devices SET ba_account = ?, mt5_account = ?
+                        WHERE device_id = ?
+                        """,
+                        ("BA1...BA2", "200@Exness", dev),
+                    )
+                    conn.execute(
+                        "UPDATE devices SET status = 'approved' WHERE device_id = ?",
+                        (dev,),
+                    )
+                    enable_accounts_on_device_approve(conn, dev)
+                    row = conn.execute(
+                        "SELECT ba_account_status, ex_account_status FROM devices WHERE device_id = ?",
+                        (dev,),
+                    ).fetchone()
+                data = dict(row)
+                self.assertEqual(data["ba_account_status"], "enabled")
+                self.assertEqual(data["ex_account_status"], "enabled")
 
 
 if __name__ == "__main__":

@@ -454,6 +454,12 @@ class MainWindow(QMainWindow):
             msg += "（启用监控后生效）"
         self._append_log(LogLevel.INFO, msg)
         self.status_bar.showMessage(msg)
+        if self.license_service:
+            threading.Thread(
+                target=self.license_service.sync_accounts_now,
+                daemon=True,
+                name="sync-accounts",
+            ).start()
 
     def _on_theme_toggled(self) -> None:
         dark = self.theme_btn.isChecked()

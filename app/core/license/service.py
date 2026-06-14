@@ -77,16 +77,32 @@ class LicenseService(QObject):
 
     def refresh(self) -> None:
         try:
+            prev_device = self.client.state.status
+            prev_ba = self.client.state.ba_account_status
+            prev_ex = self.client.state.ex_account_status
             state = self.client.heartbeat(**self._telemetry_payload())
         except LicenseError as exc:
             self.status_changed.emit(self.client.state.status, str(exc))
             return
-        prev = self.client.state.status
         self.status_changed.emit(state.status, state.message)
         if state.status == "approved" or self.client.can_upload_trades:
             self.flush_pending()
-        if prev == "approved" and state.status != "approved":
+        if prev_device == "approved" and state.status != "approved":
             self.revoked.emit(state.message or "授权已失效")
+            return
+        if state.status == "approved" and self._platform_accounts_blocked():
+            ba = self.client.state.ba_account_status
+            ex = self.client.state.ex_account_status
+            if prev_ba == "enabled" or prev_ex == "enabled":
+                msg = state.message or "交易账号已停用或待审核"
+                self.revoked.emit(msg)
+
+    def _platform_accounts_blocked(self) -> bool:
+        try:
+            self.client.require_platform_accounts_enabled()
+        except LicenseError:
+            return True
+        return False
 
     def _on_timer(self) -> None:
         self.refresh()
@@ -100,10 +116,9 @@ class LicenseService(QObject):
             self.flush_pending()
 
     def ensure_approved(self) -> None:
-        import os
-        import sys
+        from app.core.build_config import LICENSE_REQUIRED
 
-        if os.environ.get("TA_LICENSE_SKIP") == "1" and not getattr(sys, "frozen", False):
+        if not LICENSE_REQUIRED:
             return
         try:
             self.refresh()
@@ -114,15 +129,25 @@ class LicenseService(QObject):
         self.client.require_approved()
 
     def ensure_approved_for_trade(self) -> None:
-        """交易热路径：本地已授权则跳过网络心跳，避免点击下单卡顿。"""
-        import os
-        import sys
+        """交易前强制刷新授权与平台账号状态，避免后台停用后本地缓存仍可下单。"""
+        from app.core.build_config import LICENSE_REQUIRED
 
-        if os.environ.get("TA_LICENSE_SKIP") == "1" and not getattr(sys, "frozen", False):
+        if not LICENSE_REQUIRED:
             return
-        if self.client.is_approved:
-            return
-        self.ensure_approved()
+        try:
+            self.refresh()
+        except LicenseError:
+            pass
+        if not self.client.is_approved:
+            self.ensure_approved()
+        self.client.require_platform_accounts_enabled()
+
+    def sync_accounts_now(self) -> None:
+        """连接参数变更后立即上报账号（不阻塞 UI 时可后台调用）。"""
+        try:
+            self.refresh()
+        except LicenseError:
+            pass
 
     def _reporting_fresh_enough(self, *, max_age_minutes: int = 30) -> bool:
         """本地已有令牌且近期心跳成功，启动时跳过联网避免系统代理小窗。"""

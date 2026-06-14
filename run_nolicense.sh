@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 source .venv/bin/activate 2>/dev/null || python3 -m venv .venv && source .venv/bin/activate && pip install -q -r requirements.txt
-# 默认按正式授权版启动；无授权版请: ./run_nolicense.sh
 cat > app/core/build_config.py <<'EOF'
-# Local licensed dev - requires auth server approval
-LICENSE_REQUIRED = True
+# Local nolicense dev - same as build_nolicense output
+LICENSE_REQUIRED = False
 EOF
 python main.py

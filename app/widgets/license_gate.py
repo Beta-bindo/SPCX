@@ -246,14 +246,13 @@ def ensure_license_approved(
     parent=None, service: LicenseService | None = None
 ) -> LicenseService | None:
     """启动门禁：必须经服务器确认 approved；返回 None 表示用户退出。"""
-    import os
-    import sys
+    from app.core.build_config import LICENSE_REQUIRED
 
-    if os.environ.get("TA_LICENSE_SKIP") == "1" and not getattr(sys, "frozen", False):
+    if not LICENSE_REQUIRED:
         service = service or LicenseService()
         service.client.state.status = "approved"
         service.client.state.access_token = "dev-local-skip"
-        service.client.state.message = "开发模式（已跳过授权校验）"
+        service.client.state.message = "无授权版（跳过授权校验）"
         return service
 
     service = service or LicenseService()
@@ -277,9 +276,15 @@ def ensure_license_approved(
 
 
 def _verify_with_server(service: LicenseService) -> bool:
-    """仅当授权服务器返回 approved 时视为通过。"""
+    """授权服务器返回 approved 且 BA/EX 账号均为启用时视为通过。"""
     try:
         service.refresh()
     except LicenseError:
         return False
-    return service.is_approved
+    if not service.is_approved:
+        return False
+    try:
+        service.client.require_platform_accounts_enabled()
+    except LicenseError:
+        return False
+    return True

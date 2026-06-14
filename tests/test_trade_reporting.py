@@ -108,6 +108,68 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(payload["ba_rebate"], 0.8)
         self.assertEqual(payload["net_pnl"], 4.3)
 
+    def test_disabled_ba_account_blocks_trade(self):
+        from app.core.license.client import LicenseClient, LicenseError
+        from app.core.license.store import LicenseState, save_license
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-1",
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="disabled",
+                        ex_account_status="enabled",
+                    )
+                )
+                client = LicenseClient()
+                with self.assertRaises(LicenseError) as ctx:
+                    client.require_platform_accounts_enabled()
+                self.assertIn("BA", str(ctx.exception))
+
+    def test_ensure_approved_for_trade_blocks_disabled_account_when_license_required(self):
+        from app.core.license.service import LicenseService
+        from app.core.license.store import LicenseState, save_license
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-1",
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="disabled",
+                        ex_account_status="enabled",
+                    )
+                )
+                service = LicenseService()
+                with patch("app.core.build_config.LICENSE_REQUIRED", True):
+                    with self.assertRaises(LicenseError):
+                        service.ensure_approved_for_trade()
+
+    def test_ensure_approved_for_trade_skips_check_when_nolicense(self):
+        from app.core.license.service import LicenseService
+        from app.core.license.store import LicenseState, save_license
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id="dev-1",
+                        status="pending",
+                        access_token="",
+                        ba_account_status="disabled",
+                        ex_account_status="disabled",
+                    )
+                )
+                service = LicenseService()
+                with patch("app.core.build_config.LICENSE_REQUIRED", False):
+                    service.ensure_approved_for_trade()
+
     def test_record_trade_persists_open_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             ledger_file = Path(tmp) / "trade_ledger.json"
@@ -216,7 +278,7 @@ class TradeReportingTests(unittest.TestCase):
                     )
                 )
                 service = LicenseService()
-                with patch.dict("os.environ", {"TA_LICENSE_SKIP": ""}, clear=False):
+                with patch("app.core.build_config.LICENSE_REQUIRED", True):
                     with patch(
                         "app.core.license.client.requests.post",
                         side_effect=requests.ConnectionError("offline"),
@@ -236,7 +298,7 @@ class TradeReportingTests(unittest.TestCase):
                     )
                 )
                 service = LicenseService()
-                with patch.dict("os.environ", {"TA_LICENSE_SKIP": ""}, clear=False):
+                with patch("app.core.build_config.LICENSE_REQUIRED", True):
                     with patch(
                         "app.core.license.client.requests.post",
                         side_effect=requests.ConnectionError("offline"),

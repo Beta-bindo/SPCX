@@ -13,7 +13,10 @@ from app.auth import change_admin_password, create_admin_token, decode_admin_tok
 from app.config import bump_admin_token_version, settings
 from app.database import (
     _utc_now,
+    ACCOUNT_STATUS_DISABLED,
+    ACCOUNT_STATUS_ENABLED,
     device_is_expired,
+    enable_accounts_on_device_approve,
     enrich_device,
     get_conn,
     log_audit,
@@ -522,6 +525,7 @@ def approve_device(
                 (now, device_id),
             )
             detail = "到期=不变"
+        enable_accounts_on_device_approve(conn, device_id)
         log_audit(
             conn,
             "approve",
@@ -530,6 +534,83 @@ def approve_device(
             ip=_client_key(request),
         )
     return {"ok": True, "status": "approved"}
+
+
+def _set_platform_account_status(
+    device_id: str,
+    *,
+    platform: str,
+    status: str,
+    request: Request,
+) -> dict:
+    column = "ba_account_status" if platform == "ba" else "ex_account_status"
+    account_col = "ba_account" if platform == "ba" else "mt5_account"
+    label = "BA" if platform == "ba" else "EX"
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="设备不存在")
+        device = row_to_dict(row)
+        assert device
+        account = (device.get(account_col) or "").strip()
+        if status == ACCOUNT_STATUS_ENABLED:
+            if not account:
+                raise HTTPException(status_code=400, detail=f"{label} 账号为空，无法启用")
+        conn.execute(
+            f"UPDATE devices SET {column} = ? WHERE device_id = ?",
+            (status, device_id),
+        )
+        action = f"{'enable' if status == ACCOUNT_STATUS_ENABLED else 'disable'}_{platform}_account"
+        log_audit(
+            conn,
+            action,
+            target_device_id=device_id,
+            detail=f"{label}={account or '-'}",
+            ip=_client_key(request),
+        )
+        updated = conn.execute(
+            "SELECT * FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+    device = enrich_device(updated)
+    return {"ok": True, "device": device}
+
+
+@router.post("/devices/{device_id}/accounts/ba/enable")
+def enable_ba_account(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_platform_account_status(
+        device_id, platform="ba", status=ACCOUNT_STATUS_ENABLED, request=request
+    )
+
+
+@router.post("/devices/{device_id}/accounts/ba/disable")
+def disable_ba_account(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_platform_account_status(
+        device_id, platform="ba", status=ACCOUNT_STATUS_DISABLED, request=request
+    )
+
+
+@router.post("/devices/{device_id}/accounts/ex/enable")
+def enable_ex_account(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_platform_account_status(
+        device_id, platform="ex", status=ACCOUNT_STATUS_ENABLED, request=request
+    )
+
+
+@router.post("/devices/{device_id}/accounts/ex/disable")
+def disable_ex_account(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_platform_account_status(
+        device_id, platform="ex", status=ACCOUNT_STATUS_DISABLED, request=request
+    )
 
 
 @router.post("/devices/{device_id}/reject")

@@ -64,7 +64,7 @@
         <table>
           <thead>
             <tr>
-              <th>昵称</th><th>联系方式</th><th>BA账号</th><th>MT5账号</th><th>在线</th><th>授权到期</th><th>机器码</th><th>状态</th><th>最后在线</th><th>操作</th>
+              <th>昵称</th><th>联系方式</th><th>BA账号</th><th>EX账号</th><th>在线</th><th>授权到期</th><th>机器码</th><th>状态</th><th>最后在线</th><th>操作</th>
             </tr>
           </thead>
           <tbody id="deviceRows"></tbody>
@@ -85,7 +85,7 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=3"></script>
+<script src="/static/admin_common.js?v=4"></script>
 <script>
 let adminToken = localStorage.getItem('ta_admin_token') || '';
 let devicePage = 1;
@@ -193,6 +193,33 @@ async function editExpiresAt(deviceId, current) {
   if (updated) await loadDevices(devicePage);
 }
 
+async function setAccountStatus(deviceId, platform, action) {
+  const res = await fetch(accountApiPath(deviceId, platform, action), {
+    method: 'POST',
+    headers: authHeaders(adminToken),
+  });
+  if (res.status === 401) return logout();
+  if (!res.ok) {
+    alert(await readError(res) || '操作失败');
+    return;
+  }
+  await loadDevices(devicePage);
+}
+
+function accountCell(account, status, platform) {
+  const acct = account || '-';
+  const st = status || 'pending';
+  const enableAct = st === 'enabled' ? 'disable' : 'enable';
+  const enableLabel = st === 'enabled' ? '停用' : '启用';
+  const platformLabel = platform === 'ba' ? 'BA' : 'EX';
+  return `
+    <div class="cell-title"><code>${esc(acct)}</code></div>
+    <div><span class="badge ${accountStatusClass(st)}">${accountStatusLabel(st)}</span></div>
+    <div class="cell-actions">
+      <button class="btn-inline secondary" type="button" data-acct-act="${platform}:${enableAct}">${platformLabel}${enableLabel}</button>
+    </div>`;
+}
+
 async function loadDevices(page) {
   const status = document.getElementById('statusFilter').value;
   const pageSize = document.getElementById('pageSize').value;
@@ -221,8 +248,8 @@ async function loadDevices(page) {
         </div>
       </td>
       <td>${esc(d.contact||'-')}</td>
-      <td><code>${esc(d.ba_account||'-')}</code></td>
-      <td><code>${esc(d.mt5_account||'-')}</code></td>
+      <td>${accountCell(d.ba_account, d.ba_account_status, 'ba')}</td>
+      <td>${accountCell(d.mt5_account, d.ex_account_status, 'ex')}</td>
       <td>${onlineLabel(d)}</td>
       <td>
         <div class="cell-title">${expiresLabel(d)}</div>
@@ -247,6 +274,13 @@ async function loadDevices(page) {
         if (a === 'reject') reject(id);
         else if (a === 'delete') removeDevice(id);
         else act(id, a);
+      });
+    });
+    tr.querySelectorAll('[data-acct-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const raw = btn.getAttribute('data-acct-act') || '';
+        const [platform, action] = raw.split(':');
+        if (platform && action) setAccountStatus(id, platform, action);
       });
     });
     tbody.appendChild(tr);

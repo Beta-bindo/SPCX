@@ -1,3 +1,3 @@
 import os
 
-os.environ.setdefault("TA_LICENSE_SKIP", "1")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

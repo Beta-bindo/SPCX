@@ -23,6 +23,8 @@ class LicenseState:
     server_url: str = DEFAULT_SERVER_URL
     message: str = ""
     last_check: str = ""
+    ba_account_status: str = "unknown"
+    ex_account_status: str = "unknown"
 
 
 def license_path() -> Path:

@@ -73,7 +73,7 @@ def test_verify_with_server_requires_approved_status(tmp_path, monkeypatch):
 
 def test_ensure_license_approved_returns_none_when_user_exits(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication(sys.argv)
-    monkeypatch.delenv("TA_LICENSE_SKIP", raising=False)
+    monkeypatch.setattr("app.core.build_config.LICENSE_REQUIRED", True)
     monkeypatch.setattr(
         "app.core.license.store.license_path",
         lambda: tmp_path / "license.json",
@@ -106,3 +106,25 @@ def test_ensure_license_approved_returns_none_when_user_exits(tmp_path, monkeypa
         result = ensure_license_approved()
     assert result is None
     print("  ✓ 未通过服务器校验且用户退出时不进入主界面")
+
+
+def test_ensure_license_approved_skips_gate_when_nolicense(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.core.build_config.LICENSE_REQUIRED", False)
+    monkeypatch.setattr(
+        "app.core.license.store.license_path",
+        lambda: tmp_path / "license.json",
+    )
+    save_license(
+        LicenseState(
+            device_id="dev-nolicense",
+            status="pending",
+            access_token="",
+            server_url="http://127.0.0.1:8787",
+        )
+    )
+
+    result = ensure_license_approved()
+    assert result is not None
+    assert result.client.state.status == "approved"
+    assert result.client.state.access_token
+    print("  ✓ 无授权版跳过门禁直接进入")

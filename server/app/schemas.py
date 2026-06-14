@@ -61,6 +61,8 @@ class HeartbeatResponse(BaseModel):
     message: str
     access_token: Optional[str] = None
     expires_in_hours: int = 24
+    ba_account_status: str = "pending"
+    ex_account_status: str = "pending"
 
 
 class TradeItem(BaseModel):

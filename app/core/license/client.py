@@ -57,6 +57,14 @@ class LicenseClient:
         return not LICENSE_REQUIRED
 
     @property
+    def is_ba_account_enabled(self) -> bool:
+        return self.state.ba_account_status == "enabled"
+
+    @property
+    def is_ex_account_enabled(self) -> bool:
+        return self.state.ex_account_status == "enabled"
+
+    @property
     def can_upload_trades(self) -> bool:
         if not self.state.access_token:
             return False
@@ -172,6 +180,8 @@ class LicenseClient:
             status=status,
             message=data.get("message", ""),
             access_token=saved_token,
+            ba_account_status=data.get("ba_account_status", self.state.ba_account_status),
+            ex_account_status=data.get("ex_account_status", self.state.ex_account_status),
         )
 
     def upload_trades(self, trades: list[dict]) -> bool:
@@ -213,6 +223,24 @@ class LicenseClient:
     def require_approved(self) -> None:
         if not self.is_approved:
             raise LicenseError(self.state.message or "未授权，无法使用此功能")
+
+    def require_platform_accounts_enabled(self) -> None:
+        ba = self.state.ba_account_status
+        ex = self.state.ex_account_status
+        if ba == "pending":
+            raise LicenseError("BA 账号待审核，请联系管理员启用后再交易")
+        if ba == "disabled":
+            raise LicenseError("BA 账号已停用，请联系管理员")
+        if ba not in ("enabled", "unknown"):
+            raise LicenseError("BA 账号未启用，请联系管理员")
+        if ex == "pending":
+            raise LicenseError("EX 账号待审核，请联系管理员启用后再交易")
+        if ex == "disabled":
+            raise LicenseError("EX 账号已停用，请联系管理员")
+        if ex not in ("enabled", "unknown"):
+            raise LicenseError("EX 账号未启用，请联系管理员")
+        if ba == "unknown" or ex == "unknown":
+            raise LicenseError("账号授权状态未知，请刷新授权后再试")
 
     def to_dict(self) -> dict:
         return asdict(self.state)

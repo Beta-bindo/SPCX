@@ -10,6 +10,10 @@ from app.config import settings
 
 ONLINE_WINDOW_SEC = 900  # 15 分钟内视为在线
 
+ACCOUNT_STATUS_PENDING = "pending"
+ACCOUNT_STATUS_ENABLED = "enabled"
+ACCOUNT_STATUS_DISABLED = "disabled"
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -35,6 +39,8 @@ def init_db() -> None:
                 expires_at TEXT,
                 ba_account TEXT NOT NULL DEFAULT '',
                 mt5_account TEXT NOT NULL DEFAULT '',
+                ba_account_status TEXT NOT NULL DEFAULT 'pending',
+                ex_account_status TEXT NOT NULL DEFAULT 'pending',
                 position_summary TEXT NOT NULL DEFAULT '',
                 xau_position TEXT NOT NULL DEFAULT '',
                 xag_position TEXT NOT NULL DEFAULT ''
@@ -200,6 +206,14 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
         ("ba_account", "ALTER TABLE devices ADD COLUMN ba_account TEXT NOT NULL DEFAULT ''"),
         ("mt5_account", "ALTER TABLE devices ADD COLUMN mt5_account TEXT NOT NULL DEFAULT ''"),
         (
+            "ba_account_status",
+            "ALTER TABLE devices ADD COLUMN ba_account_status TEXT NOT NULL DEFAULT 'pending'",
+        ),
+        (
+            "ex_account_status",
+            "ALTER TABLE devices ADD COLUMN ex_account_status TEXT NOT NULL DEFAULT 'pending'",
+        ),
+        (
             "position_summary",
             "ALTER TABLE devices ADD COLUMN position_summary TEXT NOT NULL DEFAULT ''",
         ),
@@ -220,6 +234,62 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
     ):
         if name not in cols:
             conn.execute(ddl)
+    conn.execute(
+        """
+        UPDATE devices SET ba_account_status = 'enabled'
+        WHERE status = 'approved' AND ba_account != '' AND ba_account_status = 'pending'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE devices SET ex_account_status = 'enabled'
+        WHERE status = 'approved' AND mt5_account != '' AND ex_account_status = 'pending'
+        """
+    )
+
+
+def normalize_account_status(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if raw in (
+        ACCOUNT_STATUS_PENDING,
+        ACCOUNT_STATUS_ENABLED,
+        ACCOUNT_STATUS_DISABLED,
+    ):
+        return raw
+    return ACCOUNT_STATUS_PENDING
+
+
+def sync_platform_account(
+    old_account: str,
+    new_account: str,
+    current_status: str,
+) -> tuple[str, str]:
+    """账号同步：有变更则替换并置为待审核。"""
+    stored = (old_account or "").strip()
+    incoming = (new_account or "").strip()
+    status = normalize_account_status(current_status)
+    if not incoming:
+        return stored, status
+    if incoming != stored:
+        return incoming, ACCOUNT_STATUS_PENDING
+    return stored or incoming, status
+
+
+def enable_accounts_on_device_approve(conn: sqlite3.Connection, device_id: str) -> None:
+    """设备审核通过时，将仍为待审且已填写的平台账号置为启用（不覆盖已停用）。"""
+    conn.execute(
+        """
+        UPDATE devices SET
+            ba_account_status = CASE
+                WHEN ba_account != '' AND ba_account_status = 'pending' THEN 'enabled'
+                ELSE ba_account_status END,
+            ex_account_status = CASE
+                WHEN mt5_account != '' AND ex_account_status = 'pending' THEN 'enabled'
+                ELSE ex_account_status END
+        WHERE device_id = ?
+        """,
+        (device_id,),
+    )
 
 
 def parse_iso(ts: str | None) -> datetime | None:

@@ -65,6 +65,26 @@ function deviceApiPath(deviceId, action = '') {
   return `/api/v1/admin/devices/${encoded}`;
 }
 
+function accountApiPath(deviceId, platform, action) {
+  return `/api/v1/admin/devices/${encodeURIComponent(deviceId)}/accounts/${platform}/${action}`;
+}
+
+const ACCOUNT_STATUS_LABELS = {
+  pending: '待审核',
+  enabled: '已启用',
+  disabled: '已停用',
+};
+
+function accountStatusLabel(status) {
+  return ACCOUNT_STATUS_LABELS[status] || status || '待审核';
+}
+
+function accountStatusClass(status) {
+  if (status === 'enabled') return 'approved';
+  if (status === 'disabled') return 'disabled';
+  return 'pending';
+}
+
 function fmtBeijing(iso) {
   if (!iso || iso === '-') return '-';
   const d = new Date(iso);
