@@ -9,6 +9,10 @@ installer_output/
 .DS_Store
 *.log
 server/.env
+# 授权服务器运行时 SQLite（含真实用户/设备数据，勿提交）
+server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
 dist/**/config.json
 dist/**/license.json
 dist/**/.env
