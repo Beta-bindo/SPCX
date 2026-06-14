@@ -264,6 +264,10 @@ def list_trades(
             SELECT
                 COALESCE(SUM(ba_pnl), 0),
                 COALESCE(SUM(mt5_pnl), 0),
+                COALESCE(SUM(ba_fee), 0),
+                COALESCE(SUM(mt5_fee), 0),
+                COALESCE(SUM(ba_funding_fee), 0),
+                COALESCE(SUM(ba_rebate), 0),
                 COALESCE(SUM(net_pnl), 0)
             FROM trades t{where}
             """,
@@ -280,7 +284,11 @@ def list_trades(
             "count": total,
             "ba_pnl": round(summary_row[0], 2),
             "mt5_pnl": round(summary_row[1], 2),
-            "net_pnl": round(summary_row[2], 2),
+            "ba_fee": round(summary_row[2], 4),
+            "mt5_fee": round(summary_row[3], 4),
+            "ba_funding_fee": round(summary_row[4], 4),
+            "ba_rebate": round(summary_row[5], 4),
+            "net_pnl": round(summary_row[6], 2),
         },
     }
 
@@ -307,7 +315,7 @@ def export_trades(
     header = [
         "用户", "联系方式", "机器码", "类型", "品种", "模式", "时间", "点差",
         "BA价", "Ex价", "BA数量", "Ex数量", "方向", "BA盈亏", "Exness盈亏",
-        "BA手续费", "Exness手续费", "净利", "上报时间",
+        "BA手续费", "Exness手续费", "BA资金费", "BA返佣", "净利", "上报时间",
     ]
 
     def _generate():
@@ -356,6 +364,8 @@ def export_trades(
                             item.get("mt5_pnl") or 0,
                             item.get("ba_fee") or 0,
                             item.get("mt5_fee") or 0,
+                            item.get("ba_funding_fee") or 0,
+                            item.get("ba_rebate") or 0,
                             item.get("net_pnl") or 0,
                             item.get("uploaded_at") or "",
                         ]

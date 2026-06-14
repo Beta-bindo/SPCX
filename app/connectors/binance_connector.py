@@ -36,7 +36,7 @@ from app.core.exchange_utils import (
     get_binance_price_tick,
     get_binance_symbol_meta,
 )
-from app.core.models import AppConfig, ConnectionState, GoldOrderMode, OpenOrder, OrderBook, OrderBookLevel, Position, Quote, Side
+from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrderMode, OpenOrder, OrderBook, OrderBookLevel, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
 from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_ba_symbols
@@ -134,6 +134,7 @@ class BinanceConnector(QObject):
     ws_state_changed = Signal(str)    # WS 行情：streaming / rest / connecting / off
     latency_updated = Signal(float)   # 接口往返延迟（ms）
     open_orders_changed = Signal(object)  # 当前存在挂单的 BA 交易对集合（frozenset[str]）
+    account_received = Signal(object)  # 账户资金快照（AccountSnapshot）
     log = Signal(str)                 # 日志行
 
     def __init__(self, config: AppConfig, parent=None):
@@ -154,6 +155,7 @@ class BinanceConnector(QObject):
         self._effective_proxy_host: str | None = None
         self._effective_proxy_port: int | None = None
         self._leverage_applied: dict[str, int] = {}         # 已设置过杠杆的交易对
+        self._margin_type_applied: dict[str, str] = {}      # 已设置过保证金模式的交易对
         self._positions_cache: list[Position] = []          # 持仓缓存（含 TTL）
         self._positions_cache_at: float = 0.0
         self._symbol_leverage: dict[str, int] = {}          # 各交易对实际杠杆
@@ -188,6 +190,8 @@ class BinanceConnector(QObject):
         self._user_stream_seeded = False
         # ACCOUNT_UPDATE 到达后置脏，poll 循环据此尽快强刷一次持仓
         self._account_dirty = threading.Event()
+        # 账户资金快照节流：上次拉取时间（秒）
+        self._account_snapshot_at = 0.0
 
     @property
     def ws_mode(self) -> str:
@@ -237,6 +241,8 @@ class BinanceConnector(QObject):
             or config.sync_leverage_on_trade != self.config.sync_leverage_on_trade
         ):
             self._leverage_applied.clear()
+        if config.ba_margin_type != self.config.ba_margin_type:
+            self._margin_type_applied.clear()
         self.config = config
         if self._demo_timer is not None:
             self._demo_timer.setInterval(self._ba_refresh_interval_ms())
@@ -689,6 +695,181 @@ class BinanceConnector(QObject):
 
         return self._run_ba_api(_fetch, log_failures=False)
 
+    def fetch_account_snapshot(self) -> AccountSnapshot | None:
+        """拉取合约账户资金快照（余额/已用保证金/可用保证金）。
+
+        仅实盘有效；模拟或未连接返回标记 is_live=False 的占位快照。
+        """
+        if not self.config.use_live_ba or not self._client:
+            return AccountSnapshot(platform="BA", currency="USDT", is_live=False)
+
+        def _fetch() -> AccountSnapshot:
+            account = self._client.futures_account()
+            balance = float(account.get("totalWalletBalance", 0) or 0)
+            used = float(account.get("totalInitialMargin", 0) or 0)
+            free = float(account.get("availableBalance", 0) or 0)
+            equity = float(account.get("totalMarginBalance", 0) or 0)
+            # 现货钱包 USDT 余额（best-effort：API Key 无现货读权限时回退 0）
+            cash = 0.0
+            try:
+                spot = self._client.get_asset_balance(asset="USDT")
+                if spot:
+                    cash = float(spot.get("free", 0) or 0) + float(spot.get("locked", 0) or 0)
+            except Exception:
+                cash = 0.0
+            return AccountSnapshot(
+                platform="BA",
+                balance=balance,
+                used_margin=used,
+                free_margin=free,
+                equity=equity,
+                cash_balance=cash,
+                currency="USDT",
+                is_live=True,
+                timestamp=time.time(),
+            )
+
+        try:
+            snap = self._run_ba_api(_fetch, log_failures=False)
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"BA 账户资金读取失败: {exc}")
+            return None
+        if snap is not None:
+            self._account_snapshot_at = time.monotonic()
+            self.account_received.emit(snap)
+        return snap
+
+    _BA_REBATE_INCOME_TYPES = ("COMMISSION_REBATE", "API_REBATE", "FEE_RETURN")
+
+    def _fetch_income_sum(
+        self,
+        symbol: str,
+        income_types: tuple[str, ...],
+        start_ms: int,
+        end_ms: int,
+    ) -> float:
+        if not self._client:
+            return 0.0
+        total = 0.0
+        for income_type in income_types:
+            cursor = start_ms
+            while cursor < end_ms:
+                rows = self._client.futures_income_history(
+                    symbol=symbol,
+                    incomeType=income_type,
+                    startTime=cursor,
+                    endTime=end_ms,
+                    limit=1000,
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    total += float(row.get("income", 0) or 0)
+                if len(rows) < 1000:
+                    break
+                cursor = int(rows[-1].get("time", cursor)) + 1
+        return round(total, 4)
+
+    def fetch_funding_income(self, symbol: str, start_ms: int, end_ms: int) -> float:
+        """拉取指定时段内 BA 合约资金费合计（币安 FUNDING_FEE，负=支出，正=收入）。"""
+        if not self.config.use_live_ba or not self._client:
+            return 0.0
+        if start_ms >= end_ms:
+            return 0.0
+
+        def _fetch() -> float:
+            return self._fetch_income_sum(symbol, ("FUNDING_FEE",), start_ms, end_ms)
+
+        try:
+            result = self._run_ba_api(_fetch, log_failures=False)
+        except Exception:
+            return 0.0
+        return float(result or 0.0)
+
+    def fetch_rebate_income(self, symbol: str, start_ms: int, end_ms: int) -> float:
+        """拉取指定时段内 BA 合约返佣合计（COMMISSION_REBATE / API_REBATE / FEE_RETURN）。"""
+        if not self.config.use_live_ba or not self._client:
+            return 0.0
+        if start_ms >= end_ms:
+            return 0.0
+
+        def _fetch() -> float:
+            return self._fetch_income_sum(symbol, self._BA_REBATE_INCOME_TYPES, start_ms, end_ms)
+
+        try:
+            result = self._run_ba_api(_fetch, log_failures=False)
+        except Exception:
+            return 0.0
+        return float(result or 0.0)
+
+    def transfer_spot_futures(self, amount: float, to_futures: bool) -> tuple[bool, str]:
+        """现货钱包 ↔ U 本位合约钱包划转（USDT）。
+
+        to_futures=True：现货→合约（余额划入保证金）；False：合约→现货（保证金转出余额）。
+        通过 Universal Transfer 接口（MAIN_UMFUTURE / UMFUTURE_MAIN）实现，下单线程外调用。
+        """
+        amount = round(float(amount), 8)
+        if amount <= 0:
+            return False, "划转金额必须大于 0"
+        if not self.config.use_live_ba or not self._client:
+            return False, "BA 未实盘连接，无法划转"
+        transfer_type = "MAIN_UMFUTURE" if to_futures else "UMFUTURE_MAIN"
+
+        def _do():
+            fn = getattr(self._client, "universal_transfer", None)
+            if fn is None:
+                raise RuntimeError("当前 binance SDK 不支持 universal_transfer")
+            return fn(type=transfer_type, asset="USDT", amount=amount)
+
+        try:
+            self._run_ba_api(_do, priority=True)
+        except Exception as exc:
+            msg = getattr(exc, "message", None) or str(exc)
+            self._log(LogLevel.ERROR, f"BA 划转失败: {msg}")
+            return False, str(msg)
+        direction = "现货→合约" if to_futures else "合约→现货"
+        self._log(LogLevel.INFO, f"BA 划转成功 · {direction} · {amount} USDT")
+        # 划转后尽快刷新资金展示
+        self._account_snapshot_at = 0.0
+        self._account_dirty.set()
+        return True, f"划转成功：{direction} {amount} USDT"
+
+    def change_position_margin(
+        self, symbol: str, amount: float, add: bool
+    ) -> tuple[bool, str]:
+        """逐仓持仓加/减保证金（USDT）。
+
+        add=True：合约钱包→持仓（添加保证金，type=1）；
+        add=False：持仓→合约钱包（减少保证金，type=2）。
+        仅对「逐仓」持仓有效；全仓持仓或无持仓时交易所会返回错误，原样上抛提示。
+        """
+        amount = round(float(amount), 8)
+        if amount <= 0:
+            return False, "保证金金额必须大于 0"
+        if not symbol:
+            return False, "请选择品种"
+        if not self.config.use_live_ba or not self._client:
+            return False, "BA 未实盘连接，无法调整保证金"
+        margin_type = 1 if add else 2
+
+        def _do():
+            return self._client.futures_change_position_margin(
+                symbol=symbol, amount=amount, type=margin_type
+            )
+
+        try:
+            self._run_ba_api(_do, priority=True)
+        except Exception as exc:
+            msg = getattr(exc, "message", None) or str(exc)
+            self._log(LogLevel.ERROR, f"BA 调整持仓保证金失败 · {symbol}: {msg}")
+            return False, str(msg)
+        action = "添加保证金" if add else "减少保证金"
+        self._log(LogLevel.INFO, f"BA {action}成功 · {symbol} · {amount} USDT")
+        self._account_snapshot_at = 0.0
+        self._account_dirty.set()
+        self._invalidate_positions_cache()
+        return True, f"{action}成功：{symbol} {amount} USDT"
+
     def _position_from_cache(
         self, symbol: str, side: Side | None = None, min_qty: float = 0.0
     ) -> Position | None:
@@ -907,6 +1088,7 @@ class BinanceConnector(QObject):
         adding = before_open is not None and before_open.quantity > 0
 
         def _open() -> LegResult:
+            self._apply_margin_type(symbol_ba)
             if self.config.sync_leverage_on_trade:
                 self._apply_leverage(symbol_ba)
             step = get_binance_lot_step(self._client, symbol_ba)
@@ -1221,6 +1403,37 @@ class BinanceConnector(QObject):
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA 设置杠杆失败: {exc}")
 
+    def _apply_margin_type(self, symbol: str) -> None:
+        """按配置为交易对设置保证金模式（全仓/逐仓）；空配置=跟随平台不设置。
+
+        - 已是目标模式时币安返回 -4046（无需修改），按成功处理；
+        - 该交易对已有持仓时返回 -4048（有持仓不能改），记录后跳过、不阻断下单。
+        """
+        target = (self.config.ba_margin_type or "").lower()
+        if target not in ("cross", "isolated") or not self._client:
+            return
+        if self._margin_type_applied.get(symbol) == target:
+            return
+        margin_type = "CROSSED" if target == "cross" else "ISOLATED"
+        label = "全仓" if target == "cross" else "逐仓"
+        try:
+            self._client.futures_change_margin_type(symbol=symbol, marginType=margin_type)
+            self._margin_type_applied[symbol] = target
+            self._log(LogLevel.DEBUG, f"BA 保证金模式已设为 {label} · {symbol}")
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code == -4046:  # 已是目标模式，无需修改
+                self._margin_type_applied[symbol] = target
+                return
+            if code == -4048:  # 有持仓不能切换，沿用现有模式
+                self._log(
+                    LogLevel.INFO,
+                    f"BA 保证金模式切换跳过 · {symbol} 有持仓，无法改为{label}，"
+                    "请先平掉该品种全部持仓再切换",
+                )
+                return
+            self._log(LogLevel.DEBUG, f"BA 设置保证金模式失败 · {symbol}: {exc}")
+
     def refresh_platform_leverage(self, symbol: str) -> int | None:
         """读取交易对在平台上的实际杠杆（优先缓存，否则强制拉一次持仓）。"""
         cached = self._symbol_leverage.get(symbol)
@@ -1242,6 +1455,7 @@ class BinanceConnector(QObject):
         """启动模拟行情：用定时器周期性生成黄金/白银的虚拟报价与盘口。"""
         self._emit_ws_mode("off")
         self._emit_open_orders(frozenset())  # 模拟模式无真实挂单
+        self.account_received.emit(AccountSnapshot(platform="BA", currency="USDT", is_live=False))
         self._set_state(ConnectionState.SIMULATED)
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
@@ -1701,6 +1915,12 @@ class BinanceConnector(QObject):
                     )
                 except Exception:
                     pass
+            if self.config.ba_margin_type:
+                for sym in symbols:
+                    try:
+                        self._run_ba_api(lambda s=sym: self._apply_margin_type(s), log_failures=False)
+                    except Exception:
+                        pass
             if self.config.sync_leverage_on_trade:
                 for sym in symbols:
                     try:
@@ -1758,11 +1978,12 @@ class BinanceConnector(QObject):
                         if not self._user_stream_seeded:
                             self._seed_stream_open_orders(watched)
                             self._user_stream_seeded = True
-                        # ACCOUNT_UPDATE 置脏时尽快强刷一次持仓
+                        # ACCOUNT_UPDATE 置脏时尽快强刷一次持仓与资金（WS 实时）
                         if self._account_dirty.is_set():
                             self._account_dirty.clear()
                             try:
                                 self.get_positions(force=True)
+                                self.fetch_account_snapshot()
                             except Exception:
                                 # 强刷失败则保留脏标记，下一轮继续重试，避免持仓长时间过期
                                 self._account_dirty.set()
@@ -1772,6 +1993,12 @@ class BinanceConnector(QObject):
                         self._user_stream_seeded = False
                         if self._quote_poll_count % 2 == 0:
                             self._poll_open_orders(watched)
+                    # 资金快照 REST 兜底：无论推送是否可用，至少每 ~5 秒刷新一次
+                    if time.monotonic() - self._account_snapshot_at >= 5.0:
+                        try:
+                            self.fetch_account_snapshot()
+                        except Exception:
+                            pass
                 except BinanceAPIException as exc:
                     if getattr(exc, "code", None) in (-1003, 418):
                         self._log(

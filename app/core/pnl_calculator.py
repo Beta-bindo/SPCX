@@ -113,6 +113,32 @@ def _fee_legs_for_display() -> int:
     return 1
 
 
+def estimate_trade_fees(
+    preset_id: str,
+    config: AppConfig,
+    *,
+    ba_price: float,
+    ba_quantity: float,
+    mt5_quantity: float,
+    legs: int = 1,
+) -> tuple[float, float]:
+    """估算单笔成交各端手续费（默认单腿，用于开仓或平仓记账）。"""
+    preset = find_preset(preset_id)
+    notional = ba_price * ba_quantity * preset.ba_qty_unit
+    ba_fee = round(_estimate_ba_fee(notional, config.ba_fee_rate, legs), 4)
+    mt5_fee = round(
+        _estimate_mt5_fee(
+            mt5_quantity,
+            config.mt5_commission_per_lot,
+            config.mt5_spread_points,
+            config.mt5_point_value,
+            legs=legs,
+        ),
+        4,
+    )
+    return ba_fee, mt5_fee
+
+
 def _preset_for_position(pos: Position) -> str:
     """根据持仓的交易对反查所属品种预设（xau/xag）。"""
     if pos.platform == "BA":

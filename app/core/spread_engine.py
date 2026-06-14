@@ -13,6 +13,7 @@ SpreadEngine 是整个应用的核心枢纽，职责：
 from __future__ import annotations
 
 import threading
+import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -29,11 +30,16 @@ from app.core.models import (
     SpreadSnapshot,
 )
 from app.core.network_status import NetworkStatus
-from app.core.pnl_calculator import PnlSummary, build_spread_snapshot, calculate_pnl
+from app.core.pnl_calculator import (
+    PnlSummary,
+    build_spread_snapshot,
+    calculate_pnl,
+    estimate_trade_fees,
+)
 from app.core.risk import build_risk_snapshot
 from app.core.symbols import WATCHED_PRESETS, find_preset, watched_ba_symbols
 from app.core.app_log import LogLevel, hedge_mode_word, should_log
-from app.core.trade_ledger import hedge_sides, record_close_settlement, record_trade
+from app.core.trade_ledger import funding_period_start, hedge_sides, record_close_settlement, record_trade
 from app.core.trade_result import HedgeTradeResult
 from app.core.trading_service import close_hedge, open_hedge, position_entry_spread
 from app.core.order_mode import order_mode_log_label
@@ -50,6 +56,7 @@ class SpreadEngine(QObject):
     log_message = Signal(str)                  # 日志行
     positions_updated = Signal(list, object)   # (持仓列表, 盈亏汇总)
     open_orders_updated = Signal(list)         # 委托单列表 OpenOrder[]
+    account_updated = Signal(object)           # 账户资金快照（AccountSnapshot）
     trade_finished = Signal(object)            # 交易完成结果
     trade_started = Signal(str, str, str)      # (动作, 品种, 下单模式)
     alert_triggered = Signal(str)              # 告警文字
@@ -74,10 +81,12 @@ class SpreadEngine(QObject):
 
         self.binance.quote_received.connect(self._on_ba_quote)
         self.binance.state_changed.connect(lambda s: self.connection_changed.emit("BA", s))
+        self.binance.account_received.connect(self.account_updated.emit)
         self.binance.log.connect(self.log_message.emit)
 
         self.mt5.quote_received.connect(self._on_mt5_quote)
         self.mt5.state_changed.connect(lambda s: self.connection_changed.emit("MT5", s))
+        self.mt5.account_received.connect(self.account_updated.emit)
         self.mt5.log.connect(self.log_message.emit)
 
         self.alerts.alert_triggered.connect(self.alert_triggered.emit)
@@ -251,6 +260,13 @@ class SpreadEngine(QObject):
                 actual_mt5_qty = (
                     mt5_leg.filled_quantity if mt5_leg and mt5_leg.filled_quantity > 0 else mt5_qty
                 )
+                ba_fee, mt5_fee = estimate_trade_fees(
+                    preset_id,
+                    self.config,
+                    ba_price=ba_price,
+                    ba_quantity=actual_ba_qty,
+                    mt5_quantity=actual_mt5_qty,
+                )
                 rec = record_trade(
                     preset_id,
                     mode,
@@ -262,6 +278,8 @@ class SpreadEngine(QObject):
                     mt5_quantity=actual_mt5_qty,
                     ba_side=ba_side,
                     mt5_side=mt5_side,
+                    ba_fee=ba_fee,
+                    mt5_fee=mt5_fee,
                 )
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
@@ -345,6 +363,27 @@ class SpreadEngine(QObject):
 
                 ba_pnl, ba_fee = _scaled(ba_pos, close_ba_qty)
                 mt5_pnl, mt5_fee = _scaled(mt5_pos, close_mt5_qty)
+                ba_funding_fee = 0.0
+                ba_rebate = 0.0
+                if ba_pos and close_ba_qty > 0 and self.config.use_live_ba:
+                    anchor = funding_period_start(preset_id, mode)
+                    if anchor is not None:
+                        preset = find_preset(preset_id)
+                        start_ms = int(anchor.timestamp() * 1000)
+                        end_ms = int(time.time() * 1000)
+                        ratio = (
+                            min(1.0, close_ba_qty / ba_pos.quantity)
+                            if ba_pos.quantity > 0
+                            else 1.0
+                        )
+                        raw_funding = self.binance.fetch_funding_income(
+                            preset.symbol_ba, start_ms, end_ms
+                        )
+                        raw_rebate = self.binance.fetch_rebate_income(
+                            preset.symbol_ba, start_ms, end_ms
+                        )
+                        ba_funding_fee = round(raw_funding * ratio, 4)
+                        ba_rebate = round(raw_rebate * ratio, 4)
                 rec = record_close_settlement(
                     preset_id,
                     mode,
@@ -352,6 +391,8 @@ class SpreadEngine(QObject):
                     mt5_pnl,
                     ba_fee,
                     mt5_fee,
+                    ba_funding_fee,
+                    ba_rebate,
                     spread=spread,
                     ba_price=ba_price,
                     ex_price=ex_price,

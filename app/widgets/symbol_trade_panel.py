@@ -134,7 +134,7 @@ class SymbolActionStrip(QFrame):
         root.setSpacing(12)
         root.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        self._left_col = QWidget()
+        self._left_col = QWidget(self)
         self._left_col.setObjectName("symbolActionLeft")
         self._left_col.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
@@ -151,7 +151,7 @@ class SymbolActionStrip(QFrame):
         root.addStretch(1)
 
         label = "黄金" if preset_id == "xau" else "白银"
-        self._title_row = QWidget()
+        self._title_row = QWidget(self)
         title_layout = QHBoxLayout(self._title_row)
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(6)
@@ -171,7 +171,7 @@ class SymbolActionStrip(QFrame):
         title_layout.addWidget(self.sections_btn)
         self._stack_layout.addWidget(self._title_row)
 
-        self.spread_frame = QFrame()
+        self.spread_frame = QFrame(self)
         self.spread_frame.setObjectName("spreadStrip")
         self.spread_frame.setFixedHeight(80)
         spread_layout = QGridLayout(self.spread_frame)
@@ -229,12 +229,12 @@ class SymbolActionStrip(QFrame):
         spread_layout.setColumnStretch(1, 0)
         self.spread_frame.setMinimumWidth(spread_w + 118 + 8 + 12)
 
-        self.alert_settings = SymbolAlertSettings(preset_id)
+        self.alert_settings = SymbolAlertSettings(preset_id, parent=self)
 
         position_header = QHBoxLayout()
         position_header.setContentsMargins(0, 0, 0, 0)
         position_header.setSpacing(6)
-        position_wrap = QWidget()
+        position_wrap = QWidget(self)
         position_wrap.setFixedHeight(28)
         position_wrap.setLayout(position_header)
         self.position_status = QLabel("当前持仓：无")
@@ -253,7 +253,7 @@ class SymbolActionStrip(QFrame):
         position_header.addWidget(self.position_repair_btn)
         self._position_header = position_wrap
 
-        self.pnl_detail = PnlDetailPanel(preset_id)
+        self.pnl_detail = PnlDetailPanel(preset_id, parent=self)
         self.pnl_detail.hedge_repair_requested.connect(
             lambda repair, pid=preset_id: self.hedge_repair_requested.emit(pid, repair)
         )
@@ -267,7 +267,7 @@ class SymbolActionStrip(QFrame):
         risk_row = QHBoxLayout()
         risk_row.setContentsMargins(0, 0, 0, 0)
         risk_row.setSpacing(6)
-        risk_wrap = QWidget()
+        risk_wrap = QWidget(self)
         risk_wrap.setFixedHeight(28)
         risk_wrap.setLayout(risk_row)
         self.risk_label = QLabel("爆仓缓冲 —")
@@ -290,7 +290,7 @@ class SymbolActionStrip(QFrame):
         self._last_pending_text = ""
 
         # 「当前持仓 / 盈利」板块（可配置）
-        self._position_block = QWidget()
+        self._position_block = QWidget(self)
         position_block_layout = QVBoxLayout(self._position_block)
         position_block_layout.setContentsMargins(0, 0, 0, 0)
         position_block_layout.setSpacing(6)
@@ -300,15 +300,15 @@ class SymbolActionStrip(QFrame):
         position_block_layout.addWidget(self._risk_row)
 
         # 「自动交易」板块（可配置）
-        self.auto_trade_settings = SymbolAutoTradeSettings(preset_id)
-        self._auto_block = QWidget()
+        self.auto_trade_settings = SymbolAutoTradeSettings(preset_id, parent=self)
+        self._auto_block = QWidget(self)
         auto_block_layout = QVBoxLayout(self._auto_block)
         auto_block_layout.setContentsMargins(0, 0, 0, 0)
         auto_block_layout.setSpacing(6)
         auto_block_layout.addWidget(self.auto_trade_settings)
 
         # 对冲交易 / 启动停止按钮（固定常驻，不参与板块配置）
-        self._monitor_host = QWidget()
+        self._monitor_host = QWidget(self)
         self._monitor_host.setObjectName("monitorButtonHost")
         self._monitor_host.setMinimumHeight(36)
         monitor_layout = QHBoxLayout(self._monitor_host)
@@ -576,7 +576,7 @@ class SymbolActionStrip(QFrame):
             self.spread_value.set_spread(self._last_spread.mid_spread)
 
     def update_spread(self, snap: SpreadSnapshot | None) -> None:
-        """刷新点差大字与两端中价；None 显示"--"。"""
+        """刷新点差大字与两端买价（Bid）；None 显示"--"。"""
         if snap is None:
             self.spread_value.set_spread(None)
             if self._last_ba_text != "--":
@@ -589,8 +589,10 @@ class SymbolActionStrip(QFrame):
             return
         self._last_spread = snap
         self.spread_value.set_spread(snap.mid_spread)
-        ba_text = f"{snap.ba_mid:.3f}"
-        ex_text = f"{snap.mt5_mid:.3f}"
+        # 两端价格展示买价（Bid），与 BA/Exness 终端默认显示口径一致；
+        # 点差大字仍用中价点差（mid_spread），作为稳定的点差指数与告警依据。
+        ba_text = f"{snap.ba_bid:.3f}"
+        ex_text = f"{snap.mt5_bid:.3f}"
         if ba_text != self._last_ba_text:
             self.spread_ba.setText(ba_text)
             self._last_ba_text = ba_text

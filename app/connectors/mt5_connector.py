@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.core.exchange_utils import get_mt5_filling_mode
-from app.core.models import AppConfig, ConnectionState, GoldOrderMode, OpenOrder, Position, Quote, Side
+from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrderMode, OpenOrder, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.mt5_terminal import find_mt5_terminal, mt5_terminal_hint
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
@@ -49,6 +49,7 @@ class MT5Connector(QObject):
     quote_received = Signal(object)   # 收到新报价
     state_changed = Signal(str)       # 连接状态变化
     latency_updated = Signal(float)   # 行情延迟（ms）
+    account_received = Signal(object)  # 账户资金快照（AccountSnapshot）
     log = Signal(str)                 # 日志行
 
     def __init__(self, config: AppConfig, parent=None):
@@ -63,6 +64,7 @@ class MT5Connector(QObject):
         self._quotes: dict[str, Quote] = {}
         self._work_queue: queue.Queue = queue.Queue()        # 投递到 MT5 工作线程的任务队列
         self._demo_positions: dict[str, Position] = {}       # 模拟模式虚拟持仓
+        self._account_snapshot_at = 0.0                      # 账户资金快照节流时间戳
 
     @property
     def quotes(self) -> dict[str, Quote]:
@@ -756,6 +758,7 @@ class MT5Connector(QObject):
     def _start_demo(self) -> None:
         """启动模拟行情：定时生成黄金/白银的虚拟报价。"""
         self._set_state(ConnectionState.SIMULATED)
+        self.account_received.emit(AccountSnapshot(platform="MT5", is_live=False))
         self._log(LogLevel.DEBUG, "Exness 模拟行情 · 黄金 + 白银（非真实价格）")
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
@@ -799,6 +802,24 @@ class MT5Connector(QObject):
         except Exception:
             return None
 
+    def _read_account_snapshot(self) -> AccountSnapshot | None:
+        """在 MT5 工作线程内读取账户资金快照（结余/已用预付款/可用预付款）。"""
+        if not self._connected or not HAS_MT5:
+            return None
+        info = mt5.account_info()
+        if info is None:
+            return None
+        return AccountSnapshot(
+            platform="MT5",
+            balance=float(getattr(info, "balance", 0.0) or 0.0),
+            used_margin=float(getattr(info, "margin", 0.0) or 0.0),
+            free_margin=float(getattr(info, "margin_free", 0.0) or 0.0),
+            equity=float(getattr(info, "equity", 0.0) or 0.0),
+            currency=str(getattr(info, "currency", "") or ""),
+            is_live=True,
+            timestamp=time.time(),
+        )
+
     def _poll_loop(self) -> None:
         """MT5 专用工作线程主循环：初始化登录后，循环处理任务队列并推送行情。"""
         try:
@@ -838,6 +859,15 @@ class MT5Connector(QObject):
                         self._quotes[symbol] = quote
                         self.quote_received.emit(quote)
                 self._record_latency((time.perf_counter() - started) * 1000)
+                # 账户资金快照：本地接口，约每 2 秒读取一次（MT5 无推送，只能轮询）
+                if time.monotonic() - self._account_snapshot_at >= 2.0:
+                    self._account_snapshot_at = time.monotonic()
+                    try:
+                        snap = self._read_account_snapshot()
+                        if snap is not None:
+                            self.account_received.emit(snap)
+                    except Exception:
+                        pass
                 try:
                     fn, result_box = self._work_queue.get(timeout=0.3)
                 except queue.Empty:

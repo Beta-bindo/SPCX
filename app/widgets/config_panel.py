@@ -116,6 +116,9 @@ class ConfigPanel(QFrame):
         self.mt5_leverage.setButtonSymbols(ClickToEditSpinBox.ButtonSymbols.NoButtons)
         self.sync_leverage_on_trade = QCheckBox("下单时同步杠杆到平台")
         self.sync_leverage_on_trade.setObjectName("settingsCheck")
+        self.ba_margin_type = QComboBox()
+        for value, label in (("", "跟随平台"), ("cross", "全仓"), ("isolated", "逐仓")):
+            self.ba_margin_type.addItem(label, value)
         self.log_level = QComboBox()
         for value, label in LOG_LEVEL_OPTIONS:
             self.log_level.addItem(label, value)
@@ -129,6 +132,7 @@ class ConfigPanel(QFrame):
                     ("BA 杠杆", self.ba_leverage, "勾选同步后写入 Binance"),
                     ("Ex 杠杆", self.mt5_leverage, "Exness 账户杠杆；连接后自动读取"),
                     ("", self.sync_leverage_on_trade, "仅 BA：勾选后每次开仓写入杠杆"),
+                    ("BA 保证金模式", self.ba_margin_type, "全仓/逐仓；开仓前写入，有持仓需先平仓"),
                     ("运行日志", self.log_level, "精简模式仅显示交易与错误"),
                 ],
                 columns=2,
@@ -154,6 +158,12 @@ class ConfigPanel(QFrame):
                 "",
                 self.sync_leverage_on_trade,
                 "仅 BA：勾选后每次开仓写入",
+                label_width=dialog_label_w,
+            )
+            self.trade_card.add_inline_field(
+                "BA 保证金模式",
+                self.ba_margin_type,
+                "全仓/逐仓；开仓前写入，有持仓需先平仓",
                 label_width=dialog_label_w,
             )
             self.trade_card.add_inline_field(
@@ -418,6 +428,8 @@ class ConfigPanel(QFrame):
         self.ba_leverage.setValue(config.ba_leverage)
         self.mt5_leverage.setValue(config.mt5_leverage)
         self.sync_leverage_on_trade.setChecked(config.sync_leverage_on_trade)
+        mt_idx = self.ba_margin_type.findData((config.ba_margin_type or "").lower())
+        self.ba_margin_type.setCurrentIndex(mt_idx if mt_idx >= 0 else 0)
         idx = self.ba_refresh_interval.findData(config.ba_refresh_interval_sec)
         if idx >= 0:
             self.ba_refresh_interval.setCurrentIndex(idx)
@@ -453,6 +465,7 @@ class ConfigPanel(QFrame):
             ba_leverage=self.ba_leverage.value(),
             mt5_leverage=self.mt5_leverage.value(),
             sync_leverage_on_trade=self.sync_leverage_on_trade.isChecked(),
+            ba_margin_type=str(self.ba_margin_type.currentData() or ""),
             ba_refresh_interval_sec=float(self.ba_refresh_interval.currentData()),
             log_level=str(self.log_level.currentData()),
         )

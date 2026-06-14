@@ -271,8 +271,8 @@ def upload_trades(
                         device_id, settled_at, preset_id, mode, action,
                         spread, ba_price, ex_price, ba_quantity, mt5_quantity,
                         ba_side, mt5_side, direction,
-                        ba_pnl, mt5_pnl, ba_fee, mt5_fee, net_pnl, uploaded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ba_pnl, mt5_pnl, ba_fee, mt5_fee, ba_funding_fee, ba_rebate, net_pnl, uploaded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         device_id,
@@ -296,6 +296,8 @@ def upload_trades(
                         trade.mt5_pnl,
                         trade.ba_fee,
                         trade.mt5_fee,
+                        trade.ba_funding_fee,
+                        trade.ba_rebate,
                         trade.net_pnl,
                         now,
                     ),

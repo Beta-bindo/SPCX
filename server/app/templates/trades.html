@@ -83,7 +83,7 @@
             <tr>
               <th>用户</th><th>机器码</th><th>类型</th><th>品种</th><th>模式</th><th>时间</th>
               <th>点差</th><th>BA价</th><th>Ex价</th><th>BA量</th><th>Ex量</th><th>方向</th>
-              <th>BA盈亏</th><th>Ex盈亏</th><th>净利</th><th>上报时间</th>
+              <th>BA盈亏</th><th>Ex盈亏</th><th>BA手续费</th><th>Ex手续费</th><th>BA资金费</th><th>BA返佣</th><th>净利</th><th>上报时间</th>
             </tr>
           </thead>
           <tbody id="tradeRows"></tbody>
@@ -104,7 +104,7 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=4"></script>
+<script src="/static/admin_common.js?v=6"></script>
 <script>
 let adminToken = localStorage.getItem('ta_admin_token') || '';
 let tradePage = 1;
@@ -189,6 +189,10 @@ async function loadTrades(page) {
     <div class="summary-item"><span class="sub">筛选笔数</span><b>${summary.count || data.total || 0}</b></div>
     <div class="summary-item"><span class="sub">BA 盈亏合计</span><b class="${Number(summary.ba_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.ba_pnl)}</b></div>
     <div class="summary-item"><span class="sub">EX 盈亏合计</span><b class="${Number(summary.mt5_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.mt5_pnl)}</b></div>
+    <div class="summary-item"><span class="sub">BA 手续费合计</span><b>${fmtMoney(summary.ba_fee)}</b></div>
+    <div class="summary-item"><span class="sub">EX 手续费合计</span><b>${fmtMoney(summary.mt5_fee)}</b></div>
+    <div class="summary-item"><span class="sub">BA 资金费合计</span><b>${fmtMoney(summary.ba_funding_fee)}</b></div>
+    <div class="summary-item"><span class="sub">BA 返佣合计</span><b>${fmtMoney(summary.ba_rebate)}</b></div>
     <div class="summary-item"><span class="sub">净利合计</span><b class="${net>=0?'pos':'neg'}">${fmtMoney(summary.net_pnl)}</b></div>
   `;
   const tbody = document.getElementById('tradeRows');
@@ -196,7 +200,7 @@ async function loadTrades(page) {
   const rows = data.trades || [];
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="16" class="sub" style="text-align:center;padding:24px">暂无数据。请点「重置」扩大日期范围，或确认用户筛选为「全部用户」。</td>`;
+    tr.innerHTML = `<td colspan="20" class="sub" style="text-align:center;padding:24px">暂无数据。请点「重置」扩大日期范围，或确认用户筛选为「全部用户」。</td>`;
     tbody.appendChild(tr);
   }
   for (const t of rows) {
@@ -217,6 +221,10 @@ async function loadTrades(page) {
       <td>${esc(t.direction || '-')}</td>
       <td>${fmtTradePnl(t.action, t.ba_pnl)}</td>
       <td>${fmtTradePnl(t.action, t.mt5_pnl)}</td>
+      <td>${fmtMoney(t.ba_fee)}</td>
+      <td>${fmtMoney(t.mt5_fee)}</td>
+      <td>${fmtFundingFee(t.action, t.ba_funding_fee)}</td>
+      <td>${fmtFundingFee(t.action, t.ba_rebate)}</td>
       <td class="${rowNet>=0?'pos':'neg'}">${fmtTradePnl(t.action, rowNet)}</td>
       <td>${esc(fmtBeijing(t.uploaded_at))}</td>`;
     tbody.appendChild(tr);

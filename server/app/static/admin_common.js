@@ -93,6 +93,11 @@ function fmtTradePnl(action, n) {
   return fmtMoney(n);
 }
 
+function fmtFundingFee(action, n) {
+  if (action === 'open') return '—';
+  return fmtMoney(n);
+}
+
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;',

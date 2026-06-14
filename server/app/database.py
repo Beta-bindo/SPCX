@@ -59,6 +59,8 @@ def init_db() -> None:
                 mt5_pnl REAL NOT NULL DEFAULT 0,
                 ba_fee REAL NOT NULL DEFAULT 0,
                 mt5_fee REAL NOT NULL DEFAULT 0,
+                ba_funding_fee REAL NOT NULL DEFAULT 0,
+                ba_rebate REAL NOT NULL DEFAULT 0,
                 net_pnl REAL NOT NULL DEFAULT 0,
                 uploaded_at TEXT NOT NULL,
                 UNIQUE(device_id, settled_at, preset_id, mode, action)
@@ -120,6 +122,8 @@ def _migrate_trades(conn: sqlite3.Connection) -> None:
         ("ba_side", "ALTER TABLE trades ADD COLUMN ba_side TEXT NOT NULL DEFAULT ''"),
         ("mt5_side", "ALTER TABLE trades ADD COLUMN mt5_side TEXT NOT NULL DEFAULT ''"),
         ("direction", "ALTER TABLE trades ADD COLUMN direction TEXT NOT NULL DEFAULT ''"),
+        ("ba_funding_fee", "ALTER TABLE trades ADD COLUMN ba_funding_fee REAL NOT NULL DEFAULT 0"),
+        ("ba_rebate", "ALTER TABLE trades ADD COLUMN ba_rebate REAL NOT NULL DEFAULT 0"),
     ):
         if name not in cols:
             conn.execute(ddl)
@@ -157,6 +161,8 @@ def _migrate_trades(conn: sqlite3.Connection) -> None:
                     mt5_pnl REAL NOT NULL DEFAULT 0,
                     ba_fee REAL NOT NULL DEFAULT 0,
                     mt5_fee REAL NOT NULL DEFAULT 0,
+                    ba_funding_fee REAL NOT NULL DEFAULT 0,
+                    ba_rebate REAL NOT NULL DEFAULT 0,
                     net_pnl REAL NOT NULL DEFAULT 0,
                     uploaded_at TEXT NOT NULL,
                     UNIQUE(device_id, settled_at, preset_id, mode, action)
@@ -165,14 +171,14 @@ def _migrate_trades(conn: sqlite3.Connection) -> None:
                     id, device_id, settled_at, preset_id, mode, action,
                     spread, ba_price, ex_price, ba_quantity, mt5_quantity,
                     ba_side, mt5_side, direction,
-                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, net_pnl, uploaded_at
+                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, ba_funding_fee, ba_rebate, net_pnl, uploaded_at
                 )
                 SELECT
                     id, device_id, settled_at, preset_id, mode, 'close',
                     COALESCE(spread, 0), COALESCE(ba_price, 0), COALESCE(ex_price, 0),
                     COALESCE(ba_quantity, 0), COALESCE(mt5_quantity, 0),
                     COALESCE(ba_side, ''), COALESCE(mt5_side, ''), COALESCE(direction, ''),
-                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, net_pnl, uploaded_at
+                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, COALESCE(ba_funding_fee, 0), COALESCE(ba_rebate, 0), net_pnl, uploaded_at
                 FROM trades;
                 DROP TABLE trades;
                 ALTER TABLE trades_migrated RENAME TO trades;

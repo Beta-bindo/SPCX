@@ -9,8 +9,8 @@ from __future__ import annotations
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QFontMetrics, QGuiApplication, QShowEvent
+from PySide6.QtCore import Qt, QTimer, QPoint, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -44,203 +44,14 @@ from app.core.config import load_config, save_config, save_config_async
 from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, LayoutMode
 from app.core.network_status import NetworkStatus
 from app.core.spread_engine import SpreadEngine
-from app.core.theme import load_stylesheet, polish_widget, repolish_tree, ui_mono_font
+from app.core.theme import load_stylesheet, polish_widget, repolish_tree
 from app.core.trading_service import detect_hedge_mode
+from app.widgets.account_balance_widget import BalanceTransferDialog, PlatformAccountRow
 from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
 from app.widgets.log_panel import LogPanel
 from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
-from app.widgets.spread_panel import SpreadPanel
 from app.widgets.symbol_trade_panel import BOOK_PANEL_WIDTH, SymbolActionStrip, SymbolTradePanel
 from app.widgets.trade_confirm_dialog import TradeConfirmDialog
-
-
-class StatusBadge(QFrame):
-    """平台连接状态徽标：彩色圆点 + "BA · 真实连接"之类文案。"""
-
-    def __init__(self, name: str, parent=None):
-        super().__init__(parent)
-        self.setObjectName("statusBadge")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 8, 3)
-        layout.setSpacing(6)
-        self.dot = QFrame()
-        self.dot.setFixedSize(8, 8)
-        self.dot.setObjectName("statusDotDisconnected")
-        self.label = QLabel(f"{name} · 未连接")
-        self.label.setObjectName("statusText")
-        metrics = QFontMetrics(self.label.font())
-        self.label.setMinimumWidth(
-            metrics.horizontalAdvance(f"{name} · 模拟数据")
-        )
-        layout.addWidget(self.dot)
-        layout.addWidget(self.label)
-        self._dot_name = "statusDotDisconnected"
-        self._label_text = self.label.text()
-
-    def set_state(self, name: str, state: str) -> None:
-        """根据连接状态更新圆点颜色与文案。"""
-        mapping = {
-            "connected": ("statusDotConnected", "真实连接"),
-            "simulated": ("statusDotSimulated", "模拟数据"),
-            "connecting": ("statusDotDisconnected", "连接中"),
-            "disconnected": ("statusDotDisconnected", "未连接"),
-            "error": ("statusDotError", "异常"),
-        }
-        dot_name, text = mapping.get(state, mapping["disconnected"])
-        label_text = f"{name} · {text}"
-        if label_text != self._label_text:
-            self.label.setText(label_text)
-            self._label_text = label_text
-        if dot_name != self._dot_name:
-            self._dot_name = dot_name
-            self.dot.setObjectName(dot_name)
-            polish_widget(self.dot)
-
-
-class WsStatusBadge(QFrame):
-    """BA 行情连接方式徽标：WebSocket 实时推流 / REST 兜底（非管理后台）。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("statusBadge")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 8, 3)
-        layout.setSpacing(6)
-        self.dot = QFrame()
-        self.dot.setFixedSize(8, 8)
-        self.dot.setObjectName("statusDotDisconnected")
-        self.label = QLabel("连接方式：关闭")
-        self.label.setObjectName("statusText")
-        metrics = QFontMetrics(self.label.font())
-        self.label.setMinimumWidth(metrics.horizontalAdvance("连接方式：WebSocket"))
-        layout.addWidget(self.dot)
-        layout.addWidget(self.label)
-        self._dot_name = "statusDotDisconnected"
-        self._label_text = self.label.text()
-
-    def set_mode(self, mode: str, *, live_ba: bool) -> None:
-        if not live_ba:
-            dot_name, text = "statusDotSimulated", "连接方式：模拟"
-        else:
-            mapping = {
-                "streaming": ("statusDotConnected", "连接方式：WebSocket"),
-                "rest": ("statusDotSlow", "连接方式：REST"),
-                "connecting": ("statusDotDisconnected", "连接方式：WebSocket(连接中)"),
-                "off": ("statusDotDisconnected", "连接方式：关闭"),
-            }
-            dot_name, text = mapping.get(mode, mapping["off"])
-        if text != self._label_text:
-            self.label.setText(text)
-            self._label_text = text
-        if dot_name != self._dot_name:
-            self._dot_name = dot_name
-            self.dot.setObjectName(dot_name)
-            polish_widget(self.dot)
-
-
-class NetworkStatusBadge(QFrame):
-    """网络状态徽标：展示 BA/Ex 行情延迟，或离线/未启动等精简文案。"""
-
-    _MS_SAMPLE = "9999ms"  # 数值列按四位数 ms 预留，避免 >999 时被裁切
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("networkStatusBadge")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 5, 2)
-        layout.setSpacing(4)
-        self.dot = QFrame()
-        self.dot.setFixedSize(8, 8)
-        self.dot.setObjectName("statusDotDisconnected")
-        layout.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        latency_font = ui_mono_font(point_size=18)
-        metrics = QFontMetrics(latency_font)
-        tag_w = metrics.horizontalAdvance("Ex")
-        ms_w = metrics.horizontalAdvance(self._MS_SAMPLE)
-        line_h = metrics.height()
-        row_w = tag_w + 2 + ms_w
-
-        text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(0)
-
-        self.ba_tag = QLabel("BA")
-        self.ba_ms = QLabel("----")
-        self.ex_tag = QLabel("Ex")
-        self.ex_ms = QLabel("----")
-        for tag, ms in ((self.ba_tag, self.ba_ms), (self.ex_tag, self.ex_ms)):
-            tag.setObjectName("statusLatencyTag")
-            ms.setObjectName("statusLatency")
-            tag.setFont(latency_font)
-            ms.setFont(latency_font)
-            tag.setFixedSize(tag_w, line_h)
-            ms.setFixedSize(ms_w, line_h)
-            tag.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            ms.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(2)
-            row.addWidget(tag)
-            row.addWidget(ms)
-            text_col.addLayout(row)
-
-        self._latency_wrap = QWidget()
-        self._latency_wrap.setLayout(text_col)
-
-        self._compact_label = QLabel("未启动")
-        self._compact_label.setObjectName("statusLatencyCompact")
-        compact_w = metrics.horizontalAdvance("断网")
-        content_w = max(row_w, compact_w)
-        self._latency_wrap.setFixedSize(content_w, line_h * 2)
-        self._compact_label.setFixedSize(content_w, line_h * 2)
-        self._compact_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        self._compact_label.setVisible(False)
-        layout.addWidget(self._latency_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self._compact_label, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self.setFixedSize(4 + 8 + 4 + content_w + 5, line_h * 2 + 4)
-
-        self._dot_name = "statusDotDisconnected"
-        self._ba_ms_text = self.ba_ms.text()
-        self._ex_ms_text = self.ex_ms.text()
-        self._compact_text = ""
-
-    def update_status(self, status: NetworkStatus) -> None:
-        """刷新网络徽标：有延迟数据则双行显示，否则显示精简状态文案。"""
-        mapping = {
-            "ok": "statusDotConnected",
-            "slow": "statusDotSlow",
-            "offline": "statusDotError",
-        }
-        dot_name = mapping.get(status.level, "statusDotDisconnected")
-        compact = status.compact_text
-        if compact:
-            if compact != self._compact_text:
-                self._compact_label.setText(compact)
-                self._compact_text = compact
-            self._latency_wrap.setVisible(False)
-            self._compact_label.setVisible(True)
-        else:
-            ba_ms = status.ba_ms_text()
-            ex_ms = status.ex_ms_text()
-            if ba_ms != self._ba_ms_text:
-                self.ba_ms.setText(ba_ms)
-                self._ba_ms_text = ba_ms
-            if ex_ms != self._ex_ms_text:
-                self.ex_ms.setText(ex_ms)
-                self._ex_ms_text = ex_ms
-            self._compact_label.setVisible(False)
-            self._latency_wrap.setVisible(True)
-        if dot_name != self._dot_name:
-            self._dot_name = dot_name
-            self.dot.setObjectName(dot_name)
-            polish_widget(self.dot)
 
 
 class MainWindow(QMainWindow):
@@ -254,6 +65,8 @@ class MainWindow(QMainWindow):
         demo_seed_mixed: bool = False,
     ):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        self.setWindowOpacity(0.0)
         self._demo_seed = demo_seed
         self._demo_seed_mixed = demo_seed_mixed
         self.setUpdatesEnabled(False)
@@ -280,8 +93,13 @@ class MainWindow(QMainWindow):
         self._demo_start_scheduled = False
         self._ui_bootstrapping = True
         self._last_open_orders_log = ""
+        self._last_ba_account = None   # 最近一次 BA 账户资金快照
+        self._last_mt5_account = None  # 最近一次 EX 账户资金快照
+        self._last_network: NetworkStatus | None = None
 
         central = QWidget()
+        central.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        central.setVisible(False)
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(12, 10, 12, 8)
@@ -289,29 +107,25 @@ class MainWindow(QMainWindow):
 
         root.addLayout(self._build_header())
 
-        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical, central)
         self._main_splitter.setObjectName("mainSplitter")
         self._main_splitter.setHandleWidth(8)
         self._main_splitter.setChildrenCollapsible(False)
 
-        self._columns_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._columns_splitter = QSplitter(Qt.Orientation.Horizontal, self._main_splitter)
         self._columns_splitter.setObjectName("columnsSplitter")
         self._columns_splitter.setHandleWidth(6)
         self._columns_splitter.setChildrenCollapsible(False)
 
-        self.gold_panel = SymbolTradePanel("xau", "黄金 · 币安盘口")
-        self.silver_panel = SymbolTradePanel("xag", "白银 · 币安盘口")
-        self.gold_actions = SymbolActionStrip("xau")
-        self.silver_actions = SymbolActionStrip("xag")
+        self.gold_panel = SymbolTradePanel("xau", "黄金 · 币安盘口", parent=self._columns_splitter)
+        self.silver_panel = SymbolTradePanel("xag", "白银 · 币安盘口", parent=self._columns_splitter)
+        self.gold_actions = SymbolActionStrip("xau", parent=self._columns_splitter)
+        self.silver_actions = SymbolActionStrip("xag", parent=self._columns_splitter)
         for strip in (self.gold_actions, self.silver_actions):
             strip.setSizePolicy(
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
             )
             strip.setMinimumWidth(140)
-        # 中间「盈利·告警」面板已下线，仅保留对象用于"模拟/真实"行情徽标更新（不加入布局）
-        self.spread_panel = SpreadPanel()
-        self.spread_panel.set_action_strips(self.gold_actions, self.silver_actions)
-        self.spread_panel.set_source_badge(self.source_badge)
         for panel, min_w, stretch in (
             (self.gold_panel, 72, 0),
             (self.gold_actions, 140, 1),
@@ -328,7 +142,7 @@ class MainWindow(QMainWindow):
             )
         self._main_splitter.addWidget(self._columns_splitter)
 
-        self.log_panel = LogPanel()
+        self.log_panel = LogPanel(parent=self._main_splitter)
         self.log_panel.setMinimumHeight(48)
         self.log_panel.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -343,6 +157,7 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self.status_bar.setVisible(False)
         self.status_bar.showMessage("就绪 · 演示模式可直接启动")
 
         self._book_timer = QTimer(self)
@@ -351,28 +166,55 @@ class MainWindow(QMainWindow):
         self._wire_signals()
         self.gold_actions.load_settings_from(self.config)
         self.silver_actions.load_settings_from(self.config)
+
+    def present(self) -> None:
+        """首屏展示：后台完成引导后再显示，避免初始化阶段连闪。"""
+        QTimer.singleShot(0, self._finish_ui_bootstrap)
+
+    def _finish_ui_bootstrap(self) -> None:
         self._sync_theme_btn()
         self._apply_theme(self.config.theme)
         self._apply_layout_mode()
-
-        self._sync_ba_refresh_timers()
-
         self._finalize_startup()
         self._sync_monitor_buttons()
-
-    def present(self) -> None:
-        """首屏展示：布局就绪后只 show 一次，避免透明窗/processEvents 造成连闪。"""
-        self._sync_columns_sizes()
-        self.show()
-        QTimer.singleShot(400, self._finish_ui_bootstrap)
-
-    def _finish_ui_bootstrap(self) -> None:
         self._ui_bootstrapping = False
-        self._sync_ws_status()
+        self._refresh_status_badges()
         if self._pending_demo_start and not self._demo_start_scheduled:
             self._pending_demo_start = False
             self._demo_start_scheduled = True
-            QTimer.singleShot(800, self._on_start)
+            self._start_demo_monitoring()
+        self._sync_columns_sizes()
+        QTimer.singleShot(0, self._reveal_main_window)
+
+    def _reveal_main_window(self) -> None:
+        """一次性显示主窗口（此前始终离屏构建）。"""
+        central = self.centralWidget()
+        if central is not None:
+            central.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+            central.setUpdatesEnabled(True)
+            central.setVisible(True)
+        self.status_bar.setVisible(True)
+        self.setUpdatesEnabled(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+        self.setWindowOpacity(1.0)
+        self.show()
+        self._sync_columns_sizes()
+        self.raise_()
+        self.activateWindow()
+
+    def _start_demo_monitoring(self) -> None:
+        """演示模式自动启用监控：静默启动，不再二次弹窗或重复校验授权。"""
+        if not self.config.demo_mode or self.engine.is_running:
+            return
+        self.config = self._merge_config()
+        save_config(self.config)
+        self.engine.update_config(self.config)
+        self.engine.start()
+        self._sync_monitor_buttons()
+        self._sync_ba_refresh_timers()
+        self._refresh_status_badges()
+        self._refresh_order_book()
+        self.status_bar.showMessage(f"监控运行中 · {self._mode_label()}")
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -391,7 +233,6 @@ class MainWindow(QMainWindow):
             )
         if self._demo_seed or self._demo_seed_mixed:
             QTimer.singleShot(500, self._refresh_demo_seed_positions)
-        self.setUpdatesEnabled(True)
 
     def _load_demo_seed_positions(self) -> None:
         if not self.config.demo_mode:
@@ -423,85 +264,66 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(6)
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        host = self.centralWidget()
 
         brand = QVBoxLayout()
         brand.setSpacing(0)
-        title = QLabel(APP_NAME)
+        title = QLabel(APP_NAME, parent=host)
         title.setObjectName("appTitle")
-        self.subtitle_label = QLabel("Binance × Exness 跨平台点差 · 黄金 / 白银")
-        self.subtitle_label.setObjectName("appSubtitle")
-        subtitle_metrics = QFontMetrics(self.subtitle_label.font())
-        self.subtitle_label.setMinimumWidth(
-            max(
-                subtitle_metrics.horizontalAdvance(
-                    "Binance × Exness 跨平台点差 · 黄金 / 白银"
-                ),
-                subtitle_metrics.horizontalAdvance(
-                    "Binance × Exness · 单品种 · 黄金"
-                ),
-                subtitle_metrics.horizontalAdvance(
-                    "Binance × Exness · 单品种 · 白银"
-                ),
-            )
-        )
         brand.addWidget(title)
-        brand.addWidget(self.subtitle_label)
         row.addLayout(brand)
         row.addSpacing(6)
 
-        self.ba_status = StatusBadge("币安")
-        self.mt5_status = StatusBadge("Exness")
-        self.network_status = NetworkStatusBadge()
-        self.ws_status = WsStatusBadge()
-        status_col = QVBoxLayout()
-        status_col.setContentsMargins(0, 0, 0, 0)
-        status_col.setSpacing(2)
-        status_col.addWidget(self.ba_status)
-        status_col.addWidget(self.mt5_status)
-        status_wrap = QWidget()
-        status_wrap.setLayout(status_col)
-        row.addWidget(status_wrap)
-        row.addWidget(self.network_status)
-        row.addWidget(self.ws_status)
-        self.profit_btn = QPushButton("利润计算器")
-        self._style_toolbar_btn(self.profit_btn)
-        row.addWidget(self.profit_btn)
-        self.source_badge = QLabel("模拟")
-        self.source_badge.setObjectName("demoBadge")
-        row.addWidget(self.source_badge)
+        platform_wrap = QWidget(host)
+        platform_wrap.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        platform_col = QVBoxLayout(platform_wrap)
+        platform_col.setContentsMargins(0, 0, 0, 0)
+        platform_col.setSpacing(2)
+        self.ba_row = PlatformAccountRow("币安", is_ba=True, currency_hint="USDT", parent=platform_wrap)
+        self.mt5_row = PlatformAccountRow("EX", currency_hint="USD", parent=platform_wrap)
+        self.ba_row.transfer_clicked.connect(self._on_ba_transfer)
+        self.mt5_row.transfer_clicked.connect(self._on_ex_transfer)
+        platform_col.addWidget(self.ba_row)
+        platform_col.addWidget(self.mt5_row)
+        row.addWidget(platform_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
+
         row.addStretch()
 
-        self.layout_mode_btn = QPushButton("单品种")
+        self.profit_btn = QPushButton("利润计算器", parent=host)
+        self._style_toolbar_btn(self.profit_btn)
+        row.addWidget(self.profit_btn)
+
+        self.layout_mode_btn = QPushButton("单品种", parent=host)
         self._style_toolbar_btn(self.layout_mode_btn, checkable=True)
         self.layout_mode_btn.clicked.connect(self._on_layout_mode_toggled)
         row.addWidget(self.layout_mode_btn)
 
-        self.symbol_switch_btn = QPushButton("🥈 切换白银")
+        self.symbol_switch_btn = QPushButton("🥈 切换白银", parent=host)
         self._style_toolbar_btn(self.symbol_switch_btn)
         self.symbol_switch_btn.clicked.connect(self._on_symbol_switch)
         row.addWidget(self.symbol_switch_btn)
 
-        self.theme_btn = QPushButton("浅色")
+        self.theme_btn = QPushButton("浅色", parent=host)
         self._style_toolbar_btn(self.theme_btn, checkable=True)
         self.theme_btn.clicked.connect(self._on_theme_toggled)
         row.addWidget(self.theme_btn)
 
-        self.settings_btn = QPushButton("设置")
+        self.settings_btn = QPushButton("设置", parent=host)
         self._style_toolbar_btn(self.settings_btn)
         self.settings_btn.clicked.connect(self._open_settings)
         row.addWidget(self.settings_btn)
 
-        self.save_btn = QPushButton("保存")
+        self.save_btn = QPushButton("保存", parent=host)
         self._style_toolbar_btn(self.save_btn)
         self.save_btn.clicked.connect(self._on_save)
         row.addWidget(self.save_btn)
 
-        self.start_btn = QPushButton("启用监控")
+        self.start_btn = QPushButton("启用监控", parent=host)
         self._style_toolbar_btn(self.start_btn, primary=True)
         self.start_btn.clicked.connect(self._on_start)
         row.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("停止监控")
+        self.stop_btn = QPushButton("停止监控", parent=host)
         self._style_toolbar_btn(self.stop_btn, danger=True)
         self.stop_btn.clicked.connect(self._on_stop)
         row.addWidget(self.stop_btn)
@@ -538,7 +360,6 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app:
             load_stylesheet(app, theme)
-        self.spread_panel.refresh_theme()
         self.gold_actions.refresh_theme()
         self.silver_actions.refresh_theme()
         self.gold_panel.refresh_theme()
@@ -755,24 +576,13 @@ class MainWindow(QMainWindow):
             show_xag = not single or preset == "xag"
             self.gold_panel.set_compact(single and show_xau)
             self.silver_panel.set_compact(single and show_xag)
-            self.spread_panel.apply_layout_mode(single)
             self._apply_column_visibility()
 
             if single:
                 if preset == "xau":
                     self.symbol_switch_btn.setText("🥈 切换白银")
-                    self.subtitle_label.setText(
-                        "Binance × Exness · 单品种 · 黄金"
-                    )
                 else:
                     self.symbol_switch_btn.setText("🥇 切换黄金")
-                    self.subtitle_label.setText(
-                        "Binance × Exness · 单品种 · 白银"
-                    )
-            else:
-                self.subtitle_label.setText(
-                    "Binance × Exness 跨平台点差 · 黄金 / 白银"
-                )
 
             self._relocate_monitor_buttons()
             self._sync_columns_sizes()
@@ -810,6 +620,7 @@ class MainWindow(QMainWindow):
         self.engine.network_status_changed.connect(self._on_network_status)
         self.engine.binance.ws_state_changed.connect(self._on_ws_state)
         self.engine.binance.open_orders_changed.connect(self._on_open_orders_changed)
+        self.engine.account_updated.connect(self._on_account_updated)
         self.engine.log_message.connect(self.log_panel.append)
         self.engine.positions_updated.connect(self._on_positions)
         self.engine.open_orders_updated.connect(self._on_open_orders)
@@ -1258,14 +1069,14 @@ class MainWindow(QMainWindow):
         self.engine.start()
         self._sync_monitor_buttons()
         self._sync_ba_refresh_timers()
-        self._sync_ws_status()
+        self._refresh_status_badges()
         self._refresh_order_book()
         self.status_bar.showMessage(f"监控运行中 · {self._mode_label()}")
 
     def _on_stop(self) -> None:
         self.engine.stop()
         self._sync_monitor_buttons()
-        self._sync_ws_status()
+        self._refresh_status_badges()
         self.status_bar.showMessage("监控已停止")
 
     def _on_alert_settings_changed(self) -> None:
@@ -1322,7 +1133,6 @@ class MainWindow(QMainWindow):
         cfg = self.config
         self.gold_actions.update_pnl(positions, ba_q, mt5_q, cfg)
         self.silver_actions.update_pnl(positions, ba_q, mt5_q, cfg)
-        self.spread_panel.update_pnl(positions, ba_q, mt5_q, cfg)
         for preset_id, dlg in list(self._trade_dialogs.items()):
             if dlg.isVisible():
                 mode = detect_hedge_mode(preset_id, positions)
@@ -1400,14 +1210,7 @@ class MainWindow(QMainWindow):
     def _on_market(self, update) -> None:
         if self._ui_bootstrapping:
             return
-        self.spread_panel.update_market(update)
         risk = update.risk
-        self.spread_panel.update_risk(
-            risk.xau_ba_liq,
-            risk.xau_mt5_liq,
-            risk.xag_ba_liq,
-            risk.xag_mt5_liq,
-        )
         self.gold_actions.update_risk(risk.xau_ba_liq, risk.xau_mt5_liq)
         self.silver_actions.update_risk(risk.xag_ba_liq, risk.xag_mt5_liq)
         positions = self.engine.positions
@@ -1416,7 +1219,6 @@ class MainWindow(QMainWindow):
         cfg = self.config
         self.gold_actions.update_pnl(positions, ba_q, mt5_q, cfg)
         self.silver_actions.update_pnl(positions, ba_q, mt5_q, cfg)
-        self.spread_panel.update_pnl(positions, ba_q, mt5_q, cfg)
         self._refresh_trade_dialog_pnl()
         self.gold_actions.update_spread(update.spreads.get("xau"))
         self.silver_actions.update_spread(update.spreads.get("xag"))
@@ -1441,13 +1243,93 @@ class MainWindow(QMainWindow):
     def _on_connection(self, platform: str, state: str) -> None:
         if self._ui_bootstrapping:
             return
-        if platform == "BA":
-            self.ba_status.set_state("币安", state)
-        else:
-            self.mt5_status.set_state("Exness", state)
+        self._refresh_status_badges()
+
+    def _refresh_status_badges(self) -> None:
+        """合并连接状态、延迟与 BA 行情连接方式到平台徽标。"""
+        from app.core.network_status import HIGH_LATENCY_MS
+
+        status = NetworkStatus.from_engine(self.engine, self.engine.is_running)
+        self._last_network = status
+        ws_mode = (
+            self.engine.binance.ws_mode if not self._ui_bootstrapping else "off"
+        )
+
+        def _slow(live: bool, conn_state: str, ms: float | None) -> bool:
+            if not live:
+                return False
+            if conn_state == "connecting":
+                return True
+            return ms is not None and ms >= HIGH_LATENCY_MS
+
+        self.ba_row.update_status(
+            conn_state=status.ba_state,
+            live=status.ba_live,
+            running=status.running,
+            latency_ms=status.ba_ms,
+            slow=_slow(status.ba_live, status.ba_state, status.ba_ms),
+            ws_mode=ws_mode,
+        )
+        self.mt5_row.update_status(
+            conn_state=status.mt5_state,
+            live=status.mt5_live,
+            running=status.running,
+            latency_ms=status.mt5_ms,
+            slow=_slow(status.mt5_live, status.mt5_state, status.mt5_ms),
+        )
+
+    def _on_account_updated(self, snap) -> None:
+        """收到账户资金快照：刷新对应平台的余额/保证金徽标。"""
+        if snap is None:
+            return
+        if snap.platform == "BA":
+            self._last_ba_account = snap
+            self.ba_row.set_snapshot(snap)
+        elif snap.platform == "MT5":
+            self._last_mt5_account = snap
+            self.mt5_row.set_snapshot(snap)
+
+    def _on_ba_transfer(self) -> None:
+        """打开 BA 现货↔合约划转对话框。"""
+        if not self.config.use_live_ba:
+            QMessageBox.information(
+                self, "无法划转", "币安当前为模拟/未实盘连接，无法进行资金划转。"
+            )
+            return
+        avail = None
+        snap = getattr(self, "_last_ba_account", None)
+        if snap is not None and snap.is_live:
+            avail = snap.free_margin
+        from app.core.symbols import WATCHED_PRESETS, find_preset
+
+        symbol_options = []
+        for pid in WATCHED_PRESETS:
+            preset = find_preset(pid)
+            symbol_options.append((f"{preset.label}（{preset.symbol_ba}）", preset.symbol_ba))
+        dlg = BalanceTransferDialog(
+            self.engine.binance.transfer_spot_futures,
+            position_margin_fn=self.engine.binance.change_position_margin,
+            symbol_options=symbol_options,
+            available_futures=avail,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _on_ex_transfer(self) -> None:
+        """EX/MT5 无法通过 API 划转资金，引导用户到 Exness 官网操作。"""
+        ret = QMessageBox.question(
+            self,
+            "Exness 资金划转",
+            "MT5 接口不支持程序化资金划转。\n是否打开 Exness 官网进行充值/划转？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ret == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl("https://my.exness.com/"))
 
     def _on_network_status(self, status: NetworkStatus) -> None:
-        self.network_status.update_status(status)
+        self._last_network = status
+        self._refresh_status_badges()
         self._enforce_latency_auto_trade_guard(status)
 
     def _enforce_latency_auto_trade_guard(self, status: NetworkStatus) -> None:
@@ -1493,13 +1375,7 @@ class MainWindow(QMainWindow):
     def _on_ws_state(self, mode: str) -> None:
         if self._ui_bootstrapping:
             return
-        self.ws_status.set_mode(mode, live_ba=self.config.use_live_ba)
-
-    def _sync_ws_status(self) -> None:
-        self.ws_status.set_mode(
-            self.engine.binance.ws_mode,
-            live_ba=self.config.use_live_ba,
-        )
+        self._refresh_status_badges()
 
     def _refresh_order_book(self) -> None:
         from app.core.models import OrderBook

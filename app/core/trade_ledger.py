@@ -38,6 +38,8 @@ class TradeRecord:
     mt5_pnl: float = 0.0
     ba_fee: float = 0.0
     mt5_fee: float = 0.0
+    ba_funding_fee: float = 0.0  # BA 资金费（币安 FUNDING_FEE，负=支出，正=收入）
+    ba_rebate: float = 0.0       # BA 返佣（币安 COMMISSION_REBATE 等，正=收入）
 
     @property
     def gross_pnl(self) -> float:
@@ -46,13 +48,16 @@ class TradeRecord:
 
     @property
     def total_fees(self) -> float:
-        """手续费合计。"""
+        """交易手续费合计（不含资金费/返佣）。"""
         return round(self.ba_fee + self.mt5_fee, 4)
 
     @property
     def net_pnl(self) -> float:
-        """净利 = 毛利 − 手续费。"""
-        return round(self.gross_pnl - self.total_fees, 2)
+        """净利 = 毛利 − 手续费 + 资金费 + 返佣。"""
+        return round(
+            self.gross_pnl - self.total_fees + self.ba_funding_fee + self.ba_rebate,
+            2,
+        )
 
     @property
     def direction(self) -> str:
@@ -96,6 +101,20 @@ class TradeLedger:
         return out
 
 
+def funding_period_start(preset_id: str, mode: str) -> datetime | None:
+    """本次应对账的 BA 资金费起始时刻：最近一次同品种同模式的平仓或开仓。"""
+    ledger = load_ledger()
+    for rec in reversed(ledger.records):
+        if rec.preset_id != preset_id or rec.mode != mode:
+            continue
+        if rec.action in ("close", "open"):
+            try:
+                return datetime.fromisoformat(rec.settled_at)
+            except ValueError:
+                return None
+    return None
+
+
 def load_ledger() -> TradeLedger:
     """从磁盘读取流水；文件缺失或损坏时返回空账本。"""
     path = ledger_path()
@@ -133,6 +152,8 @@ def record_trade(
     mt5_pnl: float = 0.0,
     ba_fee: float = 0.0,
     mt5_fee: float = 0.0,
+    ba_funding_fee: float = 0.0,
+    ba_rebate: float = 0.0,
 ) -> TradeRecord:
     """构造一条成交记录、加锁追加落盘并返回（统一四舍五入）。"""
     if not ba_side or not mt5_side:
@@ -153,6 +174,8 @@ def record_trade(
         mt5_pnl=round(mt5_pnl, 2),
         ba_fee=round(ba_fee, 4),
         mt5_fee=round(mt5_fee, 4),
+        ba_funding_fee=round(ba_funding_fee, 4),
+        ba_rebate=round(ba_rebate, 4),
     )
     with _ledger_lock:
         ledger = load_ledger()
@@ -168,6 +191,8 @@ def record_close_settlement(
     mt5_pnl: float,
     ba_fee: float,
     mt5_fee: float,
+    ba_funding_fee: float = 0.0,
+    ba_rebate: float = 0.0,
     *,
     spread: float = 0.0,
     ba_price: float = 0.0,
@@ -193,6 +218,8 @@ def record_close_settlement(
         mt5_pnl=mt5_pnl,
         ba_fee=ba_fee,
         mt5_fee=mt5_fee,
+        ba_funding_fee=ba_funding_fee,
+        ba_rebate=ba_rebate,
     )
 
 
@@ -215,5 +242,7 @@ def trade_record_to_payload(record: TradeRecord) -> dict:
         "mt5_pnl": record.mt5_pnl,
         "ba_fee": record.ba_fee,
         "mt5_fee": record.mt5_fee,
+        "ba_funding_fee": record.ba_funding_fee,
+        "ba_rebate": record.ba_rebate,
         "net_pnl": record.net_pnl,
     }

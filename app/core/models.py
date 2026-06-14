@@ -191,6 +191,27 @@ class Quote:
 
 
 @dataclass
+class AccountSnapshot:
+    """单个平台的账户资金快照（余额 / 已用保证金 / 可用保证金）。
+
+    - BA（币安合约）：balance=钱包余额、used_margin=已用保证金、
+      free_margin=可用余额(availableBalance)、equity=保证金余额；currency 通常为 USDT。
+    - EX（MT5/Exness）：balance=结余、used_margin=已用预付款、
+      free_margin=可用预付款、equity=净值；currency 为账户币种（多为 USD）。
+    """
+
+    platform: str  # "BA" / "MT5"
+    balance: float = 0.0        # 合约钱包余额（BA totalWalletBalance / MT5 结余）
+    used_margin: float = 0.0    # 已用保证金
+    free_margin: float = 0.0    # 可用保证金（BA availableBalance / MT5 margin_free）
+    equity: float = 0.0         # 保证金余额 / 净值（BA totalMarginBalance / MT5 equity）
+    cash_balance: float = 0.0   # 现金钱包余额（BA 现货 USDT；MT5 无此概念，为 0）
+    currency: str = ""
+    is_live: bool = False  # 是否为真实账户数据（模拟/未连接为 False）
+    timestamp: float = 0.0
+
+
+@dataclass
 class OrderBookLevel:
     """盘口单档：价格 + 挂单量。"""
 
@@ -337,6 +358,8 @@ class AppConfig:
     ba_leverage: int = 20
     mt5_leverage: int = 100
     sync_leverage_on_trade: bool = False
+    # BA 保证金模式："" 跟随平台不设置 / "cross" 全仓 / "isolated" 逐仓
+    ba_margin_type: str = ""
     ba_refresh_interval_sec: float = BA_REFRESH_INTERVAL_DEFAULT
     ba_maker_timeout_sec: float = 5.0   # Maker 委托等待成交超时（秒），超时撤单
     # 网络延迟超过该毫秒数时，自动取消所有已勾选的自动下单（0=不启用该保护）

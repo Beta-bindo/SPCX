@@ -115,6 +115,7 @@ def load_config() -> AppConfig:
             ba_leverage=int(data.get("ba_leverage", 20)),
             mt5_leverage=int(data.get("mt5_leverage", 100)),
             sync_leverage_on_trade=bool(data.get("sync_leverage_on_trade", False)),
+            ba_margin_type=str(data.get("ba_margin_type", "")).lower(),
             ba_refresh_interval_sec=normalize_ba_refresh_interval(
                 data.get("ba_refresh_interval_sec", BA_REFRESH_INTERVAL_DEFAULT)
             ),
@@ -265,6 +266,7 @@ def save_config(config: AppConfig) -> None:
         "ba_leverage": config.ba_leverage,
         "mt5_leverage": config.mt5_leverage,
         "sync_leverage_on_trade": config.sync_leverage_on_trade,
+        "ba_margin_type": config.ba_margin_type,
         "ba_refresh_interval_sec": config.ba_refresh_interval_sec,
         "ba_maker_timeout_sec": config.ba_maker_timeout_sec,
         "auto_trade_max_latency_ms": config.auto_trade_max_latency_ms,

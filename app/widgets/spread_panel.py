@@ -1,4 +1,4 @@
-"""盈利·告警面板：双品种模式下展示合并盈亏明细与爆仓缓冲、行情来源徽标。"""
+"""盈利·告警面板：双品种模式下展示合并盈亏明细与爆仓缓冲。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.models import AppConfig, MarketUpdate, Position, Quote
+from app.core.models import AppConfig, Position, Quote
 from app.widgets.pnl_detail_panel import PnlDetailPanel
 from app.widgets.symbol_trade_panel import SymbolActionStrip
 
 
 class SpreadPanel(QFrame):
-    """右侧汇总卡片：合并盈亏面板 + 风险缓冲行 + 真实/模拟行情徽标。"""
+    """右侧汇总卡片：合并盈亏面板 + 风险缓冲行。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,12 +35,12 @@ class SpreadPanel(QFrame):
         toolbar.addStretch()
         self._root.addLayout(toolbar)
 
-        self._combined_section = QWidget()
+        self._combined_section = QWidget(self)
         self._combined_section.setObjectName("spreadCombinedProfit")
         combined_layout = QVBoxLayout(self._combined_section)
         combined_layout.setContentsMargins(0, 0, 0, 0)
         combined_layout.setSpacing(6)
-        self.pnl_detail = PnlDetailPanel("all")
+        self.pnl_detail = PnlDetailPanel("all", parent=self._combined_section)
         self.pnl_detail.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -55,12 +55,7 @@ class SpreadPanel(QFrame):
 
         self._gold_actions: SymbolActionStrip | None = None
         self._silver_actions: SymbolActionStrip | None = None
-        self._source_badge: QLabel | None = None
-        self._source_simulated: bool | None = None
         self._last_risk_text = ""
-
-    def set_source_badge(self, badge: QLabel) -> None:
-        self._source_badge = badge
 
     def set_action_strips(
         self, gold: SymbolActionStrip, silver: SymbolActionStrip
@@ -74,11 +69,7 @@ class SpreadPanel(QFrame):
         self._root.setStretchFactor(self._combined_section, 0 if single else 1)
 
     def refresh_theme(self) -> None:
-        """主题切换后刷新徽标与动作条样式。"""
-        badge = self._source_badge
-        if badge is not None:
-            badge.style().unpolish(badge)
-            badge.style().polish(badge)
+        """主题切换后刷新动作条样式。"""
         if self._gold_actions:
             self._gold_actions.refresh_theme()
         if self._silver_actions:
@@ -116,23 +107,3 @@ class SpreadPanel(QFrame):
         if text != self._last_risk_text:
             self.risk_label.setText(text)
             self._last_risk_text = text
-
-    def update_market(self, update: MarketUpdate) -> None:
-        """根据是否含模拟报价切换"真实行情/模拟数据"徽标。"""
-        badge = self._source_badge
-        if badge is None:
-            return
-        simulated = any(
-            q.is_simulated for q in list(update.ba_quotes.values()) + list(update.mt5_quotes.values())
-        )
-        if simulated == self._source_simulated:
-            return
-        self._source_simulated = simulated
-        if simulated:
-            badge.setText("模拟数据")
-            badge.setObjectName("demoBadge")
-        else:
-            badge.setText("真实行情")
-            badge.setObjectName("liveBadge")
-        badge.style().unpolish(badge)
-        badge.style().polish(badge)

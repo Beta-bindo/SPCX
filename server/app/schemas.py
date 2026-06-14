@@ -80,6 +80,8 @@ class TradeItem(BaseModel):
     mt5_pnl: float = 0.0
     ba_fee: float = 0.0
     mt5_fee: float = 0.0
+    ba_funding_fee: float = 0.0
+    ba_rebate: float = 0.0
     net_pnl: float = 0.0
 
 

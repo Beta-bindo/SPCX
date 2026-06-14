@@ -18,6 +18,8 @@ from app.core.license.client import LicenseClient, LicenseError
 from app.core.license.pending_trades import clear_pending, enqueue_trades, load_pending
 from app.core.license.service import LicenseService
 from app.core.license.store import LicenseState, load_license, save_license
+from app.core.models import AppConfig
+from app.core.pnl_calculator import estimate_trade_fees
 from app.core.trade_ledger import TradeRecord, record_trade, trade_record_to_payload
 
 
@@ -44,6 +46,67 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(payload["ba_quantity"], 500.0)
         self.assertEqual(payload["mt5_quantity"], 1.0)
         self.assertEqual(payload["direction"], "BA SELL / Ex BUY")
+
+    def test_open_trade_payload_includes_ba_fee(self):
+        config = AppConfig()
+        ba_fee, mt5_fee = estimate_trade_fees(
+            "xau",
+            config,
+            ba_price=2650.5,
+            ba_quantity=500.0,
+            mt5_quantity=1.0,
+        )
+        self.assertGreater(ba_fee, 0.0)
+        rec = TradeRecord(
+            settled_at="2026-06-10T12:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="open",
+            spread=3.125,
+            ba_price=2650.5,
+            ex_price=2647.375,
+            ba_quantity=500.0,
+            mt5_quantity=1.0,
+            ba_side="SELL",
+            mt5_side="BUY",
+            ba_fee=ba_fee,
+            mt5_fee=mt5_fee,
+        )
+        payload = trade_record_to_payload(rec)
+        self.assertEqual(payload["ba_fee"], ba_fee)
+        self.assertGreater(payload["ba_fee"], 0.0)
+
+    def test_close_payload_includes_ba_funding_fee(self):
+        rec = TradeRecord(
+            settled_at="2026-06-10T18:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=10.0,
+            mt5_pnl=-5.0,
+            ba_fee=1.0,
+            mt5_fee=0.5,
+            ba_funding_fee=-2.5,
+        )
+        payload = trade_record_to_payload(rec)
+        self.assertEqual(payload["ba_funding_fee"], -2.5)
+        self.assertEqual(payload["net_pnl"], 1.0)
+
+    def test_close_payload_includes_ba_rebate(self):
+        rec = TradeRecord(
+            settled_at="2026-06-10T18:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=10.0,
+            mt5_pnl=-5.0,
+            ba_fee=1.0,
+            mt5_fee=0.5,
+            ba_rebate=0.8,
+        )
+        payload = trade_record_to_payload(rec)
+        self.assertEqual(payload["ba_rebate"], 0.8)
+        self.assertEqual(payload["net_pnl"], 4.3)
 
     def test_record_trade_persists_open_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,6 +147,8 @@ class TradeReportingTests(unittest.TestCase):
                     "mt5_pnl": 0.0,
                     "ba_fee": 0.0,
                     "mt5_fee": 0.0,
+                    "ba_funding_fee": 0.0,
+                    "ba_rebate": 0.0,
                     "net_pnl": 0.0,
                 }
                 enqueue_trades([{**base, "action": "open"}, {**base, "action": "close"}])
