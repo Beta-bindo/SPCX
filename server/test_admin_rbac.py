@@ -122,6 +122,47 @@ class AdminRbacTests(unittest.TestCase):
             400,
         )
 
+    def test_audit_hides_superadmin_operations(self) -> None:
+        from app.database import get_conn, log_audit
+
+        with get_conn() as conn:
+            log_audit(conn, "test_super_op", detail="super", actor="admin")
+            log_audit(conn, "test_ops_op", detail="ops", actor="ops_auditor")
+
+        role_res = self.client.post(
+            "/api/v1/admin/roles",
+            headers=self.headers,
+            json={
+                "name": "审计员",
+                "description": "仅操作日志",
+                "modules": ["audit"],
+            },
+        )
+        self.assertEqual(role_res.status_code, 200, role_res.text)
+        role_id = role_res.json()["role"]["id"]
+        self.client.post(
+            "/api/v1/admin/users",
+            headers=self.headers,
+            json={
+                "username": "ops_auditor",
+                "password": "AuditorPass@2026",
+                "role_id": role_id,
+            },
+        )
+        login = self.client.post(
+            "/api/v1/admin/login",
+            json={"username": "ops_auditor", "password": "AuditorPass@2026"},
+        )
+        self.assertEqual(login.status_code, 200)
+        auditor_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        for headers in (auditor_headers, self.headers):
+            res = self.client.get("/api/v1/admin/audit", headers=headers)
+            self.assertEqual(res.status_code, 200, res.text)
+            actions = {item["action"] for item in res.json()["items"]}
+            self.assertNotIn("test_super_op", actions)
+            self.assertIn("test_ops_op", actions)
+
     def test_viewer_cannot_manage_roles(self) -> None:
         role_res = self.client.post(
             "/api/v1/admin/roles",

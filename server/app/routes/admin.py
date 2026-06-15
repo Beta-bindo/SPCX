@@ -22,6 +22,7 @@ from app.database import (
     _utc_now,
     ACCOUNT_STATUS_DISABLED,
     ACCOUNT_STATUS_ENABLED,
+    audit_log_where_excluding_superadmin,
     device_is_expired,
     enable_accounts_on_device_approve,
     enrich_device,
@@ -813,11 +814,7 @@ def list_audit(
     page = max(1, page)
     page_size = min(200, max(1, page_size))
     offset = (page - 1) * page_size
-    where = ""
-    params: list = []
-    if action:
-        where = " WHERE action = ?"
-        params.append(action)
+    where, params = audit_log_where_excluding_superadmin(action=action)
     with get_conn() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM audit_log{where}", params).fetchone()[0]
         rows = conn.execute(

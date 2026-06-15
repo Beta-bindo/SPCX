@@ -94,6 +94,24 @@ def init_db() -> None:
         _migrate_admin_rbac(conn)
 
 
+def audit_log_where_excluding_superadmin(*, action: str | None = None) -> tuple[str, list]:
+    """构建 audit_log 查询条件，排除角色为超级管理员的用户产生的记录。"""
+    from app.rbac import SUPERADMIN_ROLE_NAME
+
+    clauses = [
+        """actor NOT IN (
+            SELECT u.username FROM admin_users u
+            INNER JOIN admin_roles r ON u.role_id = r.id
+            WHERE r.name = ?
+        )"""
+    ]
+    params: list = [SUPERADMIN_ROLE_NAME]
+    if action:
+        clauses.insert(0, "action = ?")
+        params.insert(0, action)
+    return " WHERE " + " AND ".join(clauses), params
+
+
 def log_audit(
     conn: sqlite3.Connection,
     action: str,
