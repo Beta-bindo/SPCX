@@ -93,7 +93,34 @@ class TradeBatchRequest(BaseModel):
 
 
 class AdminLoginRequest(BaseModel):
+    username: str = Field(default="admin", min_length=1, max_length=32)
     password: str
+
+
+class AdminUserCreateRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=32)
+    password: str = Field(min_length=12, max_length=128)
+    display_name: str = Field(default="", max_length=64)
+    role_id: int = Field(ge=1)
+
+
+class AdminUserUpdateRequest(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=64)
+    role_id: Optional[int] = Field(default=None, ge=1)
+    status: Optional[str] = Field(default=None, max_length=16)
+    password: Optional[str] = Field(default=None, min_length=12, max_length=128)
+
+
+class AdminRoleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=256)
+    modules: list[str] = Field(default_factory=list)
+
+
+class AdminRoleUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    description: Optional[str] = Field(default=None, max_length=256)
+    modules: Optional[list[str]] = None
 
 
 class ChangePasswordRequest(BaseModel):

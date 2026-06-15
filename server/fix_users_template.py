@@ -1,0 +1,318 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+
+CONTENT = r'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>交易助手 · 用户管理</title>
+  <link rel="stylesheet" href="/static/admin_common.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div id="loginCard" class="card login-card">
+      <h1 class="login-heading">交易助手 · 运营后台</h1>
+      <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
+      <div class="row">
+        <input id="adminUsername" type="text" placeholder="用户名" value="admin" style="min-width:140px" autocomplete="username" />
+        <input id="adminPassword" type="password" placeholder="密码" style="min-width:220px" autocomplete="current-password" />
+        <button id="loginBtn" type="button">登录</button>
+      </div>
+      <p id="loginErr" class="err hidden"></p>
+    </div>
+
+    <div id="panel" class="hidden admin-shell">
+      <aside id="adminSidebar" class="admin-sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-brand">运营后台</span>
+          <button type="button" id="sidebarToggle" class="sidebar-toggle secondary" title="收起侧栏" aria-label="收起侧栏">◀</button>
+        </div>
+        <nav id="adminNavLinks" class="sidebar-nav" aria-label="后台导航"></nav>
+        <div class="sidebar-foot">
+          <div id="adminUserLabel" class="sidebar-user"></div>
+          <div class="sidebar-actions">
+            <button type="button" class="secondary sidebar-foot-btn" title="修改密码" onclick="openChangePasswordDialog(localStorage.getItem('ta_admin_token')||'')"><span class="sidebar-icon">🔑</span><span class="sidebar-label">改密</span></button>
+            <button type="button" class="secondary sidebar-foot-btn" title="退出登录" onclick="logout()"><span class="sidebar-icon">⏻</span><span class="sidebar-label">退出</span></button>
+          </div>
+        </div>
+      </aside>
+      <main class="admin-main">
+        <header class="admin-page-head">
+          <h1>交易助手 · 用户管理</h1>
+          <p class="sub">创建后台登录账号并分配角色，可见模块由角色决定</p>
+        </header>
+
+      <div class="card filter-bar">
+        <button onclick="openUserDialog()">新建用户</button>
+        <button class="secondary" onclick="loadUsers()">刷新</button>
+        <span id="listColumnSlot"></span>
+      </div>
+
+      <div class="card">
+        <div class="table-scroll">
+        <table id="userListTable">
+          <thead><tr></tr></thead>
+          <tbody></tbody>
+        </table>
+        </div>
+      </div>
+      </main>
+    </div>
+  </div>
+
+<script src="/static/admin_common.js?v=13"></script>
+<script>
+const ACTIVE_MODULE = 'users';
+const USER_LIST_ID = 'users';
+const USER_LIST_COLUMNS = [
+  { key: 'username', label: '用户名' },
+  { key: 'display_name', label: '显示名' },
+  { key: 'role_name', label: '角色' },
+  { key: 'status', label: '状态' },
+  { key: 'last_login_at', label: '最近登录' },
+  { key: 'created_at', label: '创建时间' },
+  { key: 'actions', label: '操作', locked: true },
+];
+let adminToken = '';
+let roleOptions = [];
+
+const USER_STATUS_LABELS = { active: '正常', disabled: '已停用' };
+
+function logout() { logoutAdmin(); }
+
+async function loadRoleOptions() {
+  const res = await fetch('/api/v1/admin/roles', { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  if (!res.ok) return;
+  roleOptions = (await res.json()).roles || [];
+}
+
+function renderUserCell(key, user) {
+  const status = user.status || 'active';
+  switch (key) {
+    case 'username': return `<code>${esc(user.username)}</code>`;
+    case 'display_name': return esc(user.display_name || user.username);
+    case 'role_name': return esc(user.role_name || '-');
+    case 'status': return `<span class="badge ${status === 'active' ? 'approved' : 'disabled'}">${USER_STATUS_LABELS[status] || status}</span>`;
+    case 'last_login_at': return esc(fmtBeijing(user.last_login_at));
+    case 'created_at': return esc(fmtBeijing(user.created_at));
+    case 'actions':
+      return `<div class="cell-actions">
+        <button class="btn-inline secondary" type="button" data-edit="${user.id}">编辑</button>
+        <button class="btn-inline danger" type="button" data-del="${user.id}">删除</button>
+      </div>`;
+    default: return '-';
+  }
+}
+
+function bindUserRow(tr, user) {
+  tr.querySelector('[data-edit]')?.addEventListener('click', () => openUserDialog(user));
+  tr.querySelector('[data-del]')?.addEventListener('click', () => deleteUser(user));
+}
+
+async function loadUsers() {
+  const res = await fetch('/api/v1/admin/users', { headers: authHeaders(adminToken) });
+  if (res.status === 401) return logout();
+  if (res.status === 403) {
+    alert('无权限访问用户管理');
+    return;
+  }
+  if (!res.ok) {
+    alert(await readError(res) || '加载失败');
+    return;
+  }
+  const data = await res.json();
+  const users = (data.users || []).filter((u) => u.username !== 'admin');
+  applyListTable({
+    listId: USER_LIST_ID,
+    defs: USER_LIST_COLUMNS,
+    tableEl: document.getElementById('userListTable'),
+    rows: users,
+    renderCell: renderUserCell,
+    onRow: bindUserRow,
+  });
+}
+
+function openUserDialog(user = null) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+
+  const heading = document.createElement('h2');
+  heading.textContent = user ? '编辑用户' : '新建用户';
+
+  const usernameField = document.createElement('label');
+  usernameField.className = 'modal-field';
+  usernameField.textContent = '用户名';
+  const usernameInput = document.createElement('input');
+  usernameInput.className = 'modal-text';
+  usernameInput.maxLength = 32;
+  usernameInput.value = user?.username || '';
+  usernameInput.disabled = Boolean(user);
+  usernameField.appendChild(usernameInput);
+
+  const displayField = document.createElement('label');
+  displayField.className = 'modal-field';
+  displayField.textContent = '显示名';
+  const displayInput = document.createElement('input');
+  displayInput.className = 'modal-text';
+  displayInput.maxLength = 64;
+  displayInput.value = user?.display_name || '';
+  displayField.appendChild(displayInput);
+
+  const roleField = document.createElement('label');
+  roleField.className = 'modal-field';
+  roleField.textContent = '角色';
+  const roleSelect = document.createElement('select');
+  roleSelect.className = 'modal-text';
+  for (const role of roleOptions) {
+    const opt = document.createElement('option');
+    opt.value = role.id;
+    opt.textContent = role.name;
+    if (user && user.role_id === role.id) opt.selected = true;
+    roleSelect.appendChild(opt);
+  }
+  roleField.appendChild(roleSelect);
+
+  const statusField = document.createElement('label');
+  statusField.className = 'modal-field';
+  statusField.textContent = '状态';
+  const statusSelect = document.createElement('select');
+  statusSelect.className = 'modal-text';
+  for (const [value, label] of Object.entries(USER_STATUS_LABELS)) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    if ((user?.status || 'active') === value) opt.selected = true;
+    statusSelect.appendChild(opt);
+  }
+  statusField.appendChild(statusSelect);
+
+  const pwdField = document.createElement('label');
+  pwdField.className = 'modal-field';
+  pwdField.textContent = user ? '新密码（留空不修改）' : '登录密码';
+  const pwdInput = document.createElement('input');
+  pwdInput.type = 'password';
+  pwdInput.className = 'modal-text';
+  pwdInput.maxLength = 128;
+  pwdInput.placeholder = user ? '留空则不修改' : '至少 12 位';
+  pwdField.appendChild(pwdInput);
+
+  const err = document.createElement('p');
+  err.className = 'err modal-hint';
+  err.style.display = 'none';
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = '取消';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.textContent = user ? '保存' : '创建';
+
+  const close = () => backdrop.remove();
+
+  cancelBtn.addEventListener('click', close);
+  okBtn.addEventListener('click', async () => {
+    const username = usernameInput.value.trim();
+    const password = pwdInput.value;
+    if (!user && !username) {
+      err.textContent = '请输入用户名';
+      err.style.display = 'block';
+      return;
+    }
+    if (!user && password.length < 12) {
+      err.textContent = '密码至少 12 位';
+      err.style.display = 'block';
+      return;
+    }
+    if (user && password && password.length < 12) {
+      err.textContent = '新密码至少 12 位';
+      err.style.display = 'block';
+      return;
+    }
+    const payload = {
+      display_name: displayInput.value.trim(),
+      role_id: Number(roleSelect.value),
+      status: statusSelect.value,
+    };
+    if (!user) {
+      payload.username = username;
+      payload.password = password;
+    } else if (password) {
+      payload.password = password;
+    }
+    const url = user ? `/api/v1/admin/users/${user.id}` : '/api/v1/admin/users';
+    const method = user ? 'PATCH' : 'POST';
+    okBtn.disabled = true;
+    const res = await fetch(url, {
+      method,
+      headers: authHeaders(adminToken),
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401) return logout();
+    if (!res.ok) {
+      okBtn.disabled = false;
+      err.textContent = await readError(res) || '保存失败';
+      err.style.display = 'block';
+      return;
+    }
+    close();
+    await loadUsers();
+  });
+
+  actions.append(cancelBtn, okBtn);
+  card.append(heading, usernameField, displayField, roleField, statusField, pwdField, err, actions);
+  backdrop.appendChild(card);
+  document.body.appendChild(backdrop);
+  (user ? displayInput : usernameInput).focus();
+}
+
+async function deleteUser(user) {
+  if (!confirm(`确定删除用户「${user.username}」？`)) return;
+  const res = await fetch(`/api/v1/admin/users/${user.id}`, {
+    method: 'DELETE',
+    headers: authHeaders(adminToken),
+  });
+  if (res.status === 401) return logout();
+  if (!res.ok) {
+    alert(await readError(res) || '删除失败');
+    return;
+  }
+  await loadUsers();
+}
+
+async function bootPanel() {
+  mountListColumnControl(document.getElementById('listColumnSlot'), USER_LIST_ID, USER_LIST_COLUMNS, loadUsers);
+  await loadRoleOptions();
+  await loadUsers();
+}
+
+wireAdminLoginButton(async (token) => {
+  adminToken = token;
+  renderAdminNav(ACTIVE_MODULE);
+  await bootPanel();
+});
+
+initAdminPage(ACTIVE_MODULE, async (token) => {
+  adminToken = token;
+  await bootPanel();
+});
+</script>
+</body>
+</html>
+'''
+
+if __name__ == "__main__":
+    path = Path(__file__).parent / "app" / "templates" / "users.html"
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(CONTENT.strip() + "\n")
+    text = path.read_text(encoding="utf-8")
+    assert "用户管理" in text and "运营后台" in text
+    assert "????" not in text
+    print("OK users.html", len(text))

@@ -9,31 +9,37 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>交易助手 · 持仓列表</h1>
-    <p class="sub">各用户最新上报的黄金 / 白银持仓与委托（客户端心跳同步）</p>
-
-    <div id="loginCard" class="card">
+    <div id="loginCard" class="card login-card">
+      <h1 class="login-heading">交易助手 · 运营后台</h1>
+      <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
       <div class="row">
-        <input id="adminPassword" type="password" placeholder="管理员密码" style="min-width:220px" />
-        <button onclick="login()">登录</button>
+        <input id="adminUsername" type="text" placeholder="用户名" value="admin" style="min-width:140px" autocomplete="username" />
+        <input id="adminPassword" type="password" placeholder="密码" style="min-width:220px" autocomplete="current-password" />
+        <button id="loginBtn" type="button">登录</button>
       </div>
       <p id="loginErr" class="err hidden"></p>
     </div>
 
-    <div id="panel" class="hidden">
-      <div class="topnav">
-        <div class="topnav-links">
-          <a href="/admin">授权管理</a>
-          <a href="/admin/dashboard">数据看板</a>
-          <a href="/admin/trades">交易明细</a>
-          <a href="/admin/positions" class="active">持仓列表</a>
-          <a href="/admin/audit">操作日志</a>
+    <div id="panel" class="hidden admin-shell">
+      <aside id="adminSidebar" class="admin-sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-brand">运营后台</span>
+          <button type="button" id="sidebarToggle" class="sidebar-toggle secondary" title="收起侧栏" aria-label="收起侧栏">◀</button>
         </div>
-        <div class="topnav-actions">
-          <button class="secondary" onclick="openChangePasswordDialog(adminToken)">修改密码</button>
-          <button class="secondary" onclick="logout()">退出</button>
+        <nav id="adminNavLinks" class="sidebar-nav" aria-label="后台导航"></nav>
+        <div class="sidebar-foot">
+          <div id="adminUserLabel" class="sidebar-user"></div>
+          <div class="sidebar-actions">
+            <button type="button" class="secondary sidebar-foot-btn" title="修改密码" onclick="openChangePasswordDialog(localStorage.getItem('ta_admin_token')||'')"><span class="sidebar-icon">🔑</span><span class="sidebar-label">改密</span></button>
+            <button type="button" class="secondary sidebar-foot-btn" title="退出登录" onclick="logout()"><span class="sidebar-icon">⏻</span><span class="sidebar-label">退出</span></button>
+          </div>
         </div>
-      </div>
+      </aside>
+      <main class="admin-main">
+        <header class="admin-page-head">
+          <h1>交易助手 · 持仓列表</h1>
+          <p class="sub">各用户最新上报的黄金 / 白银持仓与委托（客户端心跳同步）</p>
+        </header>
 
       <div class="card">
         <div class="filter-actions" style="margin-bottom:12px">
@@ -60,38 +66,17 @@
           </label>
         </div>
       </div>
+      </main>
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=7"></script>
+<script src="/static/admin_common.js?v=12"></script>
 <script>
-let adminToken = localStorage.getItem('ta_admin_token') || '';
+const ACTIVE_MODULE = 'positions';
+let adminToken = '';
 let positionPage = 1;
 
-function showErr(id, msg) {
-  const el = document.getElementById(id);
-  el.textContent = msg;
-  el.classList.toggle('hidden', !msg);
-}
-
-async function login() {
-  const password = document.getElementById('adminPassword').value;
-  const res = await fetch('/api/v1/admin/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password })
-  });
-  if (!res.ok) { showErr('loginErr', '密码错误'); return; }
-  const data = await res.json();
-  adminToken = data.access_token;
-  localStorage.setItem('ta_admin_token', adminToken);
-  document.getElementById('loginCard').classList.add('hidden');
-  document.getElementById('panel').classList.remove('hidden');
-  await loadPositions(1);
-}
-
-function logout() {
-  serverLogout(adminToken);
-}
+function logout() { logoutAdmin(); }
 
 async function loadPositions(page) {
   const pageSize = document.getElementById('pageSize').value;
@@ -122,11 +107,20 @@ async function loadPositions(page) {
   document.getElementById('nextBtn').disabled = positionPage >= pages;
 }
 
-if (adminToken) {
-  document.getElementById('loginCard').classList.add('hidden');
-  document.getElementById('panel').classList.remove('hidden');
-  loadPositions(1);
+async function bootPanel() {
+  await loadPositions(1);
 }
+
+wireAdminLoginButton(async (token) => {
+  adminToken = token;
+  renderAdminNav(ACTIVE_MODULE);
+  await bootPanel();
+});
+
+initAdminPage(ACTIVE_MODULE, async (token) => {
+  adminToken = token;
+  await bootPanel();
+});
 </script>
 </body>
 </html>

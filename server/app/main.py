@@ -4,12 +4,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import validate_production_settings
 from app.database import init_db
-from app.routes import admin, client
+from app.routes import admin, admin_rbac, client
 
 
 @asynccontextmanager
@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="TradeAssistant License Server", version="1.0.0", lifespan=lifespan)
 app.include_router(client.router)
 app.include_router(admin.router)
+app.include_router(admin_rbac.router)
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -40,6 +41,11 @@ async def security_headers(request: Request, call_next):
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -65,3 +71,13 @@ def dashboard_page() -> FileResponse:
 @app.get("/admin/audit", response_class=HTMLResponse)
 def audit_page() -> FileResponse:
     return FileResponse(TEMPLATE_DIR / "audit.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin/roles", response_class=HTMLResponse)
+def roles_page() -> FileResponse:
+    return FileResponse(TEMPLATE_DIR / "roles.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def users_page() -> FileResponse:
+    return FileResponse(TEMPLATE_DIR / "users.html", media_type="text/html; charset=utf-8")

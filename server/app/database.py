@@ -91,6 +91,7 @@ def init_db() -> None:
         )
         _migrate_devices(conn)
         _migrate_trades(conn)
+        _migrate_admin_rbac(conn)
 
 
 def log_audit(
@@ -358,6 +359,133 @@ def normalize_expires_at(value: str | None) -> str | None:
         return dt.replace(microsecond=0).isoformat()
     except ValueError:
         return raw
+
+
+def _migrate_admin_rbac(conn: sqlite3.Connection) -> None:
+    import os
+
+    from app.auth import hash_admin_password
+    from app.rbac import SUPERADMIN_ROLE_NAME, modules_to_json
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS admin_roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            modules TEXT NOT NULL DEFAULT '[]',
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS admin_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            role_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            last_login_at TEXT,
+            FOREIGN KEY(role_id) REFERENCES admin_roles(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_users_role ON admin_users(role_id);
+        """
+    )
+    now = _utc_now()
+    role_count = conn.execute("SELECT COUNT(*) FROM admin_roles").fetchone()[0]
+    if role_count == 0:
+        conn.execute(
+            """
+            INSERT INTO admin_roles (name, description, modules, is_builtin, created_at)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (
+                SUPERADMIN_ROLE_NAME,
+                "拥有全部后台模块权限",
+                modules_to_json(["*"]),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO admin_roles (name, description, modules, is_builtin, created_at)
+            VALUES (?, ?, ?, 0, ?)
+            """,
+            (
+                "运营人员",
+                "审核设备、查看数据，不可管理角色与用户",
+                modules_to_json(["devices", "dashboard", "trades", "positions", "audit"]),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO admin_roles (name, description, modules, is_builtin, created_at)
+            VALUES (?, ?, ?, 0, ?)
+            """,
+            (
+                "只读访客",
+                "仅可查看数据看板与交易明细",
+                modules_to_json(["dashboard", "trades"]),
+                now,
+            ),
+        )
+    user_count = conn.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
+    if user_count == 0:
+        super_row = conn.execute(
+            "SELECT id FROM admin_roles WHERE name = ?", (SUPERADMIN_ROLE_NAME,)
+        ).fetchone()
+        if super_row:
+            stored_hash = os.environ.get("TA_ADMIN_PASSWORD_HASH") or settings.admin_password_hash
+            plain = os.environ.get("TA_ADMIN_PASSWORD") or settings.admin_password
+            if stored_hash:
+                pwd_hash = stored_hash
+            elif plain:
+                pwd_hash = hash_admin_password(plain)
+            else:
+                pwd_hash = hash_admin_password("TradeAdmin@2026!BS")
+            conn.execute(
+                """
+                INSERT INTO admin_users (
+                    username, password_hash, display_name, role_id, status, created_at
+                ) VALUES (?, ?, ?, ?, 'active', ?)
+                """,
+                (
+                    "admin",
+                    pwd_hash,
+                    "系统管理员",
+                    super_row[0],
+                    now,
+                ),
+            )
+
+
+def get_admin_user_by_username(username: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT u.*, r.name AS role_name, r.modules AS role_modules
+            FROM admin_users u
+            JOIN admin_roles r ON r.id = u.role_id
+            WHERE u.username = ?
+            """,
+            (username.strip(),),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def get_admin_user_by_id(user_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT u.*, r.name AS role_name, r.modules AS role_modules
+            FROM admin_users u
+            JOIN admin_roles r ON r.id = u.role_id
+            WHERE u.id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    return row_to_dict(row)
 
 
 def enrich_device(row: sqlite3.Row | dict | None) -> dict | None:

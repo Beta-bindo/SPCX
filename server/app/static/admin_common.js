@@ -89,6 +89,32 @@ function accountStatusClass(status) {
   return 'pending';
 }
 
+function fmtBeijingShort(iso) {
+  if (!iso || iso === '-') return '-';
+  const full = fmtBeijing(iso);
+  if (full === '-') return '-';
+  const parts = full.split(' ');
+  if (parts.length < 2) return full;
+  const date = parts[0].slice(5);
+  const time = parts[1].slice(0, 5);
+  return `${date} ${time}`;
+}
+
+function shortCode(value, head = 8, tail = 4) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '-') return '-';
+  if (raw.length <= head + tail + 1) return raw;
+  return `${raw.slice(0, head)}…${raw.slice(-tail)}`;
+}
+
+function closeAllActionMenus() {
+  document.querySelectorAll('.action-menu-panel.open').forEach((el) => {
+    el.classList.remove('open');
+  });
+}
+
+document.addEventListener('click', () => closeAllActionMenus());
+
 function fmtBeijing(iso) {
   if (!iso || iso === '-') return '-';
   const d = new Date(iso);
@@ -147,6 +173,192 @@ async function readError(res) {
 
 function authHeaders(adminToken) {
   return { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
+}
+
+const ADMIN_MODULE_PATHS = {
+  devices: '/admin',
+  dashboard: '/admin/dashboard',
+  trades: '/admin/trades',
+  positions: '/admin/positions',
+  audit: '/admin/audit',
+  roles: '/admin/roles',
+  users: '/admin/users',
+};
+
+let adminProfile = null;
+
+function showLoginErr(msg) {
+  const el = document.getElementById('loginErr');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+function adminCanAccess(moduleKey) {
+  if (!adminProfile) return false;
+  const mods = adminProfile.modules || [];
+  if (mods.includes('*')) return true;
+  return mods.includes(moduleKey);
+}
+
+const ADMIN_MODULE_ICONS = {
+  devices: '授',
+  dashboard: '看',
+  trades: '单',
+  positions: '仓',
+  audit: '志',
+  roles: '角',
+  users: '员',
+};
+
+const SIDEBAR_COLLAPSED_KEY = 'ta_admin_sidebar_collapsed';
+
+function isSidebarCollapsed() {
+  return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+}
+
+function setSidebarCollapsed(collapsed) {
+  const shell = document.querySelector('.admin-shell');
+  if (!shell) return;
+  shell.classList.toggle('sidebar-collapsed', collapsed);
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  const btn = document.getElementById('sidebarToggle');
+  if (btn) {
+    btn.textContent = collapsed ? '▶' : '◀';
+    const label = collapsed ? '展开侧栏' : '收起侧栏';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  }
+}
+
+function initAdminSidebar() {
+  setSidebarCollapsed(isSidebarCollapsed());
+  const btn = document.getElementById('sidebarToggle');
+  if (!btn || btn.dataset.wired === '1') return;
+  btn.dataset.wired = '1';
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setSidebarCollapsed(!isSidebarCollapsed());
+  });
+}
+
+function showAdminPanel() {
+  document.getElementById('loginCard')?.classList.add('hidden');
+  document.getElementById('panel')?.classList.remove('hidden');
+  document.body.classList.add('admin-logged-in');
+  initAdminSidebar();
+}
+
+function renderAdminNav(activeModule) {
+  const container = document.getElementById('adminNavLinks');
+  if (!container || !adminProfile) return;
+  const nav = adminProfile.nav || [];
+  container.innerHTML = nav.map(({ key, label }) => {
+    const href = ADMIN_MODULE_PATHS[key] || '#';
+    const active = key === activeModule ? ' active' : '';
+    const icon = ADMIN_MODULE_ICONS[key] || label.slice(0, 1);
+    return `<a href="${href}" class="sidebar-link${active}" title="${esc(label)}"><span class="sidebar-icon" aria-hidden="true">${esc(icon)}</span><span class="sidebar-label">${esc(label)}</span></a>`;
+  }).join('');
+  const userEl = document.getElementById('adminUserLabel');
+  if (userEl) {
+    const name = adminProfile.display_name || adminProfile.username || '';
+    const role = adminProfile.role_name || '';
+    const text = role ? `${name} · ${role}` : name;
+    userEl.textContent = text;
+    userEl.title = text;
+  }
+  initAdminSidebar();
+}
+
+async function fetchAdminProfile(token) {
+  const res = await fetch('/api/v1/admin/me', { headers: authHeaders(token) });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(await readError(res) || '加载用户信息失败');
+  return res.json();
+}
+
+async function doAdminLogin() {
+  const username = (document.getElementById('adminUsername')?.value || 'admin').trim();
+  const password = document.getElementById('adminPassword')?.value || '';
+  if (!username || !password) {
+    showLoginErr('请输入用户名和密码');
+    return null;
+  }
+  const res = await fetch('/api/v1/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    showLoginErr(await readError(res) || '用户名或密码错误');
+    return null;
+  }
+  const data = await res.json();
+  const token = data.access_token;
+  localStorage.setItem('ta_admin_token', token);
+  adminProfile = await fetchAdminProfile(token);
+  if (!adminProfile) {
+    localStorage.removeItem('ta_admin_token');
+    showLoginErr('登录失败');
+    return null;
+  }
+  showLoginErr('');
+  showAdminPanel();
+  return token;
+}
+
+async function initAdminPage(activeModule, onReady) {
+  let token = localStorage.getItem('ta_admin_token') || '';
+  if (token) {
+    try {
+      adminProfile = await fetchAdminProfile(token);
+    } catch (_) {
+      adminProfile = null;
+    }
+    if (!adminProfile) {
+      localStorage.removeItem('ta_admin_token');
+      token = '';
+    } else if (
+      activeModule
+      && !adminCanAccess(activeModule)
+      && !(adminProfile.nav || []).some((item) => item.key === activeModule)
+    ) {
+      const first = (adminProfile.nav || [])[0];
+      const target = first ? ADMIN_MODULE_PATHS[first.key] : '';
+      if (target && location.pathname !== target) {
+        location.href = target;
+        return '';
+      }
+    }
+  }
+  if (token && adminProfile) {
+    showAdminPanel();
+    renderAdminNav(activeModule);
+    if (onReady) await onReady(token, adminProfile);
+  }
+  return token;
+}
+
+function logoutAdmin() {
+  const token = localStorage.getItem('ta_admin_token') || '';
+  serverLogout(token);
+}
+
+function wireAdminLoginButton(onSuccess) {
+  const btn = document.getElementById('loginBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const token = await doAdminLogin();
+    if (!token) return;
+    renderAdminNav(null);
+    if (onSuccess) await onSuccess(token);
+  });
+  const pwd = document.getElementById('adminPassword');
+  if (pwd) {
+    pwd.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') btn.click();
+    });
+  }
 }
 
 async function serverLogout(adminToken) {
@@ -603,4 +815,274 @@ function openChangePasswordDialog(adminToken) {
     document.addEventListener('keydown', onKeyDown);
     oldF.input.focus();
   });
+}
+
+const LIST_COLUMNS_STORAGE_PREFIX = 'ta_admin_list_columns:v1:';
+
+function defaultListColumnState(defs) {
+  const order = [];
+  const visible = {};
+  for (const def of defs) {
+    order.push(def.key);
+    visible[def.key] = def.defaultVisible !== false;
+  }
+  return { order, visible };
+}
+
+function loadListColumnState(listId, defs) {
+  const fallback = defaultListColumnState(defs);
+  try {
+    const raw = localStorage.getItem(`${LIST_COLUMNS_STORAGE_PREFIX}${listId}`);
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw);
+    const known = new Set(defs.map((d) => d.key));
+    const order = [];
+    for (const key of saved.order || []) {
+      if (known.has(key) && !order.includes(key)) order.push(key);
+    }
+    for (const def of defs) {
+      if (!order.includes(def.key)) order.push(def.key);
+    }
+    const visible = { ...fallback.visible };
+    for (const [key, value] of Object.entries(saved.visible || {})) {
+      if (known.has(key)) visible[key] = Boolean(value);
+    }
+    for (const def of defs) {
+      if (def.locked) visible[def.key] = true;
+    }
+    return { order, visible };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function saveListColumnState(listId, state) {
+  localStorage.setItem(`${LIST_COLUMNS_STORAGE_PREFIX}${listId}`, JSON.stringify(state));
+}
+
+function resetListColumnState(listId) {
+  localStorage.removeItem(`${LIST_COLUMNS_STORAGE_PREFIX}${listId}`);
+}
+
+function getActiveListColumns(listId, defs) {
+  const state = loadListColumnState(listId, defs);
+  const defMap = Object.fromEntries(defs.map((d) => [d.key, d]));
+  const unlocked = [];
+  const locked = [];
+  for (const key of state.order) {
+    const def = defMap[key];
+    if (!def) continue;
+    if (def.locked) {
+      locked.push(def);
+      continue;
+    }
+    if (state.visible[key] === false) continue;
+    unlocked.push(def);
+  }
+  for (const def of defs) {
+    if (!def.locked) continue;
+    if (!locked.some((item) => item.key === def.key)) locked.push(def);
+  }
+  return [...unlocked, ...locked];
+}
+
+function renderListTableHeader(tableEl, listId, defs) {
+  const cols = getActiveListColumns(listId, defs);
+  const tr = tableEl.querySelector('thead tr');
+  if (tr) {
+    tr.innerHTML = cols.map((c) => `<th data-col="${esc(c.key)}">${esc(c.label)}</th>`).join('');
+  }
+  return cols;
+}
+
+function renderListRows(tbody, rows, cols, renderCell, options = {}) {
+  const { emptyMessage = '', onRow = null } = options;
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    if (emptyMessage) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="${Math.max(1, cols.length)}" class="sub" style="text-align:center;padding:24px">${emptyMessage}</td>`;
+      tbody.appendChild(tr);
+    }
+    return;
+  }
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = cols.map((col) => {
+      const html = renderCell(col.key, row);
+      return `<td data-col="${esc(col.key)}">${html == null ? '' : html}</td>`;
+    }).join('');
+    if (onRow) onRow(tr, row);
+    tbody.appendChild(tr);
+  }
+}
+
+function applyListTable({ listId, defs, tableEl, rows, renderCell, emptyMessage, onRow }) {
+  const cols = renderListTableHeader(tableEl, listId, defs);
+  const tbody = tableEl.querySelector('tbody');
+  renderListRows(tbody, rows, cols, renderCell, { emptyMessage, onRow });
+  return cols;
+}
+
+function mountListColumnControl(anchorEl, listId, defs, onApply) {
+  if (!anchorEl || anchorEl.dataset.columnMounted === '1') return;
+  anchorEl.dataset.columnMounted = '1';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'secondary';
+  btn.textContent = '自定义列';
+  btn.addEventListener('click', () => openListColumnDialog(listId, defs, onApply));
+  anchorEl.appendChild(btn);
+}
+
+function openListColumnDialog(listId, defs, onApply) {
+  const state = loadListColumnState(listId, defs);
+  const sortable = defs.filter((d) => !d.locked);
+  const locked = defs.filter((d) => d.locked);
+  const orderedSortable = [];
+  for (const key of state.order) {
+    const def = sortable.find((d) => d.key === key);
+    if (def && !orderedSortable.some((d) => d.key === key)) orderedSortable.push(def);
+  }
+  for (const def of sortable) {
+    if (!orderedSortable.some((d) => d.key === def.key)) orderedSortable.push(def);
+  }
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+
+  const card = document.createElement('div');
+  card.className = 'modal-card column-picker-card';
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-modal', 'true');
+
+  const heading = document.createElement('h2');
+  heading.textContent = '自定义列表字段';
+
+  const hint = document.createElement('p');
+  hint.className = 'sub modal-hint';
+  hint.textContent = '勾选要显示的字段，拖拽左侧手柄调整列顺序。固定列（如操作）始终显示在末尾。';
+
+  const list = document.createElement('ul');
+  list.className = 'column-sort-list';
+
+  let dragKey = '';
+
+  for (const def of orderedSortable) {
+    const li = document.createElement('li');
+    li.className = 'column-sort-item';
+    li.dataset.key = def.key;
+
+    const handle = document.createElement('span');
+    handle.className = 'column-drag-handle';
+    handle.textContent = '⋮⋮';
+    handle.title = '拖拽排序';
+    handle.draggable = true;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = state.visible[def.key] !== false;
+    checkbox.addEventListener('change', () => {
+      state.visible[def.key] = checkbox.checked;
+    });
+    checkbox.addEventListener('mousedown', (event) => event.stopPropagation());
+    checkbox.addEventListener('click', (event) => event.stopPropagation());
+
+    const label = document.createElement('span');
+    label.className = 'column-sort-label';
+    label.textContent = def.label;
+
+    li.append(handle, checkbox, label);
+
+    handle.addEventListener('dragstart', (event) => {
+      dragKey = def.key;
+      li.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', def.key);
+      event.stopPropagation();
+    });
+    handle.addEventListener('dragend', () => {
+      dragKey = '';
+      li.classList.remove('dragging');
+      list.querySelectorAll('.column-sort-item').forEach((item) => item.classList.remove('drag-over'));
+    });
+    li.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (!dragKey || dragKey === def.key) return;
+      li.classList.add('drag-over');
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
+    li.addEventListener('drop', (event) => {
+      event.preventDefault();
+      li.classList.remove('drag-over');
+      if (!dragKey || dragKey === def.key) return;
+      const keys = [...list.querySelectorAll('.column-sort-item')].map((item) => item.dataset.key);
+      const from = keys.indexOf(dragKey);
+      const to = keys.indexOf(def.key);
+      if (from < 0 || to < 0) return;
+      keys.splice(from, 1);
+      keys.splice(to, 0, dragKey);
+      const map = Object.fromEntries([...list.children].map((item) => [item.dataset.key, item]));
+      for (const key of keys) {
+        if (map[key]) list.appendChild(map[key]);
+      }
+    });
+
+    list.appendChild(li);
+  }
+
+  if (locked.length) {
+    const lockedBox = document.createElement('div');
+    lockedBox.className = 'column-locked-box';
+    lockedBox.innerHTML = `<div class="sub">固定列</div>${locked.map((d) => `<div class="column-locked-item">${esc(d.label)}</div>`).join('')}`;
+    card.append(heading, hint, list, lockedBox);
+  } else {
+    card.append(heading, hint, list);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.className = 'secondary';
+  resetBtn.textContent = '恢复默认';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = '取消';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.textContent = '应用';
+
+  const close = () => backdrop.remove();
+
+  resetBtn.addEventListener('click', () => {
+    resetListColumnState(listId);
+    close();
+    if (onApply) onApply();
+  });
+  cancelBtn.addEventListener('click', close);
+  okBtn.addEventListener('click', () => {
+    const orderedKeys = [...list.querySelectorAll('.column-sort-item')].map((item) => item.dataset.key);
+    for (const def of locked) {
+      if (!orderedKeys.includes(def.key)) orderedKeys.push(def.key);
+    }
+    for (const def of defs) {
+      if (!orderedKeys.includes(def.key)) orderedKeys.push(def.key);
+    }
+    state.order = orderedKeys;
+    for (const def of locked) state.visible[def.key] = true;
+    saveListColumnState(listId, state);
+    close();
+    if (onApply) onApply();
+  });
+
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) close();
+  });
+
+  actions.append(resetBtn, cancelBtn, okBtn);
+  card.appendChild(actions);
+  backdrop.appendChild(card);
+  document.body.appendChild(backdrop);
 }

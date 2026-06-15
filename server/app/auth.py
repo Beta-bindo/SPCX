@@ -43,12 +43,17 @@ def _verify_password_hash(password: str, stored: str) -> bool:
 
 
 def verify_admin_password(password: str) -> bool:
+    """兼容旧版单密码登录（无用户名）。"""
     candidate = password.strip()
     stored_hash = os.environ.get("TA_ADMIN_PASSWORD_HASH") or settings.admin_password_hash
     if stored_hash:
         return _verify_password_hash(candidate, stored_hash)
     plain = os.environ.get("TA_ADMIN_PASSWORD") or settings.admin_password
     return hmac.compare_digest(candidate, plain)
+
+
+def verify_admin_user_password(password: str, stored_hash: str) -> bool:
+    return _verify_password_hash(password.strip(), stored_hash)
 
 
 def change_admin_password(old_password: str, new_password: str) -> None:
@@ -62,7 +67,28 @@ def change_admin_password(old_password: str, new_password: str) -> None:
     new_hash = hash_admin_password(new_password)
     update_env_value("TA_ADMIN_PASSWORD_HASH", new_hash)
     remove_env_key("TA_ADMIN_PASSWORD")
-    # 改密后吊销所有旧管理员令牌
+    bump_admin_token_version()
+
+
+def change_admin_user_password(user_id: int, old_password: str, new_password: str) -> None:
+    from app.database import get_admin_user_by_id, get_conn
+
+    user = get_admin_user_by_id(user_id)
+    if not user:
+        raise ValueError("用户不存在")
+    if not verify_admin_user_password(old_password, user["password_hash"]):
+        raise ValueError("当前密码错误")
+    new_password = new_password.strip()
+    if len(new_password) < 12:
+        raise ValueError("新密码至少 12 位")
+    new_hash = hash_admin_password(new_password)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+            (new_hash, user_id),
+        )
+    from app.config import bump_admin_token_version
+
     bump_admin_token_version()
 
 
@@ -87,7 +113,33 @@ def decode_device_token(token: str) -> Optional[dict]:
         return None
 
 
-def create_admin_token() -> str:
+def create_admin_token(
+    *,
+    user_id: int,
+    username: str,
+    display_name: str,
+    role_id: int,
+    role_name: str,
+    modules: list[str],
+) -> str:
+    from app.config import admin_token_version
+
+    expire = datetime.now(timezone.utc) + timedelta(hours=8)
+    payload = {
+        "sub": username,
+        "uid": user_id,
+        "name": display_name,
+        "role_id": role_id,
+        "role_name": role_name,
+        "modules": modules,
+        "exp": expire,
+        "typ": "admin",
+        "ver": admin_token_version(),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+
+
+def create_legacy_admin_token() -> str:
     from app.config import admin_token_version
 
     expire = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -96,18 +148,26 @@ def create_admin_token() -> str:
         "exp": expire,
         "typ": "admin",
         "ver": admin_token_version(),
+        "legacy": True,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def decode_admin_token(token: str) -> bool:
+def decode_admin_token(token: str) -> Optional[dict]:
     from app.config import admin_token_version
 
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
-        if payload.get("typ") != "admin" or payload.get("sub") != "admin":
-            return False
-        # 令牌版本与当前版本不一致（改密/退出后）即视为失效
-        return int(payload.get("ver", 0)) == admin_token_version()
+        if payload.get("typ") != "admin":
+            return None
+        if int(payload.get("ver", 0)) != admin_token_version():
+            return None
+        if payload.get("legacy"):
+            if payload.get("sub") != "admin":
+                return None
+            return payload
+        if not payload.get("sub"):
+            return None
+        return payload
     except (JWTError, ValueError, TypeError):
-        return False
+        return None

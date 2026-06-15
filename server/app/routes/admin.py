@@ -4,12 +4,19 @@ import csv
 import io
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from app.auth import change_admin_password, create_admin_token, decode_admin_token, verify_admin_password
+from app.auth import (
+    change_admin_password,
+    change_admin_user_password,
+    create_admin_token,
+    create_legacy_admin_token,
+    verify_admin_password,
+    verify_admin_user_password,
+)
 from app.config import bump_admin_token_version, settings
 from app.database import (
     _utc_now,
@@ -18,14 +25,23 @@ from app.database import (
     device_is_expired,
     enable_accounts_on_device_approve,
     enrich_device,
+    get_admin_user_by_username,
     get_conn,
     log_audit,
     normalize_expires_at,
     row_to_dict,
 )
+from app.rbac import AdminUser, get_admin_user, parse_modules, require_module
 from app.schemas import AdminLoginRequest, ChangePasswordRequest, DeviceActionRequest, DeviceUpdateRequest
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+
+RequireAuth = Annotated[AdminUser, Depends(get_admin_user)]
+RequireDevices = Annotated[AdminUser, Depends(require_module("devices"))]
+RequireDashboard = Annotated[AdminUser, Depends(require_module("dashboard"))]
+RequireTrades = Annotated[AdminUser, Depends(require_module("trades"))]
+RequirePositions = Annotated[AdminUser, Depends(require_module("positions"))]
+RequireAudit = Annotated[AdminUser, Depends(require_module("audit"))]
 
 LOGIN_WINDOW_SEC = 300
 LOGIN_MAX_FAILURES = 5
@@ -59,54 +75,96 @@ def _clear_login_failures(request: Request) -> None:
     _login_failures.pop(_client_key(request), None)
 
 
-def require_admin(authorization: Optional[str] = Header(default=None)) -> None:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="需要管理员登录")
-    token = authorization.removeprefix("Bearer ").strip()
-    if not decode_admin_token(token):
-        raise HTTPException(status_code=401, detail="管理员会话已过期")
+def _issue_token_for_user(user: dict) -> str:
+    modules = parse_modules(user.get("role_modules"))
+    return create_admin_token(
+        user_id=int(user["id"]),
+        username=user["username"],
+        display_name=user.get("display_name") or user["username"],
+        role_id=int(user["role_id"]),
+        role_name=user.get("role_name") or "",
+        modules=modules,
+    )
 
 
 @router.post("/login")
 def admin_login(body: AdminLoginRequest, request: Request) -> dict:
     _check_login_rate_limit(request)
-    if not verify_admin_password(body.password):
-        _record_login_failure(request)
-        raise HTTPException(status_code=401, detail="密码错误")
-    _clear_login_failures(request)
-    return {"access_token": create_admin_token(), "token_type": "bearer"}
+    username = body.username.strip()
+    user = get_admin_user_by_username(username)
+    if user and user.get("status") == "active":
+        if verify_admin_user_password(body.password, user["password_hash"]):
+            _clear_login_failures(request)
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE admin_users SET last_login_at = ? WHERE id = ?",
+                    (_utc_now(), user["id"]),
+                )
+                log_audit(
+                    conn,
+                    "admin_login",
+                    detail=username,
+                    ip=_client_key(request),
+                    actor=username,
+                )
+            return {
+                "access_token": _issue_token_for_user(user),
+                "token_type": "bearer",
+                "user": {
+                    "username": user["username"],
+                    "display_name": user.get("display_name") or user["username"],
+                    "role_name": user.get("role_name") or "",
+                },
+            }
+    # 兼容尚未迁移用户表时的旧版单密码登录
+    if username == "admin" and verify_admin_password(body.password):
+        _clear_login_failures(request)
+        with get_conn() as conn:
+            log_audit(conn, "admin_login", detail="legacy", ip=_client_key(request), actor="admin")
+        return {"access_token": create_legacy_admin_token(), "token_type": "bearer"}
+    _record_login_failure(request)
+    raise HTTPException(status_code=401, detail="用户名或密码错误")
 
 
 @router.post("/logout")
-def admin_logout(request: Request, _: None = Depends(require_admin)) -> dict:
+def admin_logout(request: Request, admin: RequireAuth) -> dict:
     # 自增令牌版本，使所有已签发的管理员令牌立即失效
     bump_admin_token_version()
     with get_conn() as conn:
-        log_audit(conn, "admin_logout", ip=_client_key(request))
+        log_audit(conn, "admin_logout", ip=_client_key(request), actor=admin.username)
     return {"ok": True}
 
 
 @router.post("/change-password")
-def admin_change_password(
+def admin_change_password_route(
     body: ChangePasswordRequest,
     request: Request,
-    _: None = Depends(require_admin),
+    admin: RequireAuth,
 ) -> dict:
     try:
-        change_admin_password(body.old_password, body.new_password)
+        if admin.user_id:
+            change_admin_user_password(admin.user_id, body.old_password, body.new_password)
+        else:
+            change_admin_password(body.old_password, body.new_password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     with get_conn() as conn:
-        log_audit(conn, "change_password", ip=_client_key(request))
+        log_audit(conn, "change_password", ip=_client_key(request), actor=admin.username)
     return {"ok": True}
 
 
 @router.post("/verify-password")
-def admin_verify_password(
+def admin_verify_password_route(
     body: AdminLoginRequest,
-    _: None = Depends(require_admin),
+    admin: RequireAuth,
 ) -> dict:
-    if not verify_admin_password(body.password):
+    if admin.user_id:
+        from app.database import get_admin_user_by_id
+
+        user = get_admin_user_by_id(admin.user_id)
+        if not user or not verify_admin_user_password(body.password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="当前密码错误")
+    elif not verify_admin_password(body.password):
         raise HTTPException(status_code=400, detail="当前密码错误")
     return {"ok": True}
 
@@ -153,7 +211,8 @@ def list_devices(
     expiring: Optional[int] = None,
     page: int = 1,
     page_size: int = 20,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequireDevices,
 ) -> dict:
     page = max(1, page)
     page_size = min(100, max(1, page_size))
@@ -194,7 +253,8 @@ def list_devices(
 def list_positions(
     page: int = 1,
     page_size: int = 20,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequirePositions,
 ) -> dict:
     page = max(1, page)
     page_size = min(100, max(1, page_size))
@@ -233,7 +293,8 @@ def list_trades(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     pnl: Optional[str] = None,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequireTrades,
 ) -> dict:
     page = max(1, page)
     page_size = min(200, max(1, page_size))
@@ -304,7 +365,8 @@ def export_trades(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     pnl: Optional[str] = None,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequireTrades,
 ) -> Response:
     where, params = _trade_where(
         device_id=device_id,
@@ -385,7 +447,7 @@ def export_trades(
 
 
 @router.delete("/devices/{device_id}")
-def delete_device(device_id: str, request: Request, _: None = Depends(require_admin)) -> dict:
+def delete_device(device_id: str, request: Request, admin: RequireDevices) -> dict:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id FROM devices WHERE device_id = ?", (device_id,)
@@ -408,7 +470,7 @@ def delete_device(device_id: str, request: Request, _: None = Depends(require_ad
 
 
 @router.get("/devices/{device_id}/trades")
-def device_trades(device_id: str, _: None = Depends(require_admin)) -> dict:
+def device_trades(device_id: str, admin: RequireDevices) -> dict:
     with get_conn() as conn:
         dev = conn.execute(
             "SELECT * FROM devices WHERE device_id = ?", (device_id,)
@@ -435,7 +497,7 @@ def update_device(
     device_id: str,
     body: DeviceUpdateRequest,
     request: Request,
-    _: None = Depends(require_admin),
+    admin: RequireDevices,
 ) -> dict:
     return _update_device_fields(device_id, body, request)
 
@@ -445,7 +507,7 @@ def update_device_post(
     device_id: str,
     body: DeviceUpdateRequest,
     request: Request,
-    _: None = Depends(require_admin),
+    admin: RequireDevices,
 ) -> dict:
     return _update_device_fields(device_id, body, request)
 
@@ -496,7 +558,8 @@ def approve_device(
     device_id: str,
     request: Request,
     body: DeviceActionRequest | None = None,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequireDevices,
 ) -> dict:
     payload = body or DeviceActionRequest()
     now = _utc_now()
@@ -579,7 +642,7 @@ def _set_platform_account_status(
 
 @router.post("/devices/{device_id}/accounts/ba/enable")
 def enable_ba_account(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_platform_account_status(
         device_id, platform="ba", status=ACCOUNT_STATUS_ENABLED, request=request
@@ -588,7 +651,7 @@ def enable_ba_account(
 
 @router.post("/devices/{device_id}/accounts/ba/disable")
 def disable_ba_account(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_platform_account_status(
         device_id, platform="ba", status=ACCOUNT_STATUS_DISABLED, request=request
@@ -597,7 +660,7 @@ def disable_ba_account(
 
 @router.post("/devices/{device_id}/accounts/ex/enable")
 def enable_ex_account(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_platform_account_status(
         device_id, platform="ex", status=ACCOUNT_STATUS_ENABLED, request=request
@@ -606,7 +669,7 @@ def enable_ex_account(
 
 @router.post("/devices/{device_id}/accounts/ex/disable")
 def disable_ex_account(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_platform_account_status(
         device_id, platform="ex", status=ACCOUNT_STATUS_DISABLED, request=request
@@ -638,14 +701,14 @@ def _set_auto_trade(device_id: str, *, enabled: bool, request: Request) -> dict:
 
 @router.post("/devices/{device_id}/auto-trade/enable")
 def enable_auto_trade(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_auto_trade(device_id, enabled=True, request=request)
 
 
 @router.post("/devices/{device_id}/auto-trade/disable")
 def disable_auto_trade(
-    device_id: str, request: Request, _: None = Depends(require_admin)
+    device_id: str, request: Request, admin: RequireDevices
 ) -> dict:
     return _set_auto_trade(device_id, enabled=False, request=request)
 
@@ -655,7 +718,7 @@ def reject_device(
     device_id: str,
     body: DeviceActionRequest,
     request: Request,
-    _: None = Depends(require_admin),
+    admin: RequireDevices,
 ) -> dict:
     reason = body.reason or "管理员拒绝"
     with get_conn() as conn:
@@ -682,7 +745,7 @@ def reject_device(
 
 
 @router.post("/devices/{device_id}/disable")
-def disable_device(device_id: str, request: Request, _: None = Depends(require_admin)) -> dict:
+def disable_device(device_id: str, request: Request, admin: RequireDevices) -> dict:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id FROM devices WHERE device_id = ?", (device_id,)
@@ -703,7 +766,7 @@ def disable_device(device_id: str, request: Request, _: None = Depends(require_a
 
 
 @router.get("/stats")
-def admin_stats(_: None = Depends(require_admin)) -> dict:
+def admin_stats(admin: RequireDashboard) -> dict:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     soon = (now + timedelta(days=7)).isoformat()
     now_iso = now.isoformat()
@@ -744,7 +807,8 @@ def list_audit(
     page: int = 1,
     page_size: int = 50,
     action: Optional[str] = None,
-    _: None = Depends(require_admin),
+    *,
+    admin: RequireAudit,
 ) -> dict:
     page = max(1, page)
     page_size = min(200, max(1, page_size))
@@ -771,7 +835,7 @@ def list_audit(
 
 
 @router.get("/dashboard")
-def admin_dashboard(days: int = 30, _: None = Depends(require_admin)) -> dict:
+def admin_dashboard(*, days: int = 30, admin: RequireDashboard) -> dict:
     days = min(180, max(1, days))
     # 序列键必须与 SQL 的「+8 小时」北京日对齐，否则跨 UTC 日界会漏数/错挂日期
     bj_now = datetime.now(timezone.utc) + timedelta(hours=8)
