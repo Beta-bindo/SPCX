@@ -613,6 +613,43 @@ def disable_ex_account(
     )
 
 
+def _set_auto_trade(device_id: str, *, enabled: bool, request: Request) -> dict:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="设备不存在")
+        conn.execute(
+            "UPDATE devices SET auto_trade_enabled = ? WHERE device_id = ?",
+            (1 if enabled else 0, device_id),
+        )
+        log_audit(
+            conn,
+            "enable_auto_trade" if enabled else "disable_auto_trade",
+            target_device_id=device_id,
+            ip=_client_key(request),
+        )
+        updated = conn.execute(
+            "SELECT * FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+    return {"ok": True, "device": enrich_device(updated)}
+
+
+@router.post("/devices/{device_id}/auto-trade/enable")
+def enable_auto_trade(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_auto_trade(device_id, enabled=True, request=request)
+
+
+@router.post("/devices/{device_id}/auto-trade/disable")
+def disable_auto_trade(
+    device_id: str, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    return _set_auto_trade(device_id, enabled=False, request=request)
+
+
 @router.post("/devices/{device_id}/reject")
 def reject_device(
     device_id: str,
@@ -679,7 +716,7 @@ def admin_stats(_: None = Depends(require_admin)) -> dict:
         trade_count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
         total_pnl = conn.execute("SELECT COALESCE(SUM(net_pnl), 0) FROM trades").fetchone()[0]
         online = conn.execute(
-            "SELECT COUNT(*) FROM devices WHERE status='approved' AND last_seen_at >= ?",
+            "SELECT COUNT(*) FROM devices WHERE last_seen_at >= ?",
             ((now - timedelta(seconds=900)).isoformat(),),
         ).fetchone()[0]
         expired = conn.execute(

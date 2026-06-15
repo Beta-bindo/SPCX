@@ -22,6 +22,32 @@ def test_export_filename():
     print("  ✓ 导出文件名格式")
 
 
+def test_calculate_profit_includes_ba_funding_and_rebate():
+    ledger = TradeLedger(
+        records=[
+            TradeRecord(
+                settled_at="2026-06-08T11:02:00",
+                preset_id="xau",
+                mode="contraction",
+                action="close",
+                ba_pnl=100.0,
+                mt5_pnl=-20.0,
+                ba_fee=1.0,
+                mt5_fee=0.5,
+                ba_funding_fee=-2.5,
+                ba_rebate=0.8,
+            )
+        ]
+    )
+    report = calculate_profit(ledger, date(2026, 6, 1), date(2026, 6, 8), "all")
+    assert report.ba_funding_fee == -2.5
+    assert report.ba_rebate == 0.8
+    assert report.ba_charges == -1.7
+    assert report.total_pnl == round(100 - 20 - 1 - 0.5 - 2.5 + 0.8, 2)
+    assert report.rows[0].ba_charges == -1.7
+    print("  ✓ 利润统计含 BA 资金费与返佣")
+
+
 def test_xlsx_export():
     import zipfile
 
@@ -62,5 +88,6 @@ if __name__ == "__main__":
     print("Profit export tests:")
     test_export_filename()
     test_xlsx_writer()
+    test_calculate_profit_includes_ba_funding_and_rebate()
     test_xlsx_export()
     print("ALL PROFIT EXPORT TESTS PASSED")

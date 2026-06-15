@@ -13,11 +13,13 @@ HEARTBEAT_MS = 10 * 60 * 1000  # 10 分钟
 class LicenseService(QObject):
     status_changed = Signal(str, str)
     revoked = Signal(str)
+    auto_trade_changed = Signal(bool)  # 自动下单开通状态变化（运营后台控制）
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.client = LicenseClient()
         self._telemetry_provider: Callable[[], dict[str, str]] | None = None
+        self._connection_mode_provider: Callable[[], str] | None = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer)
         self._retry_timer = QTimer(self)
@@ -27,6 +29,19 @@ class LicenseService(QObject):
         self, provider: Callable[[], dict[str, str]] | None
     ) -> None:
         self._telemetry_provider = provider
+
+    def set_connection_mode_provider(self, provider: Callable[[], str] | None) -> None:
+        self._connection_mode_provider = provider
+
+    def _current_connection_mode(self) -> str:
+        from app.core.models import ConnectionMode
+
+        if self._connection_mode_provider is None:
+            return ConnectionMode.DEMO.value
+        try:
+            return self._connection_mode_provider() or ConnectionMode.DEMO.value
+        except Exception:
+            return ConnectionMode.DEMO.value
 
     @property
     def is_approved(self) -> bool:
@@ -80,11 +95,14 @@ class LicenseService(QObject):
             prev_device = self.client.state.status
             prev_ba = self.client.state.ba_account_status
             prev_ex = self.client.state.ex_account_status
+            prev_auto = self.client.is_auto_trade_enabled
             state = self.client.heartbeat(**self._telemetry_payload())
         except LicenseError as exc:
             self.status_changed.emit(self.client.state.status, str(exc))
             return
         self.status_changed.emit(state.status, state.message)
+        if self.client.is_auto_trade_enabled != prev_auto:
+            self.auto_trade_changed.emit(self.client.is_auto_trade_enabled)
         if state.status == "approved" or self.client.can_upload_trades:
             self.flush_pending()
         if prev_device == "approved" and state.status != "approved":
@@ -99,7 +117,7 @@ class LicenseService(QObject):
 
     def _platform_accounts_blocked(self) -> bool:
         try:
-            self.client.require_platform_accounts_enabled()
+            self.client.require_platform_accounts_enabled(self._current_connection_mode())
         except LicenseError:
             return True
         return False
@@ -128,19 +146,20 @@ class LicenseService(QObject):
             raise LicenseError(str(exc)) from exc
         self.client.require_approved()
 
-    def ensure_approved_for_trade(self) -> None:
+    def ensure_approved_for_trade(self, connection_mode: str | None = None) -> None:
         """交易前强制刷新授权与平台账号状态，避免后台停用后本地缓存仍可下单。"""
         from app.core.build_config import LICENSE_REQUIRED
 
         if not LICENSE_REQUIRED:
             return
+        mode = connection_mode or self._current_connection_mode()
         try:
             self.refresh()
         except LicenseError:
             pass
         if not self.client.is_approved:
             self.ensure_approved()
-        self.client.require_platform_accounts_enabled()
+        self.client.require_platform_accounts_enabled(mode)
 
     def sync_accounts_now(self) -> None:
         """连接参数变更后立即上报账号（不阻塞 UI 时可后台调用）。"""
@@ -151,6 +170,8 @@ class LicenseService(QObject):
 
     def _reporting_fresh_enough(self, *, max_age_minutes: int = 30) -> bool:
         """本地已有令牌且近期心跳成功，启动时跳过联网避免系统代理小窗。"""
+        if self.client.state.status not in ("approved", "pending"):
+            return False
         if not self.client.state.access_token:
             return False
         last = self.client.state.last_check

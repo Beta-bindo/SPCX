@@ -12,6 +12,7 @@ from app.core.ssl_certs import ensure_ca_bundle
 
 ensure_ca_bundle()
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from app.core.branding import APP_NAME, apply_app_branding
@@ -60,8 +61,9 @@ def main() -> int:
         if ensure_license_approved(service=license_service) is None:
             return 0
     else:
-        # 免授权版：启动阶段零联网；首次成交或 10 分钟定时器再上报
+        # 免授权版：启动后延迟静默注册+心跳，日常仍由 10 分钟定时器续期
         license_service.start_heartbeat(flush=False, defer_retry_min=30)
+        QTimer.singleShot(5000, license_service.ensure_reporting_ready)
 
     window = MainWindow(
         license_service=license_service,

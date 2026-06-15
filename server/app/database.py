@@ -41,6 +41,7 @@ def init_db() -> None:
                 mt5_account TEXT NOT NULL DEFAULT '',
                 ba_account_status TEXT NOT NULL DEFAULT 'pending',
                 ex_account_status TEXT NOT NULL DEFAULT 'pending',
+                auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
                 position_summary TEXT NOT NULL DEFAULT '',
                 xau_position TEXT NOT NULL DEFAULT '',
                 xag_position TEXT NOT NULL DEFAULT ''
@@ -214,6 +215,10 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
             "ALTER TABLE devices ADD COLUMN ex_account_status TEXT NOT NULL DEFAULT 'pending'",
         ),
         (
+            "auto_trade_enabled",
+            "ALTER TABLE devices ADD COLUMN auto_trade_enabled INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
             "position_summary",
             "ALTER TABLE devices ADD COLUMN position_summary TEXT NOT NULL DEFAULT ''",
         ),
@@ -244,6 +249,18 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
         """
         UPDATE devices SET ex_account_status = 'enabled'
         WHERE status = 'approved' AND mt5_account != '' AND ex_account_status = 'pending'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE devices SET ba_account_status = 'unknown'
+        WHERE (ba_account = '' OR ba_account IS NULL) AND ba_account_status = 'pending'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE devices SET ex_account_status = 'unknown'
+        WHERE (mt5_account = '' OR mt5_account IS NULL) AND ex_account_status = 'pending'
         """
     )
 
@@ -282,9 +299,11 @@ def enable_accounts_on_device_approve(conn: sqlite3.Connection, device_id: str) 
         UPDATE devices SET
             ba_account_status = CASE
                 WHEN ba_account != '' AND ba_account_status = 'pending' THEN 'enabled'
+                WHEN ba_account = '' OR ba_account IS NULL THEN 'unknown'
                 ELSE ba_account_status END,
             ex_account_status = CASE
                 WHEN mt5_account != '' AND ex_account_status = 'pending' THEN 'enabled'
+                WHEN mt5_account = '' OR mt5_account IS NULL THEN 'unknown'
                 ELSE ex_account_status END
         WHERE device_id = ?
         """,
@@ -347,6 +366,7 @@ def enrich_device(row: sqlite3.Row | dict | None) -> dict | None:
         return None
     device["online"] = device_is_online(device.get("last_seen_at"))
     device["expired"] = device_is_expired(device.get("expires_at"))
+    device["auto_trade_enabled"] = bool(device.get("auto_trade_enabled"))
     return device
 
 

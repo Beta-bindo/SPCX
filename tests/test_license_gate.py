@@ -71,6 +71,33 @@ def test_verify_with_server_requires_approved_status(tmp_path, monkeypatch):
     print("  ✓ 待审核状态不放行")
 
 
+def test_verify_with_server_passes_approved_without_platform_accounts(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.license.store.license_path",
+        lambda: tmp_path / "license.json",
+    )
+    save_license(
+        LicenseState(
+            device_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status="approved",
+            access_token="token",
+            ba_account_status="pending",
+            ex_account_status="pending",
+            server_url="http://127.0.0.1:8787",
+        )
+    )
+    service = LicenseService()
+
+    def _refresh_ok() -> None:
+        service.client.state.status = "approved"
+        service.client.state.access_token = "token"
+
+    with patch.object(LicenseService, "refresh", side_effect=_refresh_ok):
+        assert _verify_with_server(service) is True
+
+    print("  ✓ 设备已通过审核即可进入，未配置 BA/EX 账号时不拦门禁")
+
+
 def test_ensure_license_approved_returns_none_when_user_exits(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication(sys.argv)
     monkeypatch.setattr("app.core.build_config.LICENSE_REQUIRED", True)

@@ -63,6 +63,7 @@ class HeartbeatResponse(BaseModel):
     expires_in_hours: int = 24
     ba_account_status: str = "pending"
     ex_account_status: str = "pending"
+    auto_trade_enabled: bool = False
 
 
 class TradeItem(BaseModel):

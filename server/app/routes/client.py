@@ -253,6 +253,7 @@ def heartbeat(
     }
     ba_status = device.get("ba_account_status") or "pending"
     ex_status = device.get("ex_account_status") or "pending"
+    auto_trade_enabled = bool(device.get("auto_trade_enabled"))
     account_notes: list[str] = []
     if ba_status == ACCOUNT_STATUS_PENDING and device.get("ba_account"):
         account_notes.append("BA 账号待审核")
@@ -272,6 +273,7 @@ def heartbeat(
             message=msg,
             ba_account_status=ba_status,
             ex_account_status=ex_status,
+            auto_trade_enabled=auto_trade_enabled,
             **kwargs,
         )
 

@@ -333,6 +333,8 @@ class SymbolActionStrip(QFrame):
             "auto": self._auto_block,
             "position": self._position_block,
         }
+        # 自动下单是否由运营后台开通：未开通则整个「自动交易」板块隐藏
+        self._auto_trade_available = True
 
         self._rebuild_stack()
 
@@ -411,6 +413,10 @@ class SymbolActionStrip(QFrame):
             widget = self._section_widgets.get(key)
             if widget is None:
                 continue
+            # 自动下单未经运营后台开通时，整块隐藏且不参与堆叠
+            if key == "auto" and not self._auto_trade_available:
+                widget.setVisible(False)
+                continue
             widget.setVisible(visible)
             self._stack_layout.addWidget(widget)
 
@@ -446,6 +452,25 @@ class SymbolActionStrip(QFrame):
         """设置中栏区块的顺序、显隐与各板块 UI 缩放并重建。"""
         self._sections = parse_panel_sections(serialize_panel_sections(sections))
         self._rebuild_stack()
+
+    def set_auto_trade_available(self, available: bool) -> int:
+        """设置自动下单板块是否可用（运营后台开通则显示）。
+
+        关闭时同时取消所有已勾选的自动开/平仓，返回被取消的数量，避免隐藏后仍在后台触发。
+        """
+        available = bool(available)
+        cancelled = 0
+        if not available:
+            cancelled = self.auto_trade_settings.disable_checked_auto_trades()
+        if available == self._auto_trade_available:
+            return cancelled
+        self._auto_trade_available = available
+        self._rebuild_stack()
+        return cancelled
+
+    @property
+    def auto_trade_available(self) -> bool:
+        return self._auto_trade_available
 
     def current_section_layout(self) -> list[tuple[str, bool, int, int]]:
         """返回当前区块布局（含各板块字体与勾选框尺寸）。"""

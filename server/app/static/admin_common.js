@@ -69,6 +69,10 @@ function accountApiPath(deviceId, platform, action) {
   return `/api/v1/admin/devices/${encodeURIComponent(deviceId)}/accounts/${platform}/${action}`;
 }
 
+function autoTradeApiPath(deviceId, action) {
+  return `/api/v1/admin/devices/${encodeURIComponent(deviceId)}/auto-trade/${action}`;
+}
+
 const ACCOUNT_STATUS_LABELS = {
   pending: '待审核',
   enabled: '已启用',
@@ -492,45 +496,111 @@ async function verifyAdminPassword(adminToken, password) {
   return true;
 }
 
-async function openChangePasswordDialog(adminToken) {
-  const oldPwd = prompt('请输入当前密码');
-  if (oldPwd === null || !oldPwd) return;
+function _pwField(labelText, placeholder) {
+  const field = document.createElement('label');
+  field.className = 'modal-field';
+  field.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.className = 'modal-text';
+  input.maxLength = 128;
+  input.placeholder = placeholder;
+  input.autocomplete = 'new-password';
+  field.appendChild(input);
+  return { field, input };
+}
 
-  const verified = await verifyAdminPassword(adminToken, oldPwd);
-  if (!verified) return;
+function openChangePasswordDialog(adminToken) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
 
-  const newPwd = prompt('请输入新密码（至少 12 位）');
-  if (newPwd === null) return;
-  if (newPwd.length < 12) {
-    alert('新密码至少 12 位');
-    return;
-  }
+    const card = document.createElement('div');
+    card.className = 'modal-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
 
-  const confirmPwd = prompt('请再次输入新密码');
-  if (confirmPwd === null) return;
-  if (newPwd !== confirmPwd) {
-    alert('两次输入的新密码不一致');
-    return;
-  }
+    const heading = document.createElement('h2');
+    heading.textContent = '修改管理员密码';
 
-  const res = await fetch('/api/v1/admin/change-password', {
-    method: 'POST',
-    headers: authHeaders(adminToken),
-    body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
+    const hint = document.createElement('p');
+    hint.className = 'sub modal-hint';
+    hint.textContent = '新密码至少 12 位。修改成功后需用新密码重新登录。';
+
+    const oldF = _pwField('当前密码', '请输入当前密码');
+    const newF = _pwField('新密码', '至少 12 位');
+    const confirmF = _pwField('确认新密码', '再次输入新密码');
+
+    const err = document.createElement('p');
+    err.className = 'err modal-hint';
+    err.style.display = 'none';
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'secondary';
+    cancelBtn.textContent = '取消';
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.textContent = '确认修改';
+
+    const close = (value) => {
+      backdrop.remove();
+      document.removeEventListener('keydown', onKeyDown);
+      resolve(value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') close(false);
+      if (event.key === 'Enter') okBtn.click();
+    };
+    const showErr = (msg) => {
+      err.textContent = msg;
+      err.style.display = msg ? 'block' : 'none';
+    };
+
+    cancelBtn.addEventListener('click', () => close(false));
+    okBtn.addEventListener('click', async () => {
+      const oldPwd = oldF.input.value;
+      const newPwd = newF.input.value;
+      const confirmPwd = confirmF.input.value;
+      if (!oldPwd) return showErr('请输入当前密码');
+      if (newPwd.length < 12) return showErr('新密码至少 12 位');
+      if (newPwd !== confirmPwd) return showErr('两次输入的新密码不一致');
+      if (newPwd === oldPwd) return showErr('新密码不能与当前密码相同');
+      okBtn.disabled = true;
+      showErr('');
+      const res = await fetch('/api/v1/admin/change-password', {
+        method: 'POST',
+        headers: authHeaders(adminToken),
+        body: JSON.stringify({ old_password: oldPwd, new_password: newPwd }),
+      });
+      if (res.status === 401) {
+        alert('登录已过期，请重新登录');
+        localStorage.removeItem('ta_admin_token');
+        location.reload();
+        return;
+      }
+      if (!res.ok) {
+        okBtn.disabled = false;
+        showErr(await readError(res) || '修改失败');
+        return;
+      }
+      close(true);
+      alert('密码已更新，请使用新密码重新登录');
+      localStorage.removeItem('ta_admin_token');
+      location.reload();
+    });
+
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) close(false);
+    });
+
+    actions.append(cancelBtn, okBtn);
+    card.append(heading, hint, oldF.field, newF.field, confirmF.field, err, actions);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    document.addEventListener('keydown', onKeyDown);
+    oldF.input.focus();
   });
-
-  if (res.status === 401) {
-    alert('登录已过期，请重新登录');
-    localStorage.removeItem('ta_admin_token');
-    location.reload();
-    return;
-  }
-  if (!res.ok) {
-    alert(await readError(res) || '修改失败');
-    return;
-  }
-
-  alert('密码已更新，请使用新密码重新登录');
-  localStorage.removeItem('ta_admin_token');
-  location.reload();
 }

@@ -16,7 +16,7 @@ from app.core.license import store
 
 
 def main() -> None:
-    base = os.environ.get("TA_LICENSE_SERVER", "http://127.0.0.1:8787").rstrip("/")
+    base = os.environ.get("TA_LICENSE_SERVER", "http://8.148.30.99:8787").rstrip("/")
     assert requests.get(f"{base}/health", timeout=5).json()["ok"]
 
     with tempfile.TemporaryDirectory() as tmp:

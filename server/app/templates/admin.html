@@ -85,7 +85,7 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=4"></script>
+<script src="/static/admin_common.js?v=7"></script>
 <script>
 let adminToken = localStorage.getItem('ta_admin_token') || '';
 let devicePage = 1;
@@ -258,7 +258,10 @@ async function loadDevices(page) {
         </div>
       </td>
       <td><code>${esc(d.device_id.slice(0,12))}…</code></td>
-      <td><span class="badge ${d.status}">${statusLabel(d.status)}</span></td>
+      <td>
+        <div><span class="badge ${d.status}">${statusLabel(d.status)}</span></div>
+        ${d.status === 'approved' ? `<div class="sub" style="margin-top:4px">自动下单：<span class="badge ${d.auto_trade_enabled ? 'approved' : 'disabled'}">${d.auto_trade_enabled ? '已开通' : '未开通'}</span></div>` : ''}
+      </td>
       <td>${esc(fmtBeijing(d.last_seen_at))}</td>
       <td>${actionButtons(d)}</td>`;
     tr.querySelector('[data-action="rename"]')?.addEventListener('click', () => {
@@ -273,6 +276,8 @@ async function loadDevices(page) {
         const a = btn.getAttribute('data-act');
         if (a === 'reject') reject(id);
         else if (a === 'delete') removeDevice(id);
+        else if (a === 'auto-on') setAutoTrade(id, true);
+        else if (a === 'auto-off') setAutoTrade(id, false);
         else act(id, a);
       });
     });
@@ -300,6 +305,11 @@ function actionButtons(d) {
     btns.push('<button class="danger" data-act="reject">拒绝</button>');
   }
   if (d.status === 'approved') {
+    if (d.auto_trade_enabled) {
+      btns.push('<button class="secondary" data-act="auto-off">关闭自动下单</button>');
+    } else {
+      btns.push('<button class="ok" data-act="auto-on">开通自动下单</button>');
+    }
     btns.push('<button class="danger" data-act="disable">停用</button>');
   }
   if (d.status === 'disabled' || d.status === 'rejected') {
@@ -324,6 +334,16 @@ async function act(deviceId, action) {
   });
   if (!res.ok) { alert('操作失败'); return; }
   await refreshAll();
+}
+
+async function setAutoTrade(deviceId, enabled) {
+  const action = enabled ? 'enable' : 'disable';
+  const res = await fetch(autoTradeApiPath(deviceId, action), {
+    method: 'POST', headers: authHeaders(adminToken)
+  });
+  if (res.status === 401) return logout();
+  if (!res.ok) { alert(await readError(res) || '操作失败'); return; }
+  await loadDevices(devicePage);
 }
 
 async function reject(deviceId) {

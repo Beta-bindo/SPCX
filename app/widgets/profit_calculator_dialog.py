@@ -86,12 +86,14 @@ class ProfitCalculatorDialog(QDialog):
         self.ba_pnl_lbl = QLabel("BA利润 —")
         self.mt5_pnl_lbl = QLabel("Exness利润 —")
         self.fee_lbl = QLabel("总手续费 —")
+        self.ba_charges_lbl = QLabel("BA资费 —")
         self.total_lbl = QLabel("总利润 —")
         for lbl in (
             self.count_lbl,
             self.ba_pnl_lbl,
             self.mt5_pnl_lbl,
             self.fee_lbl,
+            self.ba_charges_lbl,
             self.total_lbl,
         ):
             lbl.setObjectName("fieldLabel")
@@ -109,6 +111,7 @@ class ProfitCalculatorDialog(QDialog):
             "BA盈亏",
             "EX盈亏",
             "手续费",
+            "BA资费",
             "净利润",
         ]
         self.table = QTableWidget(0, len(self._headers))
@@ -165,6 +168,10 @@ class ProfitCalculatorDialog(QDialog):
         self.ba_pnl_lbl.setText(f"BA利润 ${report.ba_pnl:+.2f}")
         self.mt5_pnl_lbl.setText(f"Exness利润 ${report.mt5_pnl:+.2f}")
         self.fee_lbl.setText(f"总手续费 ${report.ba_fee + report.mt5_fee:.4f}")
+        self.ba_charges_lbl.setText(
+            f"BA资费 ${report.ba_charges:+.4f}"
+            f"（资金费 {report.ba_funding_fee:+.4f} · 返佣 {report.ba_rebate:+.4f}）"
+        )
         self.total_lbl.setText(f"总利润 ${report.total_pnl:+.2f}")
 
         self._all_rows = report.rows
@@ -197,6 +204,7 @@ class ProfitCalculatorDialog(QDialog):
                 f"${row.ba_pnl:+.2f}",
                 f"${row.ex_pnl:+.2f}",
                 f"${row.fee:.4f}",
+                f"${row.ba_charges:+.4f}",
                 f"${row.profit:+.2f}",
             ]
             for col, text in enumerate(values):

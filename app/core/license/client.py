@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import requests
 
 from app.core.license.device_id import get_device_id
-from app.core.license.store import LicenseState, load_license, save_license
+from app.core.license.store import LicenseState, effective_server_url, load_license, save_license
 from app.core.ssl_certs import ensure_ca_bundle
 
 APP_VERSION = "1.0.0"
@@ -22,14 +23,21 @@ class LicenseClient:
     def __init__(self, server_url: str | None = None) -> None:
         ensure_ca_bundle()
         self.state = load_license()
-        if not self.state.device_id:
-            self.state.device_id = get_device_id()
-        if server_url:
-            self.state.server_url = server_url.rstrip("/")
-        elif not self.state.server_url:
-            from app.core.license.store import DEFAULT_SERVER_URL
-
-            self.state.server_url = DEFAULT_SERVER_URL
+        real_id = get_device_id()
+        stored = (self.state.device_id or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{32}", stored):
+            self.state.device_id = stored
+        else:
+            if self.state.device_id:
+                # 丢弃测试/手工写入的假机器码及失效令牌，避免心跳 404
+                self.state.access_token = ""
+                self.state.status = "unknown"
+                self.state.message = ""
+            self.state.device_id = real_id
+        # 所有版本（正式授权 / 免授权上报）统一指向运营服务器
+        self.state.server_url = (
+            server_url.rstrip("/") if server_url else effective_server_url()
+        )
         self._session = requests.Session()
         # 不走 Windows 系统代理，避免启动/上报时弹出代理认证小窗
         self._session.trust_env = False
@@ -55,6 +63,13 @@ class LicenseClient:
         except ImportError:
             return False
         return not LICENSE_REQUIRED
+
+    @property
+    def is_auto_trade_enabled(self) -> bool:
+        """自动下单是否由运营后台开通。无授权版默认放开，正式版以服务端为准。"""
+        if self.reporting_only:
+            return True
+        return bool(self.state.auto_trade_enabled)
 
     @property
     def is_ba_account_enabled(self) -> bool:
@@ -182,6 +197,7 @@ class LicenseClient:
             access_token=saved_token,
             ba_account_status=data.get("ba_account_status", self.state.ba_account_status),
             ex_account_status=data.get("ex_account_status", self.state.ex_account_status),
+            auto_trade_enabled=bool(data.get("auto_trade_enabled", self.state.auto_trade_enabled)),
         )
 
     def upload_trades(self, trades: list[dict]) -> bool:
@@ -224,23 +240,33 @@ class LicenseClient:
         if not self.is_approved:
             raise LicenseError(self.state.message or "未授权，无法使用此功能")
 
-    def require_platform_accounts_enabled(self) -> None:
-        ba = self.state.ba_account_status
-        ex = self.state.ex_account_status
-        if ba == "pending":
-            raise LicenseError("BA 账号待审核，请联系管理员启用后再交易")
-        if ba == "disabled":
-            raise LicenseError("BA 账号已停用，请联系管理员")
-        if ba not in ("enabled", "unknown"):
-            raise LicenseError("BA 账号未启用，请联系管理员")
-        if ex == "pending":
-            raise LicenseError("EX 账号待审核，请联系管理员启用后再交易")
-        if ex == "disabled":
-            raise LicenseError("EX 账号已停用，请联系管理员")
-        if ex not in ("enabled", "unknown"):
-            raise LicenseError("EX 账号未启用，请联系管理员")
-        if ba == "unknown" or ex == "unknown":
-            raise LicenseError("账号授权状态未知，请刷新授权后再试")
+    def require_platform_accounts_enabled(
+        self, connection_mode: str | None = None
+    ) -> None:
+        """按连接模式校验运营后台已开通的平台账号。
+
+        - 演示模式：不校验
+        - 实盘双端：BA + EX 均需 enabled
+        - 仅 BA / 仅 MT5：只校验对应一端
+        """
+        from app.core.models import ConnectionMode
+
+        mode = connection_mode or ConnectionMode.DEMO.value
+        if mode == ConnectionMode.DEMO.value:
+            return
+        if mode in (ConnectionMode.LIVE_BOTH.value, ConnectionMode.LIVE_BA.value):
+            self._require_account_enabled(self.state.ba_account_status, "BA")
+        if mode in (ConnectionMode.LIVE_BOTH.value, ConnectionMode.LIVE_MT5.value):
+            self._require_account_enabled(self.state.ex_account_status, "EX")
+
+    def _require_account_enabled(self, status: str, label: str) -> None:
+        if status == "enabled":
+            return
+        if status == "disabled":
+            raise LicenseError(f"{label} 账号已停用，请联系管理员")
+        if status == "pending":
+            raise LicenseError(f"{label} 账号待审核，请联系管理员启用后再交易")
+        raise LicenseError(f"{label} 账号未开通，请联系管理员启用后再交易")
 
     def to_dict(self) -> dict:
         return asdict(self.state)

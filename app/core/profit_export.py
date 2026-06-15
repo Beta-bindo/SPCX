@@ -44,6 +44,7 @@ def export_profit_xlsx(
                 "BA盈亏",
                 "EX盈亏",
                 "手续费",
+                "BA资费",
                 "净利润",
             ],
             bold=True,
@@ -51,6 +52,7 @@ def export_profit_xlsx(
     ]
 
     for rec in report.records or []:
+        ba_charges = round(rec.ba_funding_fee + rec.ba_rebate, 4)
         grid.append(
             _border_row(
                 [
@@ -63,6 +65,7 @@ def export_profit_xlsx(
                     rec.ba_pnl,
                     rec.mt5_pnl,
                     rec.total_fees,
+                    ba_charges,
                     rec.net_pnl,
                 ]
             )
@@ -73,12 +76,15 @@ def export_profit_xlsx(
     grid.append(_border_row(["笔数", len(report.records or [])]))
     grid.append(_border_row(["BA利润", report.ba_pnl]))
     grid.append(_border_row(["BA手续费", report.ba_fee]))
+    grid.append(_border_row(["BA资金费", report.ba_funding_fee]))
+    grid.append(_border_row(["BA返佣", report.ba_rebate]))
+    grid.append(_border_row(["BA资费合计", report.ba_charges]))
     grid.append(_border_row(["Exness利润", report.mt5_pnl]))
     grid.append(_border_row(["Exness手续费", report.mt5_fee]))
     grid.append(_border_row(["总手续费", round(report.ba_fee + report.mt5_fee, 4)]))
     grid.append(_border_row(["总利润", report.total_pnl]))
 
     write_styled_xlsx(
-        out, grid, col_widths=[20, 12, 16, 12, 12, 10, 12, 12, 12, 12]
+        out, grid, col_widths=[20, 12, 16, 12, 12, 10, 12, 12, 12, 12, 12]
     )
     return out

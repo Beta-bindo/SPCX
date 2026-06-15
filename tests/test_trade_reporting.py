@@ -22,6 +22,8 @@ from app.core.models import AppConfig
 from app.core.pnl_calculator import estimate_trade_fees
 from app.core.trade_ledger import TradeRecord, record_trade, trade_record_to_payload
 
+TEST_DEVICE_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 
 class TradeReportingTests(unittest.TestCase):
     def test_trade_record_payload_includes_order_fields(self):
@@ -108,47 +110,140 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(payload["ba_rebate"], 0.8)
         self.assertEqual(payload["net_pnl"], 4.3)
 
-    def test_disabled_ba_account_blocks_trade(self):
-        from app.core.license.client import LicenseClient, LicenseError
+    def test_demo_mode_skips_platform_account_check(self):
+        from app.core.license.client import LicenseClient
         from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
 
         with tempfile.TemporaryDirectory() as tmp:
             license_file = Path(tmp) / "license.json"
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-1",
+                        device_id=TEST_DEVICE_ID,
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="pending",
+                        ex_account_status="pending",
+                    )
+                )
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
+                client.require_platform_accounts_enabled(ConnectionMode.DEMO.value)
+
+    def test_live_both_requires_ba_and_ex_enabled(self):
+        from app.core.license.client import LicenseClient, LicenseError
+        from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id=TEST_DEVICE_ID,
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="enabled",
+                        ex_account_status="pending",
+                    )
+                )
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
+                with self.assertRaises(LicenseError) as ctx:
+                    client.require_platform_accounts_enabled(ConnectionMode.LIVE_BOTH.value)
+                self.assertIn("EX", str(ctx.exception))
+
+    def test_live_ba_only_checks_ba_account(self):
+        from app.core.license.client import LicenseClient, LicenseError
+        from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id=TEST_DEVICE_ID,
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="pending",
+                        ex_account_status="pending",
+                    )
+                )
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
+                with self.assertRaises(LicenseError) as ctx:
+                    client.require_platform_accounts_enabled(ConnectionMode.LIVE_BA.value)
+                self.assertIn("BA", str(ctx.exception))
+
+    def test_live_mt5_only_checks_ex_account(self):
+        from app.core.license.client import LicenseClient
+        from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id=TEST_DEVICE_ID,
+                        status="approved",
+                        access_token="token",
+                        ba_account_status="pending",
+                        ex_account_status="enabled",
+                    )
+                )
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
+                client.require_platform_accounts_enabled(ConnectionMode.LIVE_MT5.value)
+
+    def test_disabled_ba_account_blocks_live_ba_trade(self):
+        from app.core.license.client import LicenseClient, LicenseError
+        from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            license_file = Path(tmp) / "license.json"
+            with patch("app.core.license.store.license_path", lambda: license_file):
+                save_license(
+                    LicenseState(
+                        device_id=TEST_DEVICE_ID,
                         status="approved",
                         access_token="token",
                         ba_account_status="disabled",
                         ex_account_status="enabled",
                     )
                 )
-                client = LicenseClient()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
                 with self.assertRaises(LicenseError) as ctx:
-                    client.require_platform_accounts_enabled()
+                    client.require_platform_accounts_enabled(ConnectionMode.LIVE_BA.value)
                 self.assertIn("BA", str(ctx.exception))
 
     def test_ensure_approved_for_trade_blocks_disabled_account_when_license_required(self):
         from app.core.license.service import LicenseService
         from app.core.license.store import LicenseState, save_license
+        from app.core.models import ConnectionMode
 
         with tempfile.TemporaryDirectory() as tmp:
             license_file = Path(tmp) / "license.json"
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-1",
+                        device_id=TEST_DEVICE_ID,
                         status="approved",
                         access_token="token",
                         ba_account_status="disabled",
                         ex_account_status="enabled",
                     )
                 )
-                service = LicenseService()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    service = LicenseService()
                 with patch("app.core.build_config.LICENSE_REQUIRED", True):
-                    with self.assertRaises(LicenseError):
-                        service.ensure_approved_for_trade()
+                    with patch.object(LicenseService, "refresh"):
+                        with self.assertRaises(LicenseError):
+                            service.ensure_approved_for_trade(ConnectionMode.LIVE_BA.value)
 
     def test_ensure_approved_for_trade_skips_check_when_nolicense(self):
         from app.core.license.service import LicenseService
@@ -226,7 +321,7 @@ class TradeReportingTests(unittest.TestCase):
             ):
                 save_license(
                     LicenseState(
-                        device_id="dev-offline",
+                        device_id=TEST_DEVICE_ID,
                         status="approved",
                         access_token="token",
                         server_url="http://127.0.0.1:8787",
@@ -248,7 +343,8 @@ class TradeReportingTests(unittest.TestCase):
                     )
                 )
                 enqueue_trades([trade])
-                client = LicenseClient()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
                 posted: list[dict] = []
 
                 class _Resp:
@@ -271,16 +367,18 @@ class TradeReportingTests(unittest.TestCase):
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-1",
+                        device_id=TEST_DEVICE_ID,
                         status="approved",
                         access_token="token",
                         server_url="http://127.0.0.1:8787",
                     )
                 )
-                service = LicenseService()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    service = LicenseService()
                 with patch("app.core.build_config.LICENSE_REQUIRED", True):
-                    with patch(
-                        "app.core.license.client.requests.post",
+                    with patch.object(
+                        service.client._session,
+                        "post",
                         side_effect=requests.ConnectionError("offline"),
                     ):
                         service.ensure_approved()
@@ -291,16 +389,18 @@ class TradeReportingTests(unittest.TestCase):
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-1",
+                        device_id=TEST_DEVICE_ID,
                         status="pending",
                         access_token="",
                         server_url="http://127.0.0.1:8787",
                     )
                 )
-                service = LicenseService()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    service = LicenseService()
                 with patch("app.core.build_config.LICENSE_REQUIRED", True):
-                    with patch(
-                        "app.core.license.client.requests.post",
+                    with patch.object(
+                        service.client._session,
+                        "post",
                         side_effect=requests.ConnectionError("offline"),
                     ):
                         with self.assertRaises(LicenseError):
@@ -313,13 +413,14 @@ class TradeReportingTests(unittest.TestCase):
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-nolicense",
+                        device_id=TEST_DEVICE_ID,
                         status="pending",
                         access_token="pending-token",
                         server_url="http://127.0.0.1:8787",
                     )
                 )
-                client = LicenseClient()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    client = LicenseClient()
                 with patch("app.core.build_config.LICENSE_REQUIRED", False):
                     self.assertTrue(client.can_upload_trades)
 
@@ -329,13 +430,14 @@ class TradeReportingTests(unittest.TestCase):
             with patch("app.core.license.store.license_path", lambda: license_file):
                 save_license(
                     LicenseState(
-                        device_id="dev-pending",
+                        device_id=TEST_DEVICE_ID,
                         status="pending",
                         access_token="",
                         server_url="http://127.0.0.1:8787",
                     )
                 )
-                service = LicenseService()
+                with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+                    service = LicenseService()
 
                 def _register(name, contact, note):
                     return service.client._save_check(

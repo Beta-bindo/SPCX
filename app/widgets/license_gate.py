@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.core.license.client import LicenseError
 from app.core.license.service import LicenseService
+from app.core.license.store import LICENSE_SERVER_URL, effective_server_url
 
 
 class _LicenseWorker(QThread):
@@ -68,8 +69,9 @@ class LicenseGateDialog(QDialog):
         root.addWidget(self.status_label)
 
         form = QFormLayout()
-        self.server_url = QLineEdit(self.service.client.state.server_url)
-        self.server_url.setPlaceholderText("http://你的服务器:8787")
+        self.server_url = QLineEdit(effective_server_url())
+        self.server_url.setReadOnly(True)
+        self.server_url.setPlaceholderText(LICENSE_SERVER_URL)
         self.display_name = QLineEdit(self.service.client.state.display_name)
         self.contact = QLineEdit(self.service.client.state.contact)
         self.contact.setPlaceholderText("11位大陆手机号")
@@ -148,12 +150,12 @@ class LicenseGateDialog(QDialog):
             self.accept()
 
     def _sync_server_url(self) -> None:
-        url = self.server_url.text().strip()
-        if url:
-            self.service.client.state.server_url = url.rstrip("/")
-            from app.core.license.store import save_license
+        url = effective_server_url()
+        self.server_url.setText(url)
+        self.service.client.state.server_url = url
+        from app.core.license.store import save_license
 
-            save_license(self.service.client.state)
+        save_license(self.service.client.state)
 
     def _start_worker(self, action: str, fn, busy_hint: str) -> None:
         """启动后台授权任务（注册/刷新），期间禁用按钮。"""
@@ -173,6 +175,9 @@ class LicenseGateDialog(QDialog):
         self._set_busy(False)
         if action == "register":
             msg = message or self.service.client.state.message or "申请已提交，等待管理员审核"
+            if self.service.is_approved:
+                self.accept()
+                return
             QMessageBox.information(self, "提交成功", msg)
             self._start_worker("refresh", self._do_refresh, "正在刷新状态…")
         elif action == "refresh":
@@ -276,15 +281,9 @@ def ensure_license_approved(
 
 
 def _verify_with_server(service: LicenseService) -> bool:
-    """授权服务器返回 approved 且 BA/EX 账号均为启用时视为通过。"""
+    """授权服务器返回 approved 且令牌有效时视为通过（平台账号在交易时再校验）。"""
     try:
         service.refresh()
     except LicenseError:
         return False
-    if not service.is_approved:
-        return False
-    try:
-        service.client.require_platform_accounts_enabled()
-    except LicenseError:
-        return False
-    return True
+    return service.is_approved

@@ -636,9 +636,17 @@ class MainWindow(QMainWindow):
         self.engine.trade_recorded.connect(self._on_trade_recorded)
         if self.license_service and LICENSE_REQUIRED:
             self.license_service.revoked.connect(self._on_license_revoked)
+            self.license_service.auto_trade_changed.connect(self._on_auto_trade_availability_changed)
             self.license_service.set_telemetry_provider(self._license_telemetry)
+            self.license_service.set_connection_mode_provider(
+                lambda: self.config.connection_mode
+            )
         elif self.license_service:
             self.license_service.set_telemetry_provider(self._license_telemetry)
+            self.license_service.set_connection_mode_provider(
+                lambda: self.config.connection_mode
+            )
+        self._apply_auto_trade_availability(initial=True)
 
     def _append_log(self, level: LogLevel, message: str) -> None:
         if should_log(self.config.log_level, level):
@@ -665,7 +673,7 @@ class MainWindow(QMainWindow):
             return True
         try:
             if fast:
-                self.license_service.ensure_approved_for_trade()
+                self.license_service.ensure_approved_for_trade(self.config.connection_mode)
             else:
                 self.license_service.ensure_approved()
             return True
@@ -699,6 +707,27 @@ class MainWindow(QMainWindow):
             "授权已失效",
             f"{message}\n\n监控已停止，请重新申请或联系管理员。",
         )
+
+    def _apply_auto_trade_availability(self, *, initial: bool = False) -> None:
+        """按运营后台开通状态显示/隐藏自动下单板块。"""
+        if self.license_service is not None:
+            available = self.license_service.client.is_auto_trade_enabled
+        else:
+            # 无授权服务（测试/本地调试）：不做后台门控，默认放开
+            available = True
+        cancelled = 0
+        for strip in (self.gold_actions, self.silver_actions):
+            cancelled += strip.set_auto_trade_available(available)
+        if cancelled and not initial:
+            self.config = self._merge_config()
+            save_config(self.config)
+
+    def _on_auto_trade_availability_changed(self, available: bool) -> None:
+        self._apply_auto_trade_availability()
+        if available:
+            self._append_log(LogLevel.INFO, "运营后台已开通自动下单功能")
+        else:
+            self._append_log(LogLevel.INFO, "运营后台已关闭自动下单功能，相关勾选已取消")
 
     def _on_trade_recorded(self, record) -> None:
         # 成交上报含同步网络请求（最长 15s），必须放到后台线程，
@@ -972,6 +1001,9 @@ class MainWindow(QMainWindow):
             save_config(self.config)
 
     def _maybe_auto_trade(self, update) -> None:
+        # 自动下单未经运营后台开通时，禁止任何自动开/平仓评估（防止隐藏后仍按旧配置触发）
+        if not self.gold_actions.auto_trade_available:
+            return
         cfg = self._merge_config()
         self.engine.sync_config(cfg)
         now = time.time()

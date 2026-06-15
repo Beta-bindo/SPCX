@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+TEST_DEVICE_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 from app.core.license.pending_trades import (
     clear_pending,
     enqueue_trades,
@@ -65,14 +67,15 @@ def test_upload_works_with_pending_token(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.license.pending_trades._path", lambda: pending_path)
 
     state = LicenseState(
-        device_id="dev-pending",
+        device_id=TEST_DEVICE_ID,
         status="pending",
         access_token="pending-token",
         server_url="http://127.0.0.1:8787",
     )
     save_license(state)
 
-    client = LicenseClient()
+    with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+        client = LicenseClient()
     trade = {
         "settled_at": "2026-06-10T12:00:00",
         "preset_id": "xau",
@@ -105,14 +108,15 @@ def test_upload_failure_enqueues(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.license.pending_trades._path", lambda: pending_path)
 
     state = LicenseState(
-        device_id="dev-1",
+        device_id=TEST_DEVICE_ID,
         status="approved",
         access_token="token",
         server_url="http://127.0.0.1:8787",
     )
     save_license(state)
 
-    client = LicenseClient()
+    with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
+        client = LicenseClient()
     trade = {
         "settled_at": "2026-06-10T12:00:00",
         "preset_id": "xau",
