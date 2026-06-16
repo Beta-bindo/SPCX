@@ -116,6 +116,20 @@ class SpreadEngine(QObject):
         ba_positions = [p for p in self._positions if p.platform == "BA"]
         self.binance.seed_positions_cache(ba_positions)
 
+    def _log_trade_leg_details(self, result) -> None:
+        """部分成交/失败时，把每条腿的成交与回滚情况逐条打进日志，便于定位单边敞口。"""
+        for leg in result.legs:
+            tag = "BA" if leg.platform == "BA" else "Ex"
+            state = "成功" if leg.success else "失败"
+            level = LogLevel.TRADE if leg.success else LogLevel.ERROR
+            msg = (leg.message or "").strip()
+            self._log(level, f"  └ {tag} {state}" + (f"：{msg}" if msg else ""))
+            comp = (leg.compensation_message or "").strip()
+            if comp:
+                comp_state = "成功" if leg.compensated else "失败"
+                comp_level = LogLevel.TRADE if leg.compensated else LogLevel.ERROR
+                self._log(comp_level, f"     ↳ 回滚{comp_state}：{comp}")
+
     def open_hedge(
         self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
     ) -> None:
@@ -255,6 +269,8 @@ class SpreadEngine(QObject):
                 had_position=had_position,
             )
             self._log(LogLevel.TRADE, result.message)
+            if not result.success:
+                self._log_trade_leg_details(result)
             if result.success:
                 self._spread_log(preset_id, "成交后")
                 ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
@@ -340,6 +356,8 @@ class SpreadEngine(QObject):
             ba_pos, mt5_pos = self._settlement_positions(preset_id)
             result = close_hedge(self.binance, self.mt5, preset_id, mode, order_mode)
             self._log(LogLevel.TRADE, result.message)
+            if not result.success:
+                self._log_trade_leg_details(result)
             if result.success:
                 self._spread_log(preset_id, "平仓后")
             if result.success and (ba_pos or mt5_pos):

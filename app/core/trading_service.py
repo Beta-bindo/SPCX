@@ -236,15 +236,17 @@ def open_hedge(
             ba.needs_reconciliation = True
     legs = [ba, mt5_leg]
     success = all(leg.success for leg in legs)
+    # 自动回滚必须真正消除敞口：统一走市价平仓。限价/Maker 回滚单可能挂不上或不成交、
+    # 超时被撤后敞口仍残留（曾导致「部分成功，自动回滚失败」）。
     if not success and _rollback_needed(ba):
         rollback = binance.close_hedge_leg(
-            preset_id, GoldOrderMode.LIMIT.value, mode, close_all=True
+            preset_id, GoldOrderMode.MARKET.value, mode, close_all=True
         )
         ba.compensated = rollback.success
         ba.compensation_message = rollback.message
     if not success and _rollback_needed(mt5_leg):
         rollback = mt5.close_hedge_leg(
-            preset_id, GoldOrderMode.LIMIT.value, mode, close_all=True
+            preset_id, GoldOrderMode.MARKET.value, mode, close_all=True
         )
         mt5_leg.compensated = rollback.success
         mt5_leg.compensation_message = rollback.message
