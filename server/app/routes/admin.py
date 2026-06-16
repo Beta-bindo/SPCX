@@ -358,6 +358,51 @@ def list_trades(
     }
 
 
+@router.delete("/trades")
+def delete_trades(
+    device_id: Optional[str] = None,
+    preset_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    pnl: Optional[str] = None,
+    confirm: bool = False,
+    *,
+    request: Request,
+    admin: RequireTrades,
+) -> dict:
+    """按与列表/导出相同的筛选条件批量删除交易记录。"""
+    where, params = _trade_where(
+        device_id=device_id,
+        preset_id=preset_id,
+        mode=mode,
+        date_from=date_from,
+        date_to=date_to,
+        pnl=pnl,
+    )
+    if not where and not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="未指定筛选条件时删除全部记录需传 confirm=true",
+        )
+    delete_where = where.replace("t.", "") if where else ""
+    with get_conn() as conn:
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM trades{delete_where}", params
+        ).fetchone()[0]
+        if count <= 0:
+            return {"ok": True, "deleted": 0}
+        conn.execute(f"DELETE FROM trades{delete_where}", params)
+        log_audit(
+            conn,
+            "delete_trades",
+            detail=f"删除 {count} 条交易记录",
+            ip=_client_key(request),
+            actor=admin.username,
+        )
+    return {"ok": True, "deleted": count}
+
+
 @router.get("/trades/export")
 def export_trades(
     device_id: Optional[str] = None,

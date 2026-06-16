@@ -79,6 +79,7 @@
           <button class="secondary" onclick="loadTrades(tradePage)">刷新</button>
           <button class="secondary" onclick="resetFilters()">重置</button>
           <button onclick="exportTrades()">导出 CSV</button>
+          <button class="danger" onclick="deleteFilteredTrades()">删除筛选结果</button>
         </div>
       </div>
 
@@ -116,6 +117,7 @@
 const ACTIVE_MODULE = 'trades';
 let adminToken = '';
 let tradePage = 1;
+let tradeSummaryCount = 0;
 
 function logout() { logoutAdmin(); }
 
@@ -165,6 +167,7 @@ async function loadTrades(page) {
   const data = await res.json();
   tradePage = data.page || tradePage;
   const summary = data.summary || {};
+  tradeSummaryCount = Number(summary.count ?? data.total ?? 0);
   const net = Number(summary.net_pnl || 0);
   document.getElementById('tradeSummary').innerHTML = `
     <div class="summary-item"><span class="sub">筛选笔数</span><b>${summary.count || data.total || 0}</b></div>
@@ -231,6 +234,32 @@ function buildTradeQuery() {
   if (dateTo) params.set('date_to', dateTo);
   if (pnl) params.set('pnl', pnl);
   return params.toString();
+}
+
+async function deleteFilteredTrades() {
+  if (!adminToken) return;
+  const count = tradeSummaryCount;
+  if (count <= 0) {
+    alert('当前筛选条件下没有可删除的记录');
+    return;
+  }
+  const query = buildTradeQuery();
+  const hasFilter = Boolean(query);
+  const msg = hasFilter
+    ? `确定删除当前筛选条件下的 ${count} 条交易记录？此操作不可恢复。`
+    : `未设置筛选条件，将删除全部 ${count} 条交易记录。此操作不可恢复，确定继续？`;
+  if (!confirm(msg)) return;
+  const params = new URLSearchParams(query);
+  if (!hasFilter) params.set('confirm', 'true');
+  const res = await fetch(`/api/v1/admin/trades?${params.toString()}`, {
+    method: 'DELETE',
+    headers: authHeaders(adminToken),
+  });
+  if (res.status === 401) return logout();
+  if (!res.ok) { alert(await readError(res) || '删除失败'); return; }
+  const data = await res.json();
+  alert(`已删除 ${data.deleted ?? 0} 条记录`);
+  await loadTrades(1);
 }
 
 function exportTrades() {
