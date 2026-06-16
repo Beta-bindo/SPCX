@@ -7,6 +7,62 @@ echo %*
 >>"%LOG%" echo %*
 exit /b 0
 
+:check_stale_build_lock
+powershell -NoProfile -Command "if ((Get-Date) - (Get-Item '%LOCK_DIR%').CreationTime -gt [TimeSpan]::FromHours(3)) { Remove-Item '%LOCK_DIR%' -Recurse -Force }" >nul 2>&1
+exit /b 0
+
+:acquire_build_lock
+set "LOCK_DIR=%~dp0.build.lock.d"
+if exist "%LOCK_DIR%" call :check_stale_build_lock
+if exist "%LOCK_DIR%" (
+    echo [ERROR] Another build is in progress.
+    echo [ERROR] Lock: %LOCK_DIR%
+    echo [ERROR] If no build is running, delete that folder and retry.
+    exit /b 1
+)
+mkdir "%LOCK_DIR%" 2>nul
+if errorlevel 1 (
+    echo [ERROR] Another build is in progress.
+    echo [ERROR] Lock: %LOCK_DIR%
+    exit /b 1
+)
+(
+    echo mode=%BUILD_MODE%
+    echo started=%DATE% %TIME%
+    echo log=%LOG%
+)> "%LOCK_DIR%\info.txt"
+exit /b 0
+
+:release_build_lock
+if exist "%LOCK_DIR%" rmdir /s /q "%LOCK_DIR%" 2>nul
+exit /b 0
+
+:write_build_ok
+if not exist "dist" mkdir "dist"
+if /i "%BUILD_MODE%"=="nolicense" (
+    set "OK_EXE=dist\TradeAssistant-nolicense.exe"
+) else if /i "%BUILD_MODE%"=="license" (
+    set "OK_EXE=dist\TradeAssistant-license.exe"
+) else (
+    set "OK_EXE=dist\TradeAssistant.exe"
+)
+(
+    echo BUILD_OK=1
+    echo MODE=%BUILD_MODE%
+    echo STAMP=%BUILD_STAMP%
+    echo ELAPSED=!BUILD_ELAPSED!
+    echo EXE=!OK_EXE!
+    echo LOG=%LOG%
+    echo FINISHED=%DATE% %TIME%
+)> "dist\.build_ok"
+exit /b 0
+
+:show_elapsed
+if not defined BUILD_START_TS exit /b 0
+for /f "usebackq delims=" %%e in (`powershell -NoProfile -Command "$d=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-!BUILD_START_TS!; $t=[TimeSpan]::FromSeconds($d); if($t.TotalHours -ge 1){'{0}h {1}m {2}s' -f [int]$t.TotalHours,$t.Minutes,$t.Seconds}elseif($t.TotalMinutes -ge 1){'{0}m {1}s' -f [int]$t.TotalMinutes,$t.Seconds}else{'{0:F1}s' -f $t.TotalSeconds}"`) do set "BUILD_ELAPSED=%%e"
+call :log Total elapsed: !BUILD_ELAPSED!
+exit /b 0
+
 :runstep
 set "TITLE=%_RUN_TITLE%"
 set "STEP_TMP=%TEMP%\ta_build_%RANDOM%.txt"
@@ -53,7 +109,7 @@ if not exist "%OUT_DIR%\TradeAssistant.exe" exit /b 1
 if not exist "dist" mkdir "dist"
 if not exist "dist\releases" mkdir "dist\releases"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "BUILD_STAMP=%%i"
+if not defined BUILD_STAMP for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "BUILD_STAMP=%%i"
 if /i "%BUILD_MODE%"=="nolicense" (
   set "ARCHIVE_NAME=TradeAssistant-nolicense-!BUILD_STAMP!.exe"
   set "LATEST_ALIAS=TradeAssistant-nolicense.exe"
@@ -93,7 +149,7 @@ call :log [HINT] 4. Run build.bat again
 goto :fail
 
 :main
-rem build.bat v8 - licensed commercial build
+rem build.bat v9 - licensed commercial build (lock + per-build log)
 cd /d "%~dp0"
 
 set "BUILD_MODE=release"
@@ -120,14 +176,20 @@ if /i "%BUILD_MODE%"=="nolicense" (
   )> app\core\build_config.py
 )
 
-set "LOG=build_log.txt"
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "BUILD_STAMP=%%i"
+set "LOG=build_log_%BUILD_STAMP%.txt"
 set "OUT_DIR=%TEMP%\TradeAssistant_build_out"
+for /f %%s in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()"') do set "BUILD_START_TS=%%s"
+
+call :acquire_build_lock
+if errorlevel 1 exit /b 1
 
 echo [%date% %time%] build start > "%LOG%"
-echo build.bat v8 mode=%BUILD_MODE% >> "%LOG%"
+echo build.bat v9 mode=%BUILD_MODE% >> "%LOG%"
+echo log=%LOG% >> "%LOG%"
 
 echo ========================================
-echo   Trade Assistant - Windows Build v8
+echo   Trade Assistant - Windows Build v9
 echo ========================================
 if /i "%BUILD_MODE%"=="nolicense" (
   echo   Mode: nolicense - no auth gate, all connection modes
@@ -254,25 +316,35 @@ call :runstep
 if errorlevel 1 goto :fail
 
 call :copy_to_dist
+if errorlevel 1 goto :fail
 
 echo.
 >>"%LOG%" echo.
 call :log ========================================
+call :show_elapsed
 call :log BUILD OK
 call :log Output: %OUT_DIR%\TradeAssistant.exe
 call :log History kept under: dist\releases\
 if exist "dist\TradeAssistant.exe" call :log Latest: dist\TradeAssistant.exe
 if exist "dist\TradeAssistant-license.exe" call :log Latest: dist\TradeAssistant-license.exe
 if exist "dist\TradeAssistant-nolicense.exe" call :log Latest: dist\TradeAssistant-nolicense.exe
+call :log Log file: %LOG%
 call :log ========================================
+copy /Y "%LOG%" build_log.txt >nul
+call :write_build_ok
+call :release_build_lock
 goto :done
 
 :fail
 echo.
 >>"%LOG%" echo.
+call :show_elapsed
 call :log ========== BUILD FAILED ==========
 call :log Full log: %LOG%
 call :log ==================================
+if exist "dist\.build_ok" del /f /q "dist\.build_ok" 2>nul
+copy /Y "%LOG%" build_log.txt >nul 2>nul
+call :release_build_lock
 if /I not "%NONINTERACTIVE%"=="1" pause
 exit /b 1
 
