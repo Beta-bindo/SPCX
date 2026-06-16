@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from app.core.exchange_utils import get_mt5_filling_mode
+from app.core.exchange_utils import get_mt5_filling_mode, translate_exchange_error
 from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrderMode, OpenOrder, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.mt5_terminal import find_mt5_terminal, mt5_terminal_hint
@@ -675,7 +675,7 @@ class MT5Connector(QObject):
                     success=False,
                     message=(
                         f"Exness {hedge_action_label('open', mode, adding=adding)}失败 "
-                        f"retcode={result.retcode} {result.comment}"
+                        f"retcode={result.retcode} {translate_exchange_error(result.comment)}"
                     ),
                 )
             oid = str(result.order)
@@ -721,7 +721,7 @@ class MT5Connector(QObject):
         try:
             return self._call_on_mt5_thread(_open)
         except Exception as exc:
-            msg = f"Exness {hedge_action_label('open', mode, adding=adding)}失败: {exc}"
+            msg = f"Exness {hedge_action_label('open', mode, adding=adding)}失败: {translate_exchange_error(exc)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="MT5", success=False, message=msg)
 
@@ -740,8 +740,7 @@ class MT5Connector(QObject):
         _, symbol_mt5, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
-        use_limit, maker_only = resolve_execution_flags(preset_id, order_mode)
-
+        # 注：MT5 平仓统一走市价（对冲账户无法真正 Maker 平仓），不再按 order_mode 分流。
         trade_lots = self.config.mt5_lot_for(preset_id)
         action_label = hedge_action_label("close", mode)
 
@@ -792,41 +791,37 @@ class MT5Connector(QObject):
                 lots_to_close = float(pos.volume) if close_all else min(float(pos.volume), budget)
                 if lots_to_close <= 0:
                     continue
-                if use_limit:
-                    close_type = mt5.ORDER_TYPE_SELL_LIMIT if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY_LIMIT
-                    close_price = tick.ask if close_type == mt5.ORDER_TYPE_SELL_LIMIT else tick.bid
-                    request = {
-                        "action": mt5.TRADE_ACTION_PENDING,
-                        "symbol": symbol_mt5,
-                        "position": pos.ticket,
-                        "volume": lots_to_close,
-                        "type": close_type,
-                        "price": close_price,
-                        "magic": 260604,
-                        "comment": "xau_close_limit",
-                        "type_time": mt5.ORDER_TIME_GTC,
-                        "type_filling": get_mt5_filling_mode(info),
-                    }
-                else:
-                    close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                    close_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
-                    request = {
-                        "action": mt5.TRADE_ACTION_DEAL,
-                        "symbol": symbol_mt5,
-                        "position": pos.ticket,
-                        "volume": lots_to_close,
-                        "type": close_type,
-                        "price": close_price,
-                        "deviation": 30,
-                        "magic": 260604,
-                        "comment": "xag_close",
-                        "type_time": mt5.ORDER_TIME_GTC,
-                        "type_filling": get_mt5_filling_mode(info),
-                    }
+                # 平仓统一走市价成交（TRADE_ACTION_DEAL + position 票据）。
+                # MT5 的挂单(TRADE_ACTION_PENDING)不能携带 position 来平指定持仓，且
+                # Exness 为对冲账户——反向限价单成交只会新开反向票据，无法减少原票据，
+                # 故无法真正 Maker 平仓；market 平是唯一可靠原语，避免留单边敞口。
+                close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                close_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol_mt5,
+                    "position": pos.ticket,
+                    "volume": lots_to_close,
+                    "type": close_type,
+                    "price": close_price,
+                    "deviation": 30,
+                    "magic": 260604,
+                    "comment": "hedge_close",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": get_mt5_filling_mode(info),
+                }
                 result = self._order_send_auto_filling(request, info)
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                    comment = result.comment if result else mt5.last_error()
-                    return LegResult(platform="MT5", success=False, message=f"Exness {action_label}失败: {comment}")
+                    detail = (
+                        f"retcode={result.retcode} {translate_exchange_error(result.comment)}"
+                        if result
+                        else str(mt5.last_error())
+                    )
+                    return LegResult(
+                        platform="MT5",
+                        success=False,
+                        message=f"Exness {action_label}失败: {detail}",
+                    )
                 last_oid = str(result.order)
                 closed_total += lots_to_close
                 budget -= lots_to_close
@@ -863,7 +858,7 @@ class MT5Connector(QObject):
         try:
             return self._call_on_mt5_thread(_close)
         except Exception as exc:
-            msg = f"Exness {action_label}失败: {exc}"
+            msg = f"Exness {action_label}失败: {translate_exchange_error(exc)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="MT5", success=False, message=msg)
 

@@ -1371,17 +1371,19 @@ class MainWindow(QMainWindow):
             self.engine.refresh_positions()
             self.status_bar.showMessage(result.message, 5000)
             if is_auto:
-                # 自动下单成功后已自动取消勾选，语音提醒用户需人工重新授权
-                self._announce_auto_cancel()
+                # 自动开仓/平仓成功后均已自动取消勾选，语音提醒用户需人工重新授权
+                # （平仓同样是下单，须播报）
+                auto_action = pending[0] if pending else "open"
+                self._announce_auto_cancel(auto_action)
 
-    def _announce_auto_cancel(self) -> None:
-        """语音播报「下单成功，自动下单已取消」。
+    def _announce_auto_cancel(self, action: str = "open") -> None:
+        """语音播报「(开仓/平仓)成功，自动下单已取消」。
 
         优先级：爆仓告警 > 语音播报 > 点差预警。
         - 正在响爆仓告警时让位，不播报；
         - 正在响点差预警时语音优先，播报期间静音点差，播完恢复。
         """
-        text = "下单成功，自动下单已取消"
+        text = "平仓成功，自动下单已取消" if action == "close" else "开仓成功，自动下单已取消"
         alerts = getattr(self.engine, "alerts", None)
         if alerts is not None and alerts.is_liq_ringing():
             return

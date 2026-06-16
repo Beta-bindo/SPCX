@@ -35,6 +35,7 @@ from app.core.exchange_utils import (
     get_binance_lot_step,
     get_binance_price_tick,
     get_binance_symbol_meta,
+    translate_exchange_error,
 )
 from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrderMode, OpenOrder, OrderBook, OrderBookLevel, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
@@ -163,7 +164,8 @@ class BinanceConnector(QObject):
         self._margin_type_applied: dict[str, str] = {}      # 已设置过保证金模式的交易对
         self._positions_cache: list[Position] = []          # 持仓缓存（含 TTL）
         self._positions_cache_at: float = 0.0
-        self._symbol_leverage: dict[str, int] = {}          # 各交易对实际杠杆
+        self._symbol_leverage: dict[str, int] = {}          # 各交易对实际杠杆（来自账户接口）
+        self._symbol_leverage_at: float = 0.0               # 杠杆缓存时间（带 TTL，少拉账户接口）
         self._positions_fetch_lock = threading.Lock()       # 持仓拉取单飞锁
         self._positions_inflight: threading.Event | None = None
         self._quote_poll_count = 0
@@ -192,6 +194,7 @@ class BinanceConnector(QObject):
         # 用于委托指示灯与带数量明细（替代 REST 轮询）
         self._stream_active_orders: dict[str, dict[str, OpenOrder]] = {}
         self._open_orders_emit_lock = threading.RLock()
+        self._manual_cancel_event = threading.Event()       # 手动撤单：中断进行中的 Maker 等待
         # 指示灯是否已用 REST 现存挂单打底（断线重连后需重新打底，置 False）
         self._user_stream_seeded = False
         # ACCOUNT_UPDATE 到达后置脏，poll 循环据此尽快强刷一次持仓
@@ -360,25 +363,45 @@ class BinanceConnector(QObject):
             self._log(LogLevel.DEBUG, f"BA 撤单 #{order_id}: {exc}")
 
     def cancel_all_open_orders(self) -> int:
-        """撤销所有受监控交易对的未成交委托，返回成功撤销的委托笔数。"""
+        """撤销所有受监控交易对的未成交委托，返回成功撤销的委托笔数。
+
+        先置「撤单中断」事件，让正在进行的 Maker 等待（持有 API 锁）尽快中止并撤掉自身挂单，
+        从而释放锁让本次撤单真正执行——否则会被 Maker 等待全程持锁饿死、点了没反应。
+        直接对所有受监控品种发 cancel-all，不依赖本地缓存的委托集合（避免下单期间缓存陈旧漏撤）。
+        """
         if not self.config.use_live_ba or not self._client:
             return 0
-        orders = self.get_open_orders()
-        pending = [o for o in orders if o.remaining_quantity > 0]
-        symbols = sorted({o.symbol for o in pending})
-        cancelled = 0
-        for symbol in symbols:
-            def _cancel(s=symbol) -> None:
-                self._client.futures_cancel_all_open_orders(symbol=s)
-
+        self._manual_cancel_event.set()
+        try:
+            # 尽力取一次现存挂单仅用于计数/日志（取不到也照常撤）
             try:
-                self._run_ba_api(_cancel, log_failures=False)
-                count = sum(1 for o in pending if o.symbol == symbol)
-                cancelled += count
-                self._log(LogLevel.TRADE, f"BA 已撤销 {symbol} 全部委托（{count} 笔）")
-            except Exception as exc:
-                self._log(LogLevel.ERROR, f"BA 撤单失败 {symbol}: {exc}")
-        return cancelled
+                pending = [o for o in self.get_open_orders() if o.remaining_quantity > 0]
+            except Exception:
+                pending = []
+            cancelled = 0
+            for symbol in watched_ba_symbols():
+                def _cancel(s=symbol) -> None:
+                    self._client.futures_cancel_all_open_orders(symbol=s)
+
+                try:
+                    self._run_ba_api(_cancel, log_failures=False, priority=True)
+                    count = sum(1 for o in pending if o.symbol == symbol)
+                    if count:
+                        cancelled += count
+                        self._log(LogLevel.TRADE, f"BA 已撤销 {symbol} 全部委托（{count} 笔）")
+                except Exception as exc:
+                    self._log(
+                        LogLevel.ERROR,
+                        f"BA 撤单失败 {symbol}: {translate_exchange_error(exc)}",
+                    )
+            # 撤单后清空本地存活委托跟踪并推送空，立即熄灭委托灯/清空明细
+            with self._open_orders_emit_lock:
+                self._stream_active_orders.clear()
+                self._open_orders_cache = []
+            self._emit_open_orders(frozenset(), [])
+            return cancelled
+        finally:
+            self._manual_cancel_event.clear()
 
     def _wait_for_limit_order(
         self,
@@ -409,6 +432,8 @@ class BinanceConnector(QObject):
         deadline = time.monotonic() + timeout
         oid = int(order_id)
         while time.monotonic() < deadline:
+            if self._manual_cancel_event.is_set():
+                return False  # 手动撤单中断：交由调用方撤掉本挂单
             def _check() -> bool:
                 order = self._client.futures_get_order(symbol=symbol, orderId=oid)
                 status = str(order.get("status", "")).upper()
@@ -500,6 +525,27 @@ class BinanceConnector(QObject):
             out.extend(bag.values())
         return out
 
+    def _note_local_pending_order(self, order: OpenOrder) -> None:
+        """下出限价/Maker 委托后立即点亮委托灯：把刚下的挂单并入存活委托与 REST 缓存并推送。
+
+        这样委托灯/数量能在下单成功的瞬间反映，不必等 User Data Stream 推送，也不会被
+        下单(priority)期间 get_open_orders 返回的旧缓存把灯重新灭掉。后续成交/撤单由
+        ORDER_TRADE_UPDATE 或 REST 轮询自然回收。
+        """
+        if not order.symbol or not order.order_id:
+            return
+        with self._open_orders_emit_lock:
+            bag = self._stream_active_orders.setdefault(order.symbol, {})
+            bag[order.order_id] = order
+            self._open_orders_cache = [
+                o for o in self._open_orders_cache if str(o.order_id) != order.order_id
+            ] + [order]
+            active = frozenset(
+                sym for sym, ids in self._stream_active_orders.items() if ids
+            )
+            detail = self._collect_stream_orders_locked()
+        self._emit_open_orders(active, detail)
+
     def _poll_open_orders(self, watched: set[str]) -> None:
         """刷新委托指示灯：复用 get_open_orders 结果（REST 兜底，带数量）。"""
         if not self._client:
@@ -544,6 +590,8 @@ class BinanceConnector(QObject):
         last_executed = 0.0
         status = ""
         while time.monotonic() < deadline:
+            if self._manual_cancel_event.is_set():
+                return False, last_executed  # 手动撤单中断
             try:
                 order = self._fetch_order_status(symbol, order_id)
             except Exception:
@@ -584,6 +632,8 @@ class BinanceConnector(QObject):
             self._waiting_orders.add(order_id)
         try:
             while True:
+                if self._manual_cancel_event.is_set():
+                    return False, last_executed  # 手动撤单中断：交由调用方撤掉本挂单
                 now = time.monotonic()
                 remaining = deadline - now
                 if remaining <= 0:
@@ -657,19 +707,31 @@ class BinanceConnector(QObject):
         self._positions_cache_at = 0.0
 
     def _parse_live_positions(
-        self, raw_rows: list[dict], *, cross_account_buffer: float | None = None
+        self,
+        raw_rows: list[dict],
+        *,
+        cross_account_buffer: float | None = None,
+        leverage_map: dict[str, int] | None = None,
     ) -> list[Position]:
-        """把交易所原始持仓行解析为 Position，并按逐仓/全仓计算爆仓缓冲、记录杠杆。"""
+        """把交易所原始持仓行解析为 Position，并按逐仓/全仓计算爆仓缓冲、记录杠杆。
+
+        注意：V3 positionRisk 接口已不再返回 leverage 字段，需通过 leverage_map
+        （来自 futures_account 的 positions）补齐每个交易对的真实杠杆，否则会回退到设置值。
+        """
         watched = set(watched_ba_symbols())
         positions: list[Position] = []
-        leverage_map: dict[str, int] = {}
+        resolved_leverage: dict[str, int] = {}
         for row in raw_rows:
             symbol = str(row.get("symbol", ""))
             if symbol not in watched:
                 continue
             lev = int(float(row.get("leverage", 0) or 0))
+            if lev <= 0 and leverage_map:
+                lev = int(leverage_map.get(symbol, 0) or 0)
+            if lev <= 0:
+                lev = int(self._symbol_leverage.get(symbol, 0) or 0)
             if lev > 0:
-                leverage_map[symbol] = lev
+                resolved_leverage[symbol] = lev
             amount = float(row.get("positionAmt", 0))
             if amount == 0:
                 continue
@@ -702,7 +764,8 @@ class BinanceConnector(QObject):
                     exchange_liq_buffer=exchange_buffer,
                 )
             )
-        self._symbol_leverage.update(leverage_map)
+        if resolved_leverage:
+            self._symbol_leverage.update(resolved_leverage)
         return positions
 
     def _fetch_live_positions(self) -> list[Position]:
@@ -714,27 +777,53 @@ class BinanceConnector(QObject):
             if watched:
                 rows = [row for row in rows if str(row.get("symbol", "")) in watched]
             cross_buffer: float | None = None
+            leverage_map: dict[str, int] | None = None
             margin_types = {
                 str(row.get("marginType", "") or "").lower()
                 for row in rows
                 if float(row.get("positionAmt", 0) or 0) != 0
             }
-            if margin_types == {"cross"} or (
+            need_cross = margin_types == {"cross"} or (
                 margin_types and "isolated" not in margin_types
-            ):
+            )
+            # V3 positionRisk 不再返回 leverage：杠杆缓存过期(或全仓需账户算缓冲)时拉一次账户，
+            # 顺带把每个交易对的真实杠杆补齐，避免每个轮询都打账户接口。
+            lev_stale = (time.time() - self._symbol_leverage_at) > 30.0
+            if need_cross or lev_stale:
                 try:
                     from app.core.liquidation import ba_cross_account_liq_buffer
 
                     account = self._client.futures_account()
-                    cross_buffer = ba_cross_account_liq_buffer(
-                        float(account.get("totalMarginBalance", 0) or 0),
-                        float(account.get("totalMaintMargin", 0) or 0),
-                    )
+                    leverage_map = self._extract_account_leverage(account)
+                    if need_cross:
+                        cross_buffer = ba_cross_account_liq_buffer(
+                            float(account.get("totalMarginBalance", 0) or 0),
+                            float(account.get("totalMaintMargin", 0) or 0),
+                        )
                 except Exception:
+                    leverage_map = None
                     cross_buffer = None
-            return self._parse_live_positions(rows, cross_account_buffer=cross_buffer)
+            return self._parse_live_positions(
+                rows, cross_account_buffer=cross_buffer, leverage_map=leverage_map
+            )
 
         return self._run_ba_api(_fetch, log_failures=False)
+
+    def _extract_account_leverage(self, account: dict) -> dict[str, int]:
+        """从 futures_account 的 positions 提取各交易对真实杠杆并刷新缓存。"""
+        watched = set(watched_ba_symbols())
+        result: dict[str, int] = {}
+        for p in account.get("positions", []) or []:
+            sym = str(p.get("symbol", ""))
+            if watched and sym not in watched:
+                continue
+            lev = int(float(p.get("leverage", 0) or 0))
+            if lev > 0:
+                result[sym] = lev
+        if result:
+            self._symbol_leverage.update(result)
+            self._symbol_leverage_at = time.time()
+        return result
 
     def fetch_account_snapshot(self) -> AccountSnapshot | None:
         """拉取合约账户资金快照（余额/已用保证金/可用保证金）。
@@ -746,6 +835,11 @@ class BinanceConnector(QObject):
 
         def _fetch() -> AccountSnapshot:
             account = self._client.futures_account()
+            # 顺带刷新各交易对真实杠杆缓存（V3 持仓接口不再带 leverage）
+            try:
+                self._extract_account_leverage(account)
+            except Exception:
+                pass
             balance = float(account.get("totalWalletBalance", 0) or 0)
             used = float(account.get("totalInitialMargin", 0) or 0)
             free = float(account.get("availableBalance", 0) or 0)
@@ -1160,6 +1254,21 @@ class BinanceConnector(QObject):
             oid = str(order.get("orderId", ""))
             filled_qty = 0.0
             if use_limit:
+                # 委托刚挂上即点亮委托灯（带数量），不等推送/轮询
+                self._note_local_pending_order(
+                    OpenOrder(
+                        platform="BA",
+                        symbol=symbol_ba,
+                        order_id=oid,
+                        side=ba_side,
+                        order_type="LIMIT",
+                        total_quantity=float(quantity),
+                        filled_quantity=0.0,
+                        remaining_quantity=float(quantity),
+                        price=float(price or 0),
+                        reduce_only=False,
+                    )
+                )
                 confirmed, filled_qty = self._wait_for_limit_order_fills(
                     symbol_ba,
                     oid,
@@ -1266,11 +1375,11 @@ class BinanceConnector(QObject):
                 self._invalidate_positions_cache()
             return result
         except BinanceAPIException as exc:
-            msg = f"BA {hedge_action_label('open', mode, adding=adding)}失败: {exc.message}"
+            msg = f"BA {hedge_action_label('open', mode, adding=adding)}失败: {translate_exchange_error(exc.message)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="BA", success=False, message=msg)
         except Exception as exc:
-            msg = f"BA {hedge_action_label('open', mode, adding=adding)}失败: {exc}"
+            msg = f"BA {hedge_action_label('open', mode, adding=adding)}失败: {translate_exchange_error(exc)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="BA", success=False, message=msg)
 
@@ -1361,6 +1470,21 @@ class BinanceConnector(QObject):
                     )
                 oid = str(order.get("orderId", ""))
                 if use_limit:
+                    # 平仓委托刚挂上即点亮委托灯（带数量），不等推送/轮询
+                    self._note_local_pending_order(
+                        OpenOrder(
+                            platform="BA",
+                            symbol=symbol_ba,
+                            order_id=oid,
+                            side=Side.BUY if close_side == "BUY" else Side.SELL,
+                            order_type="LIMIT",
+                            total_quantity=float(quantity),
+                            filled_quantity=0.0,
+                            remaining_quantity=float(quantity),
+                            price=float(price or 0),
+                            reduce_only=True,
+                        )
+                    )
                     confirmed = self._wait_for_limit_order(
                         symbol_ba,
                         oid,
@@ -1422,11 +1546,11 @@ class BinanceConnector(QObject):
                 self._invalidate_positions_cache()
             return result
         except BinanceAPIException as exc:
-            msg = f"BA {action_label}失败: {exc.message}"
+            msg = f"BA {action_label}失败: {translate_exchange_error(exc.message)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="BA", success=False, message=msg)
         except Exception as exc:
-            msg = f"BA {action_label}失败: {exc}"
+            msg = f"BA {action_label}失败: {translate_exchange_error(exc)}"
             self._log(LogLevel.ERROR, msg)
             return LegResult(platform="BA", success=False, message=msg)
 
@@ -2098,7 +2222,7 @@ class BinanceConnector(QObject):
                             "若仍限频请加大 REST 兜底间隔或避免多开客户端",
                         )
                     else:
-                        self._log(LogLevel.ERROR, f"BA API 错误: {exc.message}")
+                        self._log(LogLevel.ERROR, f"BA API 错误: {translate_exchange_error(exc.message)}")
                     self._set_state(ConnectionState.ERROR)
                 except Exception as exc:
                     self._log(LogLevel.ERROR, f"BA 连接异常: {exc}")
