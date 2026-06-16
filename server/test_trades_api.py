@@ -372,6 +372,22 @@ class ServerTradeApiTests(unittest.TestCase):
                 self.assertEqual(data["ba_account_status"], "enabled")
                 self.assertEqual(data["ex_account_status"], "enabled")
 
+    def test_heartbeat_returns_expires_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            with patched_settings(db_path):
+                init_db()
+                dev = "expires-dev"
+                expires = "2026-12-31T16:00:00+00:00"
+                with get_conn() as conn:
+                    _insert_device(conn, dev, status="approved", expires_at=expires)
+                token = create_device_token(dev, "approved")
+                resp = heartbeat(
+                    HeartbeatRequest(device_id=dev),
+                    authorization=f"Bearer {token}",
+                )
+                self.assertEqual(resp.expires_at, expires)
+
 
 if __name__ == "__main__":
     unittest.main()

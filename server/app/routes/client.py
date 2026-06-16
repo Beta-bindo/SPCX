@@ -107,6 +107,7 @@ def register(body: RegisterRequest) -> dict:
                 "message": message,
                 "access_token": token,
                 "expires_in_hours": settings.jwt_expire_hours,
+                "expires_at": device.get("expires_at") or "",
             }
 
         auto_approve = _should_auto_approve(body.note) and settings.nolicense_auto_approve
@@ -141,12 +142,14 @@ def register(body: RegisterRequest) -> dict:
             "message": "设备已通过审核",
             "access_token": create_device_token(body.device_id, "approved"),
             "expires_in_hours": settings.jwt_expire_hours,
+            "expires_at": "",
         }
     return {
         "status": "pending",
         "message": "申请已提交，等待管理员审核",
         "access_token": create_device_token(body.device_id, "pending"),
         "expires_in_hours": settings.jwt_expire_hours,
+        "expires_at": "",
     }
 
 
@@ -274,6 +277,7 @@ def heartbeat(
             ba_account_status=ba_status,
             ex_account_status=ex_status,
             auto_trade_enabled=auto_trade_enabled,
+            expires_at=kwargs.pop("expires_at", device.get("expires_at") or None),
             **kwargs,
         )
 

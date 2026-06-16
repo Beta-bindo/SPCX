@@ -448,6 +448,14 @@ class SpreadEngine(QObject):
         """从交易所读取实际杠杆并回写配置，使风险估算更贴近真实。"""
         if not self._running:
             return
+        threading.Thread(
+            target=self._sync_platform_leverage_worker,
+            daemon=True,
+            name="sync-platform-leverage",
+        ).start()
+
+    def _sync_platform_leverage_worker(self) -> None:
+        """后台读取平台杠杆；避免 BA/MT5 连接异常时阻塞 UI 线程。"""
         changed = False
         if not self.config.sync_leverage_on_trade:
             try:
@@ -458,16 +466,17 @@ class SpreadEngine(QObject):
                         self.config.ba_leverage = lev
                         changed = True
                         break
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log(LogLevel.DEBUG, f"同步 BA 杠杆失败: {exc}")
         try:
             lev_mt5 = self.mt5.read_account_leverage()
-        except Exception:
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"同步 Ex 杠杆失败: {exc}")
             lev_mt5 = None
         if lev_mt5 and lev_mt5 != self.config.mt5_leverage:
             self.config.mt5_leverage = lev_mt5
             changed = True
-        if changed:
+        if changed and self._running:
             self._log(
                 LogLevel.INFO,
                 f"已同步平台杠杆 · BA {self.config.ba_leverage}x · Ex {self.config.mt5_leverage}x",

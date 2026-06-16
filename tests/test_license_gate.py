@@ -155,3 +155,14 @@ def test_ensure_license_approved_skips_gate_when_nolicense(tmp_path, monkeypatch
     assert result.client.state.status == "approved"
     assert result.client.state.access_token
     print("  ✓ 无授权版跳过门禁直接进入")
+
+
+def test_format_license_expires_label():
+    from app.core.license.format import format_license_expires_label
+
+    assert format_license_expires_label("") == "授权到：永久"
+    assert format_license_expires_label(None) == "授权到：永久"
+    text = format_license_expires_label("2026-12-31T16:00:00+00:00")
+    assert text.startswith("授权到 2027-01-01")
+    assert "：" in text
+    print("  ✓ 授权到期时间格式化")

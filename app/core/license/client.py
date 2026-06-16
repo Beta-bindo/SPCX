@@ -145,6 +145,7 @@ class LicenseClient:
             status=data.get("status", "pending"),
             message=data.get("message", ""),
             access_token=data.get("access_token") or "",
+            expires_at=data.get("expires_at") or "",
         )
 
     def heartbeat(
@@ -198,6 +199,7 @@ class LicenseClient:
             ba_account_status=data.get("ba_account_status", self.state.ba_account_status),
             ex_account_status=data.get("ex_account_status", self.state.ex_account_status),
             auto_trade_enabled=bool(data.get("auto_trade_enabled", self.state.auto_trade_enabled)),
+            expires_at=data.get("expires_at") or self.state.expires_at or "",
         )
 
     def upload_trades(self, trades: list[dict]) -> bool:

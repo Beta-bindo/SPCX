@@ -36,6 +36,7 @@ class LicenseState:
     ba_account_status: str = "unknown"
     ex_account_status: str = "unknown"
     auto_trade_enabled: bool = False
+    expires_at: str = ""
 
 
 def license_path() -> Path:

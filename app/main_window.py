@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, QPoint, QUrl
+from PySide6.QtCore import Qt, QTimer, QPoint, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -57,6 +57,8 @@ from app.widgets.trade_confirm_dialog import TradeConfirmDialog
 class MainWindow(QMainWindow):
     """应用主窗口：装配三栏 UI、引擎与各类信号，并承载交易/告警/配置交互。"""
 
+    _monitor_start_checked = Signal(bool, str)
+
     def __init__(
         self,
         license_service: LicenseService | None = None,
@@ -96,6 +98,7 @@ class MainWindow(QMainWindow):
         self._last_ba_account = None   # 最近一次 BA 账户资金快照
         self._last_mt5_account = None  # 最近一次 EX 账户资金快照
         self._last_network: NetworkStatus | None = None
+        self._monitor_start_pending = False
 
         central = QWidget()
         central.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -164,6 +167,7 @@ class MainWindow(QMainWindow):
         self._book_timer.timeout.connect(self._refresh_order_book)
 
         self._wire_signals()
+        self._monitor_start_checked.connect(self._on_monitor_start_checked)
         self.gold_actions.load_settings_from(self.config)
         self.silver_actions.load_settings_from(self.config)
 
@@ -253,12 +257,13 @@ class MainWindow(QMainWindow):
 
     def _sync_monitor_buttons(self) -> None:
         running = self.engine.is_running
-        self.start_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
+        pending = self._monitor_start_pending
+        self.start_btn.setEnabled(not running and not pending)
+        self.stop_btn.setEnabled(running and not pending)
         forbidden = Qt.CursorShape.ForbiddenCursor
         hand = Qt.CursorShape.PointingHandCursor
-        self.start_btn.setCursor(hand if not running else forbidden)
-        self.stop_btn.setCursor(hand if running else forbidden)
+        self.start_btn.setCursor(hand if not running and not pending else forbidden)
+        self.stop_btn.setCursor(hand if running and not pending else forbidden)
 
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -288,6 +293,10 @@ class MainWindow(QMainWindow):
         row.addWidget(platform_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
 
         row.addStretch()
+
+        self.license_expires_lbl = QLabel("", parent=host)
+        self.license_expires_lbl.setObjectName("fieldHint")
+        row.addWidget(self.license_expires_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.profit_btn = QPushButton("利润计算器", parent=host)
         self._style_toolbar_btn(self.profit_btn)
@@ -637,16 +646,19 @@ class MainWindow(QMainWindow):
         if self.license_service and LICENSE_REQUIRED:
             self.license_service.revoked.connect(self._on_license_revoked)
             self.license_service.auto_trade_changed.connect(self._on_auto_trade_availability_changed)
+            self.license_service.status_changed.connect(self._on_license_status_changed)
             self.license_service.set_telemetry_provider(self._license_telemetry)
             self.license_service.set_connection_mode_provider(
                 lambda: self.config.connection_mode
             )
         elif self.license_service:
+            self.license_service.status_changed.connect(self._on_license_status_changed)
             self.license_service.set_telemetry_provider(self._license_telemetry)
             self.license_service.set_connection_mode_provider(
                 lambda: self.config.connection_mode
             )
         self._apply_auto_trade_availability(initial=True)
+        self._refresh_license_expires_label()
 
     def _append_log(self, level: LogLevel, message: str) -> None:
         if should_log(self.config.log_level, level):
@@ -1084,12 +1096,52 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("参数已保存")
 
     def _on_start(self) -> None:
-        # 连接前校验设备授权与 BA/EX 平台账号状态：未通过则不连接，仅日志报错。
-        if not self._ensure_license("启用监控", fast=True):
+        if self._monitor_start_pending:
             return
         self.config = self._merge_config()
         save_config(self.config)
         self.engine.update_config(self.config)
+        if LICENSE_REQUIRED and self.license_service:
+            self._monitor_start_pending = True
+            self.start_btn.setEnabled(False)
+            self.status_bar.showMessage("正在校验授权与 BA/EX 账号状态…")
+            self._append_log(LogLevel.INFO, "正在校验授权与 BA/EX 账号状态…")
+            mode = self.config.connection_mode
+            threading.Thread(
+                target=self._check_monitor_start_license,
+                args=(mode,),
+                daemon=True,
+                name="monitor-license-check",
+            ).start()
+            return
+        self._start_monitor_after_license()
+
+    def _check_monitor_start_license(self, mode: str) -> None:
+        """后台校验授权与平台账号状态，避免网络异常时卡住主线程。"""
+        if not self.license_service:
+            self._monitor_start_checked.emit(True, "")
+            return
+        try:
+            self.license_service.ensure_approved_for_trade(mode)
+        except LicenseError as exc:
+            self._monitor_start_checked.emit(False, str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._monitor_start_checked.emit(False, f"授权校验异常：{exc}")
+            return
+        self._monitor_start_checked.emit(True, "")
+
+    def _on_monitor_start_checked(self, ok: bool, message: str) -> None:
+        self._monitor_start_pending = False
+        if not ok:
+            self.start_btn.setEnabled(True)
+            self._append_log(LogLevel.ERROR, f"启用监控被拒绝：{message}")
+            self.status_bar.showMessage(f"启用监控被拒绝：{message}", 8000)
+            return
+        self._start_monitor_after_license()
+
+    def _start_monitor_after_license(self) -> None:
+        """授权校验通过后在主线程启动 Qt 定时器和连接器。"""
         self.engine.start()
         self._sync_monitor_buttons()
         self._sync_ba_refresh_timers()
@@ -1143,6 +1195,19 @@ class MainWindow(QMainWindow):
                 self._append_log(LogLevel.INFO, f"委托同步 · {summary}")
             else:
                 self._append_log(LogLevel.INFO, "委托同步 · 当前无挂单")
+
+    def _on_license_status_changed(self, _status: str, _message: str) -> None:
+        self._refresh_license_expires_label()
+
+    def _refresh_license_expires_label(self) -> None:
+        from app.core.license.format import format_license_expires_label
+
+        if self.license_service is not None:
+            text = format_license_expires_label(self.license_service.client.state.expires_at)
+        else:
+            text = format_license_expires_label("")
+        self.license_expires_lbl.setText(text)
+        self.license_expires_lbl.setVisible(bool(text))
 
     def _open_profit_calculator(self) -> None:
         dlg = ProfitCalculatorDialog(self)
