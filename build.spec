@@ -21,7 +21,6 @@ hiddenimports = [
     "app.widgets.connection_settings_dialog",
     "app.widgets.symbol_trade_panel",
     "app.widgets.symbol_ratio_fields",
-    "app.widgets.spread_panel",
     "app.widgets.spread_value_label",
     "app.widgets.symbol_alert_settings",
     "app.widgets.symbol_auto_trade_settings",

@@ -8,6 +8,9 @@ dist/
 installer_output/
 .DS_Store
 *.log
+build_log.txt
+.pytest_cache/
+pytest-cache-files-*/
 server/.env
 # 授权服务器运行时 SQLite（含真实用户/设备数据，勿提交）
 server/data/*.db

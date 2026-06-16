@@ -44,7 +44,7 @@ from app.core.config import load_config, save_config, save_config_async
 from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, LayoutMode
 from app.core.network_status import NetworkStatus
 from app.core.spread_engine import SpreadEngine
-from app.core.theme import load_stylesheet, polish_widget, repolish_tree
+from app.core.theme import load_stylesheet, repolish_tree
 from app.core.trading_service import detect_hedge_mode
 from app.widgets.account_balance_widget import BalanceTransferDialog, PlatformAccountRow
 from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
@@ -230,8 +230,6 @@ class MainWindow(QMainWindow):
         if self.config.demo_mode and not self.engine.is_running:
             self._pending_demo_start = True
         else:
-            from app.core.network_status import NetworkStatus
-
             self._on_network_status(
                 NetworkStatus.from_engine(self.engine, self.engine.is_running)
             )
