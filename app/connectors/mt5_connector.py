@@ -270,6 +270,22 @@ class MT5Connector(QObject):
             )
         return None
 
+    def _live_volume_total(self, symbol: str, side: Side | None = None) -> float:
+        """汇总某交易对(可选方向)的全部持仓票据手数之和。
+
+        Exness MT5 多为对冲(Hedging)账户，每次下单生成独立票据不会合并，
+        因此确认成交/减仓必须按「所有票据之和」判断，而非单个票据。
+        """
+        if not self._connected or not HAS_MT5:
+            return 0.0
+        total = 0.0
+        for pos in mt5.positions_get(symbol=symbol) or []:
+            pos_side = Side.BUY if pos.type == mt5.ORDER_TYPE_BUY else Side.SELL
+            if side is not None and pos_side != side:
+                continue
+            total += float(pos.volume)
+        return total
+
     def _wait_for_live_position(
         self,
         symbol: str,
@@ -279,10 +295,13 @@ class MT5Connector(QObject):
         timeout: float = 5.0,
         poll_sec: float = 0.25,
     ) -> bool:
-        """轮询等待出现 ≥min_qty 的指定方向持仓（确认开仓落地）。"""
+        """轮询等待指定方向持仓「总手数」≥min_qty（确认开仓/加仓落地）。
+
+        对冲账户加仓会产生多张票据，故按总手数判断，避免把已成交误判为未成交。
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self._live_position(symbol, side, min_qty):
+            if self._live_volume_total(symbol, side) + 1e-9 >= min_qty:
                 return True
             time.sleep(poll_sec)
         return False
@@ -304,13 +323,13 @@ class MT5Connector(QObject):
         *,
         timeout: float = 5.0,
     ) -> bool:
-        """轮询等待持仓手数降到 ≤max_qty（确认部分平仓到位）。"""
+        """轮询等待持仓「总手数」降到 ≤max_qty（确认平仓到位）。
+
+        对冲账户同方向可能有多张票据，故按总手数判断，避免误判未减仓。
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            pos = self._live_position(symbol, side)
-            if pos is None:
-                return max_qty <= 0
-            if pos.quantity <= max_qty + 1e-9:
+            if self._live_volume_total(symbol, side) <= max_qty + 1e-9:
                 return True
             time.sleep(0.25)
         return False
@@ -579,8 +598,9 @@ class MT5Connector(QObject):
             info = mt5.symbol_info(symbol_mt5)
             if not tick or not info:
                 return LegResult(platform="MT5", success=False, message="无法获取 Exness 报价")
-            before = self._live_position(symbol_mt5, mt5_side)
-            target_lots = (before.quantity if before else 0.0) + float(lots)
+            # 对冲账户加仓会新增独立票据，目标按同方向「总手数」累加
+            before_total = self._live_volume_total(symbol_mt5, mt5_side)
+            target_lots = before_total + float(lots)
             if use_limit:
                 if mt5_side == Side.BUY:
                     order_type = mt5.ORDER_TYPE_BUY_LIMIT
@@ -634,12 +654,14 @@ class MT5Connector(QObject):
             if use_limit:
                 confirmed = self._wait_for_live_position(symbol_mt5, mt5_side, target_lots)
             else:
+                # 市价单 order_send 已返回 DONE 即成交；放宽确认窗口到 3s，
+                # 避免持仓回报稍慢被误判为「未确认成交」而触发不必要的回滚。
                 confirmed = self._wait_for_live_position(
                     symbol_mt5,
                     mt5_side,
                     target_lots,
-                    timeout=1.5,
-                    poll_sec=0.08,
+                    timeout=3.0,
+                    poll_sec=0.1,
                 )
             if not confirmed:
                 return LegResult(
@@ -726,10 +748,22 @@ class MT5Connector(QObject):
             tick = mt5.symbol_info_tick(symbol_mt5)
             if not tick or not info:
                 return LegResult(platform="MT5", success=False, message="无法获取 Exness 报价")
+
+            # 对冲账户同方向可能有多张票据：close_all 全平所有票据；
+            # 部分平仓按预算 trade_lots 跨票据依次平，直到平满预算。
+            close_side_obj = Side.BUY if raw_positions[0].type == mt5.ORDER_TYPE_BUY else Side.SELL
+            initial_total = sum(float(p.volume) for p in raw_positions)
+            budget = initial_total if close_all else float(trade_lots)
+            target_remaining = 0.0 if close_all else max(0.0, initial_total - float(trade_lots))
+
+            last_oid = ""
+            closed_total = 0.0
             for pos in raw_positions:
-                pos_side = Side.BUY if pos.type == mt5.ORDER_TYPE_BUY else Side.SELL
-                lots_to_close = float(pos.volume) if close_all else min(float(pos.volume), trade_lots)
-                remaining = max(0.0, float(pos.volume) - lots_to_close)
+                if budget <= 1e-9:
+                    break
+                lots_to_close = float(pos.volume) if close_all else min(float(pos.volume), budget)
+                if lots_to_close <= 0:
+                    continue
                 if use_limit:
                     close_type = mt5.ORDER_TYPE_SELL_LIMIT if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY_LIMIT
                     close_price = tick.ask if close_type == mt5.ORDER_TYPE_SELL_LIMIT else tick.bid
@@ -765,32 +799,38 @@ class MT5Connector(QObject):
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                     comment = result.comment if result else mt5.last_error()
                     return LegResult(platform="MT5", success=False, message=f"Exness {action_label}失败: {comment}")
-                oid = str(result.order)
-                if not self._wait_until_position_at_most(symbol_mt5, pos_side, remaining):
-                    return LegResult(
-                        platform="MT5",
-                        success=False,
-                        message=f"Exness 平仓订单 {oid} 未确认减仓，请检查持仓",
-                        order_id=oid,
-                        needs_reconciliation=True,
-                    )
-                self._log(
-                    LogLevel.TRADE,
-                    trade_leg_success_msg(
-                        "Exness",
-                        "close",
-                        mode,
-                        oid,
-                        lots=str(lots_to_close),
-                    ),
-                )
+                last_oid = str(result.order)
+                closed_total += lots_to_close
+                budget -= lots_to_close
+
+            if closed_total <= 0:
+                return LegResult(platform="MT5", success=False, message="未找到可平仓位")
+
+            # 按同方向「总手数」确认减仓到位（兼容多票据）
+            if not self._wait_until_position_at_most(symbol_mt5, close_side_obj, target_remaining):
                 return LegResult(
                     platform="MT5",
-                    success=True,
-                    message=f"{action_label}成功",
-                    order_id=oid,
+                    success=False,
+                    message=f"Exness 平仓订单 {last_oid} 未确认减仓，请检查持仓",
+                    order_id=last_oid,
+                    needs_reconciliation=True,
                 )
-            return LegResult(platform="MT5", success=False, message="未找到可平仓位")
+            self._log(
+                LogLevel.TRADE,
+                trade_leg_success_msg(
+                    "Exness",
+                    "close",
+                    mode,
+                    last_oid,
+                    lots=str(closed_total),
+                ),
+            )
+            return LegResult(
+                platform="MT5",
+                success=True,
+                message=f"{action_label}成功",
+                order_id=last_oid,
+            )
 
         try:
             return self._call_on_mt5_thread(_close)
