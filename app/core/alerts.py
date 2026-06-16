@@ -48,6 +48,7 @@ class AlertService(QObject):
         self._last_fire: dict[str, float] = {}  # 各告警键上次发文字提示的时间
         self._ringing = False
         self._active_kind: AlertSoundKind | None = None
+        self._voice_active = False  # 语音播报占用中：期间静音点差（语音优先于点差，但低于爆仓）
         self._tones = AlertTonePlayer()
         self._beep_timer = QTimer(self)
         self._beep_timer.timeout.connect(self._tick_beep)
@@ -158,9 +159,24 @@ class AlertService(QObject):
 
     def _play_active_tone(self) -> None:
         if self._active_kind == AlertSoundKind.LIQ:
-            self._tones.play_liq()
-        else:
+            self._tones.play_liq()  # 爆仓优先级最高，不受语音占用影响
+        elif not self._voice_active:
             self._tones.play_spread()
+        # 语音播报占用中且为点差告警：静音让位给语音（语音优先于点差）
+
+    def is_liq_ringing(self) -> bool:
+        """当前是否正在响爆仓告警（优先级高于语音播报）。"""
+        return self._ringing and self._active_kind == AlertSoundKind.LIQ
+
+    def begin_voice(self) -> None:
+        """进入语音播报：立即静音正在响的点差告警；爆仓不受影响。"""
+        self._voice_active = True
+        if self._ringing and self._active_kind == AlertSoundKind.SPREAD:
+            self._tones.stop()
+
+    def end_voice(self) -> None:
+        """语音播报结束：解除占用，点差告警将在下一拍蜂鸣中自然恢复。"""
+        self._voice_active = False
 
     def _tick_beep(self) -> None:
         """定时器回调：仍在响铃则播放一次，否则停表。"""

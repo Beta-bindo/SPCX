@@ -234,12 +234,15 @@ class BalanceTransferDialog(QDialog):
         wallet_transfer_fn,
         position_margin_fn=None,
         symbol_options=None,
-        available_futures: float | None = None,
+        spot_balance: float | None = None,
+        futures_available: float | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._wallet_transfer_fn = wallet_transfer_fn
         self._position_margin_fn = position_margin_fn
+        self._spot_balance = spot_balance          # 现货钱包余额（源）
+        self._futures_available = futures_available  # 合约可用余额（源）
         self.setWindowTitle("币安资金划转 / 逐仓保证金")
         self.setModal(True)
         self.setMinimumWidth(380)
@@ -277,10 +280,9 @@ class BalanceTransferDialog(QDialog):
         form.addRow("金额", self.amount)
         root.addLayout(form)
 
-        if available_futures is not None:
-            self.avail_label = QLabel(f"合约可用余额：约 {_fmt(available_futures)} USDT")
-            self.avail_label.setObjectName("fieldHint")
-            root.addWidget(self.avail_label)
+        self.avail_label = QLabel("")
+        self.avail_label.setObjectName("fieldHint")
+        root.addWidget(self.avail_label)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("fieldHint")
@@ -309,6 +311,33 @@ class BalanceTransferDialog(QDialog):
         is_position = kind == "position"
         self.symbol.setVisible(is_position)
         self.symbol_row_label.setVisible(is_position)
+        self._apply_source_balance()
+
+    def _source_balance(self) -> tuple[str, float | None]:
+        """返回当前操作的「源钱包」名称与可用余额（None 表示余额未知）。"""
+        kind, flag = self._current_op()
+        if kind == "wallet":
+            if flag:  # 现货 → 合约：源为现货钱包
+                return "现货钱包", self._spot_balance
+            return "合约钱包", self._futures_available  # 合约 → 现货
+        # position：合约 → 逐仓持仓 源为合约钱包；持仓 → 合约 源为持仓保证金（未知）
+        if flag:
+            return "合约钱包", self._futures_available
+        return "持仓保证金", None
+
+    def _apply_source_balance(self) -> None:
+        """按源钱包余额设默认金额并钳制上限：输入不可超过源余额。"""
+        name, bal = self._source_balance()
+        if bal is not None and bal > 0:
+            capped = round(float(bal), 2)
+            self.amount.setMaximum(capped)
+            self.amount.setValue(capped)  # 默认填满源钱包余额
+            self.avail_label.setText(f"{name}可用：约 {_fmt(capped)} USDT（金额不可超过此余额）")
+        else:
+            self.amount.setMaximum(10_000_000.0)
+            self.amount.setValue(0.0)
+            tip = f"{name}余额未知" if bal is None else f"{name}可用：约 {_fmt(bal or 0)} USDT"
+            self.avail_label.setText(tip)
 
     def _set_busy(self, busy: bool) -> None:
         self.buttons.setEnabled(not busy)

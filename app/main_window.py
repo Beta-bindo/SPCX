@@ -46,6 +46,7 @@ from app.core.network_status import NetworkStatus
 from app.core.spread_engine import SpreadEngine
 from app.core.theme import load_stylesheet, repolish_tree
 from app.core.trading_service import detect_hedge_mode
+from app.core.voice import VoiceAnnouncer
 from app.widgets.account_balance_widget import BalanceTransferDialog, PlatformAccountRow
 from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
 from app.widgets.log_panel import LogPanel
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
         self._last_mt5_account = None  # 最近一次 EX 账户资金快照
         self._last_network: NetworkStatus | None = None
         self._monitor_start_pending = False
+        self._voice = VoiceAnnouncer()  # 自动下单成功取消勾选时语音播报
 
         central = QWidget()
         central.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -110,12 +112,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(self._build_header())
 
-        self._main_splitter = QSplitter(Qt.Orientation.Vertical, central)
-        self._main_splitter.setObjectName("mainSplitter")
-        self._main_splitter.setHandleWidth(8)
-        self._main_splitter.setChildrenCollapsible(False)
-
-        self._columns_splitter = QSplitter(Qt.Orientation.Horizontal, self._main_splitter)
+        self._columns_splitter = QSplitter(Qt.Orientation.Horizontal, central)
         self._columns_splitter.setObjectName("columnsSplitter")
         self._columns_splitter.setHandleWidth(6)
         self._columns_splitter.setChildrenCollapsible(False)
@@ -143,20 +140,19 @@ class MainWindow(QMainWindow):
             self._columns_splitter.setStretchFactor(
                 self._columns_splitter.count() - 1, stretch
             )
-        self._main_splitter.addWidget(self._columns_splitter)
-
-        self.log_panel = LogPanel(parent=self._main_splitter)
-        self.log_panel.setMinimumHeight(48)
-        self.log_panel.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self._main_splitter.addWidget(self.log_panel)
-
         self._columns_splitter.setMaximumHeight(16777215)
-        self._main_splitter.setStretchFactor(0, 1)
-        self._main_splitter.setStretchFactor(1, 0)
-        self._main_splitter.setSizes([680, 220])
-        root.addWidget(self._main_splitter, stretch=1)
+        root.addWidget(self._columns_splitter, stretch=1)
+
+        # 运行日志：浮层覆盖在交易区底部。向上拖动顶部手柄只会遮住交易区，
+        # 不会压缩上方窗口；几何位置由 _relayout_log_overlay 维护。
+        self._root_margins = (12, 10, 12, 8)
+        self._log_min_height = 56
+        self._log_height = 220
+        self.log_panel = LogPanel(parent=central)
+        self.log_panel.setMinimumHeight(self._log_min_height)
+        self.log_panel.setAutoFillBackground(True)
+        self.log_panel.grip.dragged.connect(self._on_log_drag)
+        self.log_panel.raise_()
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -213,6 +209,7 @@ class MainWindow(QMainWindow):
         self.setWindowOpacity(1.0)
         self.show()
         self._sync_columns_sizes()
+        self._relayout_log_overlay()
         self.raise_()
         self.activateWindow()
 
@@ -232,6 +229,35 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        self._relayout_log_overlay()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout_log_overlay()
+
+    def _on_log_drag(self, dy: int) -> None:
+        """拖动日志面板顶部手柄：向上拖（dy<0）增高以遮住更多交易区，向下拖缩小。"""
+        self._log_height -= dy
+        self._relayout_log_overlay()
+        # 回写 clamp 后的真实高度，避免越界后反向拖动产生滞后
+        self._log_height = self.log_panel.height()
+
+    def _relayout_log_overlay(self) -> None:
+        """把日志浮层贴在交易区底部；高度上限到交易区顶部（不遮住顶部 header）。"""
+        central = self.centralWidget()
+        panel = getattr(self, "log_panel", None)
+        if central is None or panel is None or not hasattr(self, "_columns_splitter"):
+            return
+        left, top, right, bottom = self._root_margins
+        cols_top = self._columns_splitter.geometry().top()
+        if cols_top <= 0:
+            cols_top = top
+        bottom_y = central.height() - bottom
+        avail_w = max(0, central.width() - left - right)
+        max_h = max(self._log_min_height, bottom_y - cols_top)
+        h = max(self._log_min_height, min(self._log_height, max_h))
+        panel.setGeometry(left, bottom_y - h, avail_w, h)
+        panel.raise_()
 
     def _finalize_startup(self) -> None:
         """在窗口显示前完成静态初始化，连接与行情放到显示后。"""
@@ -1337,6 +1363,28 @@ class MainWindow(QMainWindow):
             self._pending_status_preset = preset_id
             self.engine.refresh_positions()
             self.status_bar.showMessage(result.message, 5000)
+            if is_auto:
+                # 自动下单成功后已自动取消勾选，语音提醒用户需人工重新授权
+                self._announce_auto_cancel()
+
+    def _announce_auto_cancel(self) -> None:
+        """语音播报「下单成功，自动下单已取消」。
+
+        优先级：爆仓告警 > 语音播报 > 点差预警。
+        - 正在响爆仓告警时让位，不播报；
+        - 正在响点差预警时语音优先，播报期间静音点差，播完恢复。
+        """
+        text = "下单成功，自动下单已取消"
+        alerts = getattr(self.engine, "alerts", None)
+        if alerts is not None and alerts.is_liq_ringing():
+            return
+        if alerts is not None:
+            alerts.begin_voice()
+            self._voice.say(text, on_finished=alerts.end_voice)
+            # 兜底：万一播放完成回调丢失，超时后强制解除占用，避免点差被永久静音
+            QTimer.singleShot(8000, alerts.end_voice)
+        else:
+            self._voice.say(text)
 
     def _on_market(self, update) -> None:
         if self._ui_bootstrapping:
@@ -1427,10 +1475,12 @@ class MainWindow(QMainWindow):
                 self, "无法划转", "币安当前为模拟/未实盘连接，无法进行资金划转。"
             )
             return
-        avail = None
+        spot_balance = None
+        futures_available = None
         snap = getattr(self, "_last_ba_account", None)
         if snap is not None and snap.is_live:
-            avail = snap.free_margin
+            spot_balance = snap.cash_balance
+            futures_available = snap.free_margin
         from app.core.symbols import WATCHED_PRESETS, find_preset
 
         symbol_options = []
@@ -1441,7 +1491,8 @@ class MainWindow(QMainWindow):
             self.engine.binance.transfer_spot_futures,
             position_margin_fn=self.engine.binance.change_position_margin,
             symbol_options=symbol_options,
-            available_futures=avail,
+            spot_balance=spot_balance,
+            futures_available=futures_available,
             parent=self,
         )
         dlg.exec()
