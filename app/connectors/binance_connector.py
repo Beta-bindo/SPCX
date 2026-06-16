@@ -1391,12 +1391,15 @@ class BinanceConnector(QObject):
         *,
         close_all: bool = False,
         qty_override: float | None = None,
+        on_fill_delta: Callable[[float], bool] | None = None,
     ) -> LegResult:
         """平 BA 端对冲仓（reduceOnly）。close_all=True 全平，否则按单次交易量部分平。
 
         与开仓对称：限价单等待成交并复查减仓量，未确认则返回 needs_reconciliation。
         qty_override 指定本次要平的数量（用于「加仓失败回滚」时只平掉本次成交的增量，
         避免误平用户原有持仓）；给定时优先于单次交易量，且忽略 close_all。
+        on_fill_delta：Maker/限价平仓时按 BA 实际新增成交量回调（用于以 BA 为主、
+        BA 平多少 Exness 跟着平多少，避免先平 Exness 跑单边）；返回 False 表示对冲腿失败。
         """
         symbol_ba, _, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
@@ -1429,7 +1432,17 @@ class BinanceConnector(QObject):
                     qty=str(qty_to_close),
                 ),
             )
-            return LegResult(platform="BA", success=True, message="演示平仓成功", order_id="demo-ba-close")
+            # 演示 Maker/限价同样需驱动 Exness 同步平仓：按成交量回调一次，
+            # 否则上层 mt5_legs 为空会被判为"BA 未成交"导致部分成功。
+            if on_fill_delta is not None and qty_to_close > 0:
+                on_fill_delta(float(qty_to_close))
+            return LegResult(
+                platform="BA",
+                success=True,
+                message="演示平仓成功",
+                order_id="demo-ba-close",
+                filled_quantity=float(qty_to_close),
+            )
 
         positions = [p for p in self.get_positions(force=False) if p.symbol == symbol_ba]
         if not positions:
@@ -1465,17 +1478,7 @@ class BinanceConnector(QObject):
                         quantity=quantity,
                         reduceOnly=True,
                     )
-                else:
-                    order = self._client.futures_create_order(
-                        symbol=symbol_ba,
-                        side=close_side,
-                        type="MARKET",
-                        quantity=quantity,
-                        reduceOnly=True,
-                        newOrderRespType="RESULT",
-                    )
-                oid = str(order.get("orderId", ""))
-                if use_limit:
+                    oid = str(order.get("orderId", ""))
                     # 平仓委托刚挂上即点亮委托灯（带数量），不等推送/轮询
                     self._note_local_pending_order(
                         OpenOrder(
@@ -1491,25 +1494,51 @@ class BinanceConnector(QObject):
                             reduce_only=True,
                         )
                     )
-                    confirmed = self._wait_for_limit_order(
+                    # 与开仓完全对称：以 BA 为主，按 BA 实际新增成交量增量驱动 Exness
+                    # 市价同步平仓；绝不先平 Exness。BA 平多少，Exness 才跟着平多少。
+                    confirmed, filled_qty = self._wait_for_limit_order_fills(
                         symbol_ba,
                         oid,
-                        min_executed=float(quantity),
+                        target_qty=float(quantity),
+                        on_fill_delta=on_fill_delta,
                     )
                     if not confirmed:
                         self._try_cancel_order(symbol_ba, oid)
+                        # 撤单前可能又成交了一点：复查最终成交量，补上最后一笔对冲
+                        try:
+                            order = self._fetch_order_status(symbol_ba, oid)
+                            executed_after_cancel = float(order.get("executedQty", 0) or 0)
+                        except Exception:
+                            executed_after_cancel = filled_qty
+                        final_delta = max(0.0, executed_after_cancel - filled_qty)
+                        if final_delta > 1e-9:
+                            if on_fill_delta is not None and not on_fill_delta(final_delta):
+                                return LegResult(
+                                    platform="BA",
+                                    success=False,
+                                    message=f"BA Maker 平仓部分成交 #{oid}，Exness 补平失败",
+                                    order_id=oid,
+                                    filled_quantity=executed_after_cancel,
+                                    needs_reconciliation=True,
+                                )
+                            filled_qty = executed_after_cancel
                         try:
                             self.get_positions(force=True)
                         except Exception:
                             pass
-                        cur = self._position_from_cache(symbol_ba, pos.side)
-                        if cur is not None and cur.quantity > remaining + 1e-9:
+                        if filled_qty > 1e-9:
+                            self._log(
+                                LogLevel.TRADE,
+                                trade_leg_success_msg(
+                                    "BA", "close", mode, oid, qty=f"{filled_qty:g}"
+                                ),
+                            )
                             return LegResult(
                                 platform="BA",
-                                success=False,
-                                message=f"BA Maker 平仓部分成交 #{oid}，请检查持仓",
+                                success=True,
+                                message=f"BA Maker 平仓部分成交 {filled_qty:g}/{quantity}，已按成交量补 Exness",
                                 order_id=oid,
-                                needs_reconciliation=True,
+                                filled_quantity=filled_qty,
                             )
                         return LegResult(
                             platform="BA",
@@ -1520,7 +1549,34 @@ class BinanceConnector(QObject):
                             ),
                             order_id=oid,
                         )
-                elif not self._wait_until_position_at_most(symbol_ba, pos.side, remaining):
+                    self._log(
+                        LogLevel.TRADE,
+                        trade_leg_success_msg(
+                            "BA",
+                            "close",
+                            mode,
+                            oid,
+                            qty=quantity,
+                        ),
+                    )
+                    return LegResult(
+                        platform="BA",
+                        success=True,
+                        message=f"{action_label}成功",
+                        order_id=oid,
+                        filled_quantity=filled_qty or float(quantity),
+                    )
+                # 市价平仓（并发模式）：直接市价 reduceOnly 平掉本手并确认减仓
+                order = self._client.futures_create_order(
+                    symbol=symbol_ba,
+                    side=close_side,
+                    type="MARKET",
+                    quantity=quantity,
+                    reduceOnly=True,
+                    newOrderRespType="RESULT",
+                )
+                oid = str(order.get("orderId", ""))
+                if not self._wait_until_position_at_most(symbol_ba, pos.side, remaining):
                     return LegResult(
                         platform="BA",
                         success=False,
@@ -1543,6 +1599,7 @@ class BinanceConnector(QObject):
                     success=True,
                     message=f"{action_label}成功",
                     order_id=oid,
+                    filled_quantity=float(quantity),
                 )
             return LegResult(platform="BA", success=False, message="未找到可平仓位")
 

@@ -283,7 +283,13 @@ def close_hedge(
     mode: str = HedgeMode.CONTRACTION.value,
     order_mode: str = GoldOrderMode.MAKER.value,
 ) -> HedgeTradeResult:
-    """平对冲仓：两腿同时平仓（市价并发 / 其他顺序）。部分成功会提示检查剩余持仓。"""
+    """平对冲仓。
+
+    - 市价：两腿并发平，最大化速度；
+    - Maker/限价：以 BA 为主——先挂 BA reduceOnly 限价平仓，按 BA 实际成交量分批用
+      Exness 市价同步平仓，绝不先平 Exness 跑单边（与开仓逻辑完全对称）。
+    部分成功会提示检查剩余持仓。
+    """
     if _is_market_mode(order_mode):
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge-close") as pool:
             ba_f = pool.submit(binance.close_hedge_leg, preset_id, order_mode, mode)
@@ -291,8 +297,60 @@ def close_hedge(
             ba = ba_f.result()
             mt5_leg = mt5_f.result()
     else:
-        ba = binance.close_hedge_leg(preset_id, order_mode, mode)
-        mt5_leg = mt5.close_hedge_leg(preset_id, order_mode, mode)
+        mt5_legs: list[LegResult] = []
+        mt5_failed = False
+
+        def hedge_ba_close_fill(ba_delta: float) -> bool:
+            nonlocal mt5_failed
+            lots = _mt5_lots_for_ba_fill(binance.config, preset_id, ba_delta)
+            if lots <= 0:
+                return True
+            leg = mt5.close_hedge_leg(
+                preset_id,
+                GoldOrderMode.MARKET.value,
+                mode,
+                lots_override=lots,
+            )
+            mt5_legs.append(leg)
+            mt5_failed = mt5_failed or not leg.success
+            return leg.success
+
+        # Maker/限价平仓：BA reduceOnly 限价为主，按 BA 每次新增成交量补 Exness 市价平；
+        # 超时撤单后 BA 连接器会再读一次最终成交量，补上取消前最后成交。
+        ba = binance.close_hedge_leg(
+            preset_id,
+            order_mode,
+            mode,
+            on_fill_delta=hedge_ba_close_fill,
+        )
+        if mt5_legs:
+            mt5_success = all(leg.success for leg in mt5_legs)
+            mt5_leg = LegResult(
+                platform="MT5",
+                success=mt5_success,
+                message=(
+                    f"Exness 已按 BA 实际成交分批平 {sum(leg.filled_quantity for leg in mt5_legs):g} 手"
+                    if mt5_success
+                    else "Exness 分批平对冲失败，请立即检查单边敞口"
+                ),
+                filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
+                needs_reconciliation=not mt5_success,
+            )
+        elif ba.success:
+            # BA 端本就无可平持仓（已为空）：此时不存在"BA 成交驱动"，直接清理
+            # Exness 可能残留的单边持仓使两端归零；Ex 也为空则 no-op 成功。
+            mt5_leg = mt5.close_hedge_leg(
+                preset_id, GoldOrderMode.MARKET.value, mode, close_all=True
+            )
+        else:
+            # BA 委托未成交且确有持仓未平：未触碰 Exness，不会跑单边
+            mt5_leg = LegResult(
+                platform="MT5",
+                success=False,
+                message="BA 委托未成交，已跳过 Exness 对冲平仓",
+            )
+        if mt5_failed:
+            ba.needs_reconciliation = True
     legs = [ba, mt5_leg]
     success = all(leg.success for leg in legs)
     label = "黄金" if preset_id == "xau" else "白银"
