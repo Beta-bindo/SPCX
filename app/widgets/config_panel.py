@@ -34,6 +34,19 @@ CONNECTION_OPTIONS = [
 ]
 
 
+def connection_options_for_build() -> list[tuple[str, str]]:
+    """按构建变体返回可选连接模式；正式发行包仅保留实盘双端。"""
+    try:
+        from app.core.build_config import LIVE_BOTH_ONLY
+    except ImportError:
+        LIVE_BOTH_ONLY = False
+    if LIVE_BOTH_ONLY:
+        return [
+            (ConnectionMode.LIVE_BOTH.value, "实盘 · BA + MT5"),
+        ]
+    return CONNECTION_OPTIONS
+
+
 class ConfigPanel(QFrame):
     """配置面板。embedded=True 为主界面内嵌横排卡片，False 为设置弹窗竖排。"""
 
@@ -100,7 +113,7 @@ class ConfigPanel(QFrame):
         for preset in SYMBOL_PRESETS:
             self.symbol_preset.addItem(preset.label, preset.id)
         self.connection_mode = QComboBox()
-        for value, label in CONNECTION_OPTIONS:
+        for value, label in connection_options_for_build():
             self.connection_mode.addItem(label, value)
         self.symbol_ba = QLineEdit("XAUUSDT")
         self.symbol_mt5 = QLineEdit("XAUUSD")
@@ -413,6 +426,8 @@ class ConfigPanel(QFrame):
         idx = self.connection_mode.findData(config.connection_mode)
         if idx >= 0:
             self.connection_mode.setCurrentIndex(idx)
+        elif self.connection_mode.count() > 0:
+            self.connection_mode.setCurrentIndex(0)
         self.ba_api_key.setText(config.ba_api_key)
         self.ba_api_secret.setText(config.ba_api_secret)
         self.symbol_ba.setText(config.symbol_ba)

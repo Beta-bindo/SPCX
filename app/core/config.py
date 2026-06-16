@@ -32,9 +32,26 @@ def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _live_both_only_build() -> bool:
+    try:
+        from app.core.build_config import LIVE_BOTH_ONLY
+    except ImportError:
+        return False
+    return bool(LIVE_BOTH_ONLY)
+
+
+def _apply_build_connection_mode(cfg: AppConfig) -> AppConfig:
+    """正式发行包强制实盘双端，忽略历史演示/单端配置。"""
+    if _live_both_only_build():
+        cfg.connection_mode = ConnectionMode.LIVE_BOTH.value
+    return cfg
+
+
 def _migrate_legacy(data: dict) -> dict:
     """把旧版本配置字段补齐/迁移为当前结构（向后兼容历史 config.json）。"""
-    if "connection_mode" not in data and data.get("demo_mode", True):
+    if _live_both_only_build():
+        data["connection_mode"] = ConnectionMode.LIVE_BOTH.value
+    elif "connection_mode" not in data and data.get("demo_mode", True):
         data["connection_mode"] = ConnectionMode.DEMO.value
     elif "connection_mode" not in data:
         data["connection_mode"] = ConnectionMode.LIVE_BOTH.value
@@ -77,7 +94,7 @@ def load_config() -> AppConfig:
     """读取并解析配置文件为 AppConfig；文件缺失或损坏时返回默认配置。"""
     ensure_config_dir()
     if not CONFIG_FILE.exists():
-        return AppConfig()
+        return _apply_build_connection_mode(AppConfig())
     try:
         # 解密敏感字段、按字段填充并做兼容迁移；任一步异常都回退默认配置
         data = _migrate_legacy(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
@@ -220,9 +237,9 @@ def load_config() -> AppConfig:
         cfg.xag_ba_quantity = cfg.ba_quantity_for("xag")
         cfg.xau_mt5_lot_size = cfg.mt5_lot_for("xau")
         cfg.xag_mt5_lot_size = cfg.mt5_lot_for("xag")
-        return cfg
+        return _apply_build_connection_mode(cfg)
     except (json.JSONDecodeError, OSError, ValueError):
-        return AppConfig()
+        return _apply_build_connection_mode(AppConfig())
 
 
 def save_config(config: AppConfig) -> None:

@@ -678,35 +678,20 @@ class MainWindow(QMainWindow):
                 self.license_service.ensure_approved()
             return True
         except LicenseError as exc:
-            from app.widgets.license_gate import LicenseGateDialog, _verify_with_server
-
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("未授权")
-            box.setText(f"{action}需要有效授权。\n{exc}")
-            box.setInformativeText("请在授权窗口提交申请，或刷新审核状态。")
-            open_btn = box.addButton("打开授权", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() is not open_btn:
-                return False
-            dlg = LicenseGateDialog(self.license_service, self)
-            dlg.exec()
-            if _verify_with_server(self.license_service):
-                return True
-            QMessageBox.warning(self, "未授权", "尚未通过授权，无法继续。")
+            # 授权或 BA/EX 账号未通过时不再弹窗（多个弹窗会相互阻塞导致界面卡死），
+            # 仅记录日志并在状态栏提示，同时阻止本次操作。
+            self._append_log(LogLevel.ERROR, f"{action}被拒绝：{exc}")
+            self.status_bar.showMessage(f"{action}已被拒绝：{exc}", 8000)
             return False
 
     def _on_license_revoked(self, message: str) -> None:
+        # 后台停用账号/撤销授权时：停止监控并记录日志，不再弹窗打断用户。
         if self.engine.is_running:
             self.engine.stop()
         self._sync_monitor_buttons()
-        self._append_log(LogLevel.INFO, f"授权已失效：{message}")
-        QMessageBox.warning(
-            self,
-            "授权已失效",
-            f"{message}\n\n监控已停止，请重新申请或联系管理员。",
-        )
+        self._refresh_status_badges()
+        self._append_log(LogLevel.ERROR, f"授权已失效，监控已停止：{message}")
+        self.status_bar.showMessage(f"授权已失效，监控已停止：{message}", 10000)
 
     def _apply_auto_trade_availability(self, *, initial: bool = False) -> None:
         """按运营后台开通状态显示/隐藏自动下单板块。"""
@@ -1099,7 +1084,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("参数已保存")
 
     def _on_start(self) -> None:
-        if not self._ensure_license("启用监控"):
+        # 连接前校验设备授权与 BA/EX 平台账号状态：未通过则不连接，仅日志报错。
+        if not self._ensure_license("启用监控", fast=True):
             return
         self.config = self._merge_config()
         save_config(self.config)

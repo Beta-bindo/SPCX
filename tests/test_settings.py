@@ -554,6 +554,28 @@ def test_connection_dialog_demo_mode_allows_credentials():
     print("  ✓ 演示模式仍可填写凭证且纵向滚动布局")
 
 
+def test_release_build_connection_options_only_live_both(monkeypatch):
+    monkeypatch.setattr("app.core.build_config.LIVE_BOTH_ONLY", True)
+    from app.widgets.config_panel import connection_options_for_build
+
+    opts = connection_options_for_build()
+    assert len(opts) == 1
+    assert opts[0][0] == ConnectionMode.LIVE_BOTH.value
+    assert "BA + MT5" in opts[0][1]
+    print("  ✓ 正式发行包仅保留实盘 BA+MT5 连接模式")
+
+
+def test_release_build_forces_live_both_config(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text('{"connection_mode":"demo"}', encoding="utf-8")
+    monkeypatch.setattr("app.core.config.CONFIG_FILE", cfg_file)
+    monkeypatch.setattr("app.core.build_config.LIVE_BOTH_ONLY", True)
+
+    cfg = load_config()
+    assert cfg.connection_mode == ConnectionMode.LIVE_BOTH.value
+    print("  ✓ 正式发行包加载配置时强制实盘双端")
+
+
 def test_ui_flat_sections_exist():
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow()
