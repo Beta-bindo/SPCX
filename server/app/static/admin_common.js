@@ -249,6 +249,13 @@ function showAdminPanel() {
   initAdminSidebar();
 }
 
+function showLoginCard() {
+  // 仅在确认未登录时才显示登录框；默认隐藏可避免整页切换时先闪一下登录框再跳回面板
+  document.getElementById('loginCard')?.classList.remove('hidden');
+  document.getElementById('panel')?.classList.add('hidden');
+  document.body.classList.remove('admin-logged-in');
+}
+
 function renderAdminNav(activeModule) {
   const container = document.getElementById('adminNavLinks');
   if (!container || !adminProfile) return;
@@ -335,6 +342,8 @@ async function initAdminPage(activeModule, onReady) {
     showAdminPanel();
     renderAdminNav(activeModule);
     if (onReady) await onReady(token, adminProfile);
+  } else {
+    showLoginCard();
   }
   return token;
 }

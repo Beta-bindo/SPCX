@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="wrap">
-    <div id="loginCard" class="card login-card">
+    <div id="loginCard" class="card login-card hidden">
       <h1 class="login-heading">交易助手 · 运营后台</h1>
       <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
       <div class="row">
@@ -80,19 +80,14 @@
           <button class="secondary" onclick="resetFilters()">重置</button>
           <button onclick="exportTrades()">导出 CSV</button>
           <button class="danger" onclick="deleteFilteredTrades()">删除筛选结果</button>
+          <span id="listColumnSlot"></span>
         </div>
       </div>
 
       <div class="card">
         <div id="tradeSummary" class="summary-grid"></div>
-        <table>
-          <thead>
-            <tr>
-              <th>用户</th><th>机器码</th><th>类型</th><th>品种</th><th>模式</th><th>时间</th>
-              <th>点差</th><th>BA价</th><th>Ex价</th><th>BA量</th><th>Ex量</th><th>方向</th>
-              <th>BA盈亏</th><th>Ex盈亏</th><th>BA手续费</th><th>Ex手续费</th><th>BA资金费</th><th>BA返佣</th><th>净利</th><th>上报时间</th>
-            </tr>
-          </thead>
+        <table id="tradeListTable">
+          <thead><tr></tr></thead>
           <tbody id="tradeRows"></tbody>
         </table>
         <div class="pager">
@@ -112,14 +107,66 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=12"></script>
+<script src="/static/admin_common.js?v=13"></script>
 <script>
 const ACTIVE_MODULE = 'trades';
+const TRADE_LIST_ID = 'trades';
+const TRADE_LIST_COLUMNS = [
+  { key: 'display_name', label: '用户' },
+  { key: 'device_id', label: '机器码' },
+  { key: 'action', label: '类型' },
+  { key: 'preset_id', label: '品种' },
+  { key: 'mode', label: '模式' },
+  { key: 'settled_at', label: '时间' },
+  { key: 'spread', label: '点差' },
+  { key: 'ba_price', label: 'BA价' },
+  { key: 'ex_price', label: 'Ex价' },
+  { key: 'ba_quantity', label: 'BA量' },
+  { key: 'mt5_quantity', label: 'Ex量' },
+  { key: 'direction', label: '方向' },
+  { key: 'ba_pnl', label: 'BA盈亏' },
+  { key: 'mt5_pnl', label: 'Ex盈亏' },
+  { key: 'ba_fee', label: 'BA手续费' },
+  { key: 'mt5_fee', label: 'Ex手续费' },
+  { key: 'ba_funding_fee', label: 'BA资金费' },
+  { key: 'ba_rebate', label: 'BA返佣' },
+  { key: 'net_pnl', label: '净利' },
+  { key: 'uploaded_at', label: '上报时间' },
+];
 let adminToken = '';
 let tradePage = 1;
 let tradeSummaryCount = 0;
 
 function logout() { logoutAdmin(); }
+
+function renderTradeCell(key, t) {
+  switch (key) {
+    case 'display_name': return esc(t.display_name || '-');
+    case 'device_id': return `<code>${esc((t.device_id||'').slice(0,12))}…</code>`;
+    case 'action': return esc(actionLabel(t.action));
+    case 'preset_id': return esc(presetLabel(t.preset_id));
+    case 'mode': return esc(modeLabel(t.mode));
+    case 'settled_at': return esc(fmtBeijing(t.settled_at));
+    case 'spread': return fmtSpread(t.spread);
+    case 'ba_price': return fmtPrice(t.ba_price);
+    case 'ex_price': return fmtPrice(t.ex_price);
+    case 'ba_quantity': return fmtQty(t.ba_quantity);
+    case 'mt5_quantity': return fmtQty(t.mt5_quantity);
+    case 'direction': return esc(t.direction || '-');
+    case 'ba_pnl': return fmtTradePnl(t.action, t.ba_pnl);
+    case 'mt5_pnl': return fmtTradePnl(t.action, t.mt5_pnl);
+    case 'ba_fee': return fmtMoney(t.ba_fee);
+    case 'mt5_fee': return fmtMoney(t.mt5_fee);
+    case 'ba_funding_fee': return fmtFundingFee(t.action, t.ba_funding_fee);
+    case 'ba_rebate': return fmtFundingFee(t.action, t.ba_rebate);
+    case 'net_pnl': {
+      const rowNet = t.net_pnl || 0;
+      return `<span class="${rowNet>=0?'pos':'neg'}">${fmtTradePnl(t.action, rowNet)}</span>`;
+    }
+    case 'uploaded_at': return esc(fmtBeijing(t.uploaded_at));
+    default: return '-';
+  }
+}
 
 function initFilters() {
   try {
@@ -179,40 +226,14 @@ async function loadTrades(page) {
     <div class="summary-item"><span class="sub">BA 返佣合计</span><b>${fmtMoney(summary.ba_rebate)}</b></div>
     <div class="summary-item"><span class="sub">净利合计</span><b class="${net>=0?'pos':'neg'}">${fmtMoney(summary.net_pnl)}</b></div>
   `;
-  const tbody = document.getElementById('tradeRows');
-  tbody.innerHTML = '';
-  const rows = data.trades || [];
-  if (!rows.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="20" class="sub" style="text-align:center;padding:24px">暂无数据。请点「重置」扩大日期范围，或确认用户筛选为「全部用户」。</td>`;
-    tbody.appendChild(tr);
-  }
-  for (const t of rows) {
-    const rowNet = t.net_pnl || 0;
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${esc(t.display_name||'-')}</td>
-      <td><code>${esc((t.device_id||'').slice(0,12))}…</code></td>
-      <td>${esc(actionLabel(t.action))}</td>
-      <td>${esc(presetLabel(t.preset_id))}</td>
-      <td>${esc(modeLabel(t.mode))}</td>
-      <td>${esc(fmtBeijing(t.settled_at))}</td>
-      <td>${fmtSpread(t.spread)}</td>
-      <td>${fmtPrice(t.ba_price)}</td>
-      <td>${fmtPrice(t.ex_price)}</td>
-      <td>${fmtQty(t.ba_quantity)}</td>
-      <td>${fmtQty(t.mt5_quantity)}</td>
-      <td>${esc(t.direction || '-')}</td>
-      <td>${fmtTradePnl(t.action, t.ba_pnl)}</td>
-      <td>${fmtTradePnl(t.action, t.mt5_pnl)}</td>
-      <td>${fmtMoney(t.ba_fee)}</td>
-      <td>${fmtMoney(t.mt5_fee)}</td>
-      <td>${fmtFundingFee(t.action, t.ba_funding_fee)}</td>
-      <td>${fmtFundingFee(t.action, t.ba_rebate)}</td>
-      <td class="${rowNet>=0?'pos':'neg'}">${fmtTradePnl(t.action, rowNet)}</td>
-      <td>${esc(fmtBeijing(t.uploaded_at))}</td>`;
-    tbody.appendChild(tr);
-  }
+  applyListTable({
+    listId: TRADE_LIST_ID,
+    defs: TRADE_LIST_COLUMNS,
+    tableEl: document.getElementById('tradeListTable'),
+    rows: data.trades || [],
+    renderCell: renderTradeCell,
+    emptyMessage: '暂无数据。请点「重置」扩大日期范围，或确认用户筛选为「全部用户」。',
+  });
   const pages = data.pages || 1;
   document.getElementById('pageInfo').textContent = `第 ${tradePage} / ${pages} 页 · 共 ${data.total||0} 条`;
   document.getElementById('prevBtn').disabled = tradePage <= 1;
@@ -287,6 +308,7 @@ function exportTrades() {
 
 async function bootPanel() {
   initFilters();
+  mountListColumnControl(document.getElementById('listColumnSlot'), TRADE_LIST_ID, TRADE_LIST_COLUMNS, () => loadTrades(tradePage));
   await loadDeviceOptions();
   await loadTrades(1);
 }

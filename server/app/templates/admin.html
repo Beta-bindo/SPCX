@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="wrap">
-    <div id="loginCard" class="card login-card">
+    <div id="loginCard" class="card login-card hidden">
       <h1 class="login-heading">交易助手 · 运营后台</h1>
       <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
       <div class="row">
@@ -62,16 +62,13 @@
         <div class="filter-actions">
           <button class="secondary" onclick="loadDevices(1)">查询</button>
           <button class="secondary" onclick="resetFilters()">重置</button>
+          <span id="listColumnSlot"></span>
         </div>
       </div>
 
       <div class="card">
-        <table>
-          <thead>
-            <tr>
-              <th>昵称</th><th>联系方式</th><th>BA账号</th><th>EX账号</th><th>在线</th><th>授权到期</th><th>机器码</th><th>状态</th><th>最后在线</th><th>操作</th>
-            </tr>
-          </thead>
+        <table id="deviceListTable">
+          <thead><tr></tr></thead>
           <tbody id="deviceRows"></tbody>
         </table>
         <div class="pager">
@@ -91,9 +88,22 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=12"></script>
+<script src="/static/admin_common.js?v=13"></script>
 <script>
 const ACTIVE_MODULE = 'devices';
+const DEVICE_LIST_ID = 'devices';
+const DEVICE_LIST_COLUMNS = [
+  { key: 'display_name', label: '昵称' },
+  { key: 'contact', label: '联系方式' },
+  { key: 'ba_account', label: 'BA账号' },
+  { key: 'mt5_account', label: 'EX账号' },
+  { key: 'online', label: '在线' },
+  { key: 'expires_at', label: '授权到期' },
+  { key: 'device_id', label: '机器码' },
+  { key: 'status', label: '状态' },
+  { key: 'last_seen_at', label: '最后在线' },
+  { key: 'actions', label: '操作', locked: true },
+];
 let adminToken = '';
 let devicePage = 1;
 
@@ -204,6 +214,60 @@ function accountCell(account, status, platform) {
     </div>`;
 }
 
+function renderDeviceCell(key, d) {
+  switch (key) {
+    case 'display_name': return `
+      <div class="cell-title">${esc(d.display_name)}</div>
+      <div class="sub cell-note">${esc(d.note || '无备注')}</div>
+      <div class="cell-actions">
+        <button class="btn-inline secondary" type="button" data-action="rename">改昵称</button>
+      </div>`;
+    case 'contact': return esc(d.contact || '-');
+    case 'ba_account': return accountCell(d.ba_account, d.ba_account_status, 'ba');
+    case 'mt5_account': return accountCell(d.mt5_account, d.ex_account_status, 'ex');
+    case 'online': return onlineLabel(d);
+    case 'expires_at': return `
+      <div class="cell-title">${expiresLabel(d)}</div>
+      <div class="cell-actions">
+        <button class="btn-inline secondary" type="button" data-action="expires">设到期</button>
+      </div>`;
+    case 'device_id': return `<code>${esc(d.device_id.slice(0,12))}…</code>`;
+    case 'status': return `
+      <div><span class="badge ${d.status}">${statusLabel(d.status)}</span></div>
+      ${d.status === 'approved' ? `<div class="sub" style="margin-top:4px">自动下单：<span class="badge ${d.auto_trade_enabled ? 'approved' : 'disabled'}">${d.auto_trade_enabled ? '已开通' : '未开通'}</span></div>` : ''}`;
+    case 'last_seen_at': return esc(fmtBeijing(d.last_seen_at));
+    case 'actions': return actionButtons(d);
+    default: return '-';
+  }
+}
+
+function bindDeviceRow(tr, d) {
+  const id = d.device_id;
+  tr.querySelector('[data-action="rename"]')?.addEventListener('click', () => {
+    editDisplayName(id, d.display_name || '');
+  });
+  tr.querySelector('[data-action="expires"]')?.addEventListener('click', () => {
+    editExpiresAt(id, d.expires_at || '');
+  });
+  tr.querySelectorAll('[data-act]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const a = btn.getAttribute('data-act');
+      if (a === 'reject') reject(id);
+      else if (a === 'delete') removeDevice(id);
+      else if (a === 'auto-on') setAutoTrade(id, true);
+      else if (a === 'auto-off') setAutoTrade(id, false);
+      else act(id, a);
+    });
+  });
+  tr.querySelectorAll('[data-acct-act]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const raw = btn.getAttribute('data-acct-act') || '';
+      const [platform, action] = raw.split(':');
+      if (platform && action) setAccountStatus(id, platform, action);
+    });
+  });
+}
+
 async function loadDevices(page) {
   const status = document.getElementById('statusFilter').value;
   const pageSize = document.getElementById('pageSize').value;
@@ -218,61 +282,15 @@ async function loadDevices(page) {
   if (res.status === 401) return logout();
   const data = await res.json();
   devicePage = data.page || devicePage;
-  const tbody = document.getElementById('deviceRows');
-  tbody.innerHTML = '';
-  for (const d of data.devices || []) {
-    const tr = document.createElement('tr');
-    const id = d.device_id;
-    tr.innerHTML = `
-      <td>
-        <div class="cell-title">${esc(d.display_name)}</div>
-        <div class="sub cell-note">${esc(d.note || '无备注')}</div>
-        <div class="cell-actions">
-          <button class="btn-inline secondary" type="button" data-action="rename">改昵称</button>
-        </div>
-      </td>
-      <td>${esc(d.contact||'-')}</td>
-      <td>${accountCell(d.ba_account, d.ba_account_status, 'ba')}</td>
-      <td>${accountCell(d.mt5_account, d.ex_account_status, 'ex')}</td>
-      <td>${onlineLabel(d)}</td>
-      <td>
-        <div class="cell-title">${expiresLabel(d)}</div>
-        <div class="cell-actions">
-          <button class="btn-inline secondary" type="button" data-action="expires">设到期</button>
-        </div>
-      </td>
-      <td><code>${esc(d.device_id.slice(0,12))}…</code></td>
-      <td>
-        <div><span class="badge ${d.status}">${statusLabel(d.status)}</span></div>
-        ${d.status === 'approved' ? `<div class="sub" style="margin-top:4px">自动下单：<span class="badge ${d.auto_trade_enabled ? 'approved' : 'disabled'}">${d.auto_trade_enabled ? '已开通' : '未开通'}</span></div>` : ''}
-      </td>
-      <td>${esc(fmtBeijing(d.last_seen_at))}</td>
-      <td>${actionButtons(d)}</td>`;
-    tr.querySelector('[data-action="rename"]')?.addEventListener('click', () => {
-      editDisplayName(id, d.display_name || '');
-    });
-    tr.querySelector('[data-action="expires"]')?.addEventListener('click', () => {
-      editExpiresAt(id, d.expires_at || '');
-    });
-    tr.querySelectorAll('[data-act]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const a = btn.getAttribute('data-act');
-        if (a === 'reject') reject(id);
-        else if (a === 'delete') removeDevice(id);
-        else if (a === 'auto-on') setAutoTrade(id, true);
-        else if (a === 'auto-off') setAutoTrade(id, false);
-        else act(id, a);
-      });
-    });
-    tr.querySelectorAll('[data-acct-act]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const raw = btn.getAttribute('data-acct-act') || '';
-        const [platform, action] = raw.split(':');
-        if (platform && action) setAccountStatus(id, platform, action);
-      });
-    });
-    tbody.appendChild(tr);
-  }
+  applyListTable({
+    listId: DEVICE_LIST_ID,
+    defs: DEVICE_LIST_COLUMNS,
+    tableEl: document.getElementById('deviceListTable'),
+    rows: data.devices || [],
+    renderCell: renderDeviceCell,
+    onRow: bindDeviceRow,
+    emptyMessage: '暂无设备数据',
+  });
   const pages = data.pages || 1;
   document.getElementById('pageInfo').textContent = `第 ${devicePage} / ${pages} 页 · 共 ${data.total||0} 条`;
   document.getElementById('prevBtn').disabled = devicePage <= 1;
@@ -350,6 +368,7 @@ document.getElementById('searchInput').addEventListener('keydown', (e) => {
 });
 
 async function bootPanel() {
+  mountListColumnControl(document.getElementById('listColumnSlot'), DEVICE_LIST_ID, DEVICE_LIST_COLUMNS, () => loadDevices(devicePage));
   await refreshAll();
 }
 

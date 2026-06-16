@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="wrap">
-    <div id="loginCard" class="card login-card">
+    <div id="loginCard" class="card login-card hidden">
       <h1 class="login-heading">交易助手 · 运营后台</h1>
       <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
       <div class="row">
@@ -57,14 +57,13 @@
         </label>
         <div class="filter-actions">
           <button class="secondary" onclick="loadAudit(auditPage)">刷新</button>
+          <span id="listColumnSlot"></span>
         </div>
       </div>
 
       <div class="card">
-        <table>
-          <thead>
-            <tr><th>时间</th><th>操作</th><th>目标设备</th><th>详情</th><th>来源 IP</th></tr>
-          </thead>
+        <table id="auditListTable">
+          <thead><tr></tr></thead>
           <tbody id="auditRows"></tbody>
         </table>
         <div class="pager">
@@ -84,9 +83,17 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=12"></script>
+<script src="/static/admin_common.js?v=13"></script>
 <script>
 const ACTIVE_MODULE = 'audit';
+const AUDIT_LIST_ID = 'audit';
+const AUDIT_LIST_COLUMNS = [
+  { key: 'at', label: '时间' },
+  { key: 'action', label: '操作' },
+  { key: 'target_device_id', label: '目标设备' },
+  { key: 'detail', label: '详情' },
+  { key: 'ip', label: '来源 IP' },
+];
 let adminToken = '';
 let auditPage = 1;
 
@@ -105,6 +112,17 @@ function auditLabel(a) { return AUDIT_LABELS[a] || a || '-'; }
 
 function logout() { logoutAdmin(); }
 
+function renderAuditCell(key, it) {
+  switch (key) {
+    case 'at': return esc(fmtBeijing(it.at));
+    case 'action': return esc(auditLabel(it.action));
+    case 'target_device_id': return `<code>${it.target_device_id ? esc(String(it.target_device_id).slice(0, 12)) + '…' : '-'}</code>`;
+    case 'detail': return esc(it.detail || '-');
+    case 'ip': return `<code>${esc(it.ip || '-')}</code>`;
+    default: return '-';
+  }
+}
+
 async function loadAudit(page) {
   const action = document.getElementById('actionFilter').value;
   const pageSize = document.getElementById('pageSize').value;
@@ -115,19 +133,14 @@ async function loadAudit(page) {
   if (res.status === 401) return logout();
   const data = await res.json();
   auditPage = data.page || auditPage;
-  const tbody = document.getElementById('auditRows');
-  tbody.innerHTML = '';
-  for (const it of data.items || []) {
-    const tr = document.createElement('tr');
-    const dev = it.target_device_id ? esc(String(it.target_device_id).slice(0, 12)) + '…' : '-';
-    tr.innerHTML = `
-      <td>${esc(fmtBeijing(it.at))}</td>
-      <td>${esc(auditLabel(it.action))}</td>
-      <td><code>${dev}</code></td>
-      <td>${esc(it.detail || '-')}</td>
-      <td><code>${esc(it.ip || '-')}</code></td>`;
-    tbody.appendChild(tr);
-  }
+  applyListTable({
+    listId: AUDIT_LIST_ID,
+    defs: AUDIT_LIST_COLUMNS,
+    tableEl: document.getElementById('auditListTable'),
+    rows: data.items || [],
+    renderCell: renderAuditCell,
+    emptyMessage: '暂无操作日志',
+  });
   const pages = data.pages || 1;
   document.getElementById('pageInfo').textContent = `第 ${auditPage} / ${pages} 页 · 共 ${data.total||0} 条`;
   document.getElementById('prevBtn').disabled = auditPage <= 1;
@@ -135,6 +148,7 @@ async function loadAudit(page) {
 }
 
 async function bootPanel() {
+  mountListColumnControl(document.getElementById('listColumnSlot'), AUDIT_LIST_ID, AUDIT_LIST_COLUMNS, () => loadAudit(auditPage));
   await loadAudit(1);
 }
 

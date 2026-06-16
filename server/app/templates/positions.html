@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="wrap">
-    <div id="loginCard" class="card login-card">
+    <div id="loginCard" class="card login-card hidden">
       <h1 class="login-heading">交易助手 · 运营后台</h1>
       <p class="sub">使用后台账号登录（默认用户名 <code>admin</code>）</p>
       <div class="row">
@@ -44,13 +44,10 @@
       <div class="card">
         <div class="filter-actions" style="margin-bottom:12px">
           <button class="secondary" onclick="loadPositions(positionPage)">刷新</button>
+          <span id="listColumnSlot"></span>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>用户昵称</th><th>联系方式</th><th>黄金持仓</th><th>白银持仓</th><th>黄金委托</th><th>白银委托</th><th>在线</th><th>最后同步</th>
-            </tr>
-          </thead>
+        <table id="positionListTable">
+          <thead><tr></tr></thead>
           <tbody id="positionRows"></tbody>
         </table>
         <div class="pager">
@@ -70,13 +67,38 @@
     </div>
   </div>
 
-<script src="/static/admin_common.js?v=12"></script>
+<script src="/static/admin_common.js?v=13"></script>
 <script>
 const ACTIVE_MODULE = 'positions';
+const POSITION_LIST_ID = 'positions';
+const POSITION_LIST_COLUMNS = [
+  { key: 'display_name', label: '用户昵称' },
+  { key: 'contact', label: '联系方式' },
+  { key: 'xau_position', label: '黄金持仓' },
+  { key: 'xag_position', label: '白银持仓' },
+  { key: 'xau_open_orders', label: '黄金委托' },
+  { key: 'xag_open_orders', label: '白银委托' },
+  { key: 'online', label: '在线' },
+  { key: 'last_seen_at', label: '最后同步' },
+];
 let adminToken = '';
 let positionPage = 1;
 
 function logout() { logoutAdmin(); }
+
+function renderPositionCell(key, item) {
+  switch (key) {
+    case 'display_name': return esc(item.display_name || '-');
+    case 'contact': return esc(item.contact || '-');
+    case 'xau_position': return esc(item.xau_position || '无仓');
+    case 'xag_position': return esc(item.xag_position || '无仓');
+    case 'xau_open_orders': return esc(item.xau_open_orders || '无委托');
+    case 'xag_open_orders': return esc(item.xag_open_orders || '无委托');
+    case 'online': return onlineDot(item);
+    case 'last_seen_at': return esc(fmtBeijing(item.last_seen_at));
+    default: return '-';
+  }
+}
 
 async function loadPositions(page) {
   const pageSize = document.getElementById('pageSize').value;
@@ -86,21 +108,14 @@ async function loadPositions(page) {
   if (res.status === 401) return logout();
   const data = await res.json();
   positionPage = data.page || positionPage;
-  const tbody = document.getElementById('positionRows');
-  tbody.innerHTML = '';
-  for (const item of data.positions || []) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${esc(item.display_name || '-')}</td>
-      <td>${esc(item.contact || '-')}</td>
-      <td>${esc(item.xau_position || '无仓')}</td>
-      <td>${esc(item.xag_position || '无仓')}</td>
-      <td>${esc(item.xau_open_orders || '无委托')}</td>
-      <td>${esc(item.xag_open_orders || '无委托')}</td>
-      <td>${onlineDot(item)}</td>
-      <td>${esc(fmtBeijing(item.last_seen_at))}</td>`;
-    tbody.appendChild(tr);
-  }
+  applyListTable({
+    listId: POSITION_LIST_ID,
+    defs: POSITION_LIST_COLUMNS,
+    tableEl: document.getElementById('positionListTable'),
+    rows: data.positions || [],
+    renderCell: renderPositionCell,
+    emptyMessage: '暂无持仓数据',
+  });
   const pages = data.pages || 1;
   document.getElementById('pageInfo').textContent = `第 ${positionPage} / ${pages} 页 · 共 ${data.total||0} 条`;
   document.getElementById('prevBtn').disabled = positionPage <= 1;
@@ -108,6 +123,7 @@ async function loadPositions(page) {
 }
 
 async function bootPanel() {
+  mountListColumnControl(document.getElementById('listColumnSlot'), POSITION_LIST_ID, POSITION_LIST_COLUMNS, () => loadPositions(positionPage));
   await loadPositions(1);
 }
 
