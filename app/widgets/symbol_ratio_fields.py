@@ -36,17 +36,27 @@ class SymbolRatioFields(QFrame):
 
         title = QLabel("数量配比")
         title.setObjectName("fieldLabel")
+        title.setToolTip(
+            "前三列是换算比例；「开仓手」是每次在 Exness 下多少手（最小 0.01）。"
+            "黄金对等填 配比BA=100、配比Ex=1、开仓手=0.01。"
+        )
         root.addWidget(title)
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(2)
         grid.setVerticalSpacing(2)
-        for col, text in enumerate(["", "BA", "Exness", "开仓"]):
+        for col, text in enumerate(["", "配比BA", "配比Ex", "开仓手"]):
             hdr = QLabel(text)
             hdr.setObjectName("fieldLabel")
             if col:
                 hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if col == 1:
+                hdr.setToolTip("与 Exness 手数的换算比例分子（黄金对等填 100）")
+            elif col == 2:
+                hdr.setToolTip("与 BA 数量的换算比例分母（一般填 1）")
+            elif col == 3:
+                hdr.setToolTip("每次对冲在 Exness 下多少手，最小 0.01；双击数字框可编辑")
             grid.addWidget(hdr, 0, col)
 
         sym = QLabel("黄金" if preset_id == "xau" else "白银")
@@ -57,7 +67,7 @@ class SymbolRatioFields(QFrame):
         grid.addWidget(sym, 1, 0)
 
         if preset_id == "xau":
-            ba_default, mt5_default, lots_default = 500.0, 1.0, 1.0
+            ba_default, mt5_default, lots_default = 100.0, 1.0, 0.01
             ba_val = config.xau_ba_qty_map
             mt5_val = config.xau_mt5_lot_map
             lots_val = config.xau_trade_lots
@@ -77,6 +87,7 @@ class SymbolRatioFields(QFrame):
             minimum=0.01,
             maximum=100,
             step=0.01,
+            fixed_width=60,
         )
         for col, spin in enumerate((self.ba_map, self.mt5_map, self.trade_lots), start=1):
             spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -93,6 +104,7 @@ class SymbolRatioFields(QFrame):
         info_row.setSpacing(12)
         self.preview = QLabel("")
         self.preview.setObjectName("fieldHint")
+        self.preview.setWordWrap(True)
         self.leverage_label = QLabel(
             f"BA {config.ba_leverage}x · Ex {config.mt5_leverage}x"
         )
@@ -160,8 +172,9 @@ def _ratio_spin(
     minimum: float = -9999,
     maximum: float = 999999,
     step: float = 0.1,
+    fixed_width: int = 52,
 ) -> ClickToEditDoubleSpinBox:
-    """构造一个紧凑、只读态、点击进入编辑的小数输入框。"""
+    """构造一个紧凑、只读态、双击进入编辑的小数输入框。"""
     spin = ClickToEditDoubleSpinBox()
     spin.setRange(minimum, maximum)
     spin.setDecimals(decimals)
@@ -169,7 +182,7 @@ def _ratio_spin(
     spin.setValue(value)
     spin.setButtonSymbols(ClickToEditDoubleSpinBox.ButtonSymbols.NoButtons)
     spin.setAlignment(Qt.AlignmentFlag.AlignRight)
-    spin.setFixedSize(52, 18)
+    spin.setFixedSize(fixed_width, 18)
     spin.setObjectName("settingsSpin")
     spin.setProperty("inline", True)
     spin.setProperty("readOnlyMode", True)

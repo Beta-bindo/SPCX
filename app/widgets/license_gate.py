@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.core.license.client import LicenseError
 from app.core.license.service import LicenseService
-from app.core.license.store import LICENSE_SERVER_URL, effective_server_url
+from app.core.license.store import effective_server_url
 
 
 class _LicenseWorker(QThread):
@@ -69,9 +69,6 @@ class LicenseGateDialog(QDialog):
         root.addWidget(self.status_label)
 
         form = QFormLayout()
-        self.server_url = QLineEdit(effective_server_url())
-        self.server_url.setReadOnly(True)
-        self.server_url.setPlaceholderText(LICENSE_SERVER_URL)
         self.display_name = QLineEdit(self.service.client.state.display_name)
         self.contact = QLineEdit(self.service.client.state.contact)
         self.contact.setPlaceholderText("11位大陆手机号")
@@ -86,7 +83,6 @@ class LicenseGateDialog(QDialog):
         device_row = QHBoxLayout()
         device_row.addWidget(device_lbl, stretch=1)
         device_row.addWidget(copy_btn)
-        form.addRow("授权服务器", self.server_url)
         form.addRow("机器码", device_row)
         form.addRow("昵称", self.display_name)
         form.addRow("联系方式", self.contact)
@@ -151,7 +147,6 @@ class LicenseGateDialog(QDialog):
 
     def _sync_server_url(self) -> None:
         url = effective_server_url()
-        self.server_url.setText(url)
         self.service.client.state.server_url = url
         from app.core.license.store import save_license
 
