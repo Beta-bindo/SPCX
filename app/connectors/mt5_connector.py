@@ -338,30 +338,51 @@ class MT5Connector(QObject):
                 )
             positions = []
             for symbol in watched_mt5_symbols():
-                for pos in mt5.positions_get(symbol=symbol) or []:
+                live_positions = mt5.positions_get(symbol=symbol) or []
+                if live_positions:
+                    # order_calc_profit 需要该品种已在行情列表(Market Watch)且有报价，
+                    # 否则会抛 "returned a result with an error set"。先尝试选中提高成功率。
+                    try:
+                        mt5.symbol_select(symbol, True)
+                    except Exception:
+                        pass
+                for pos in live_positions:
                     side = Side.BUY if pos.type == mt5.ORDER_TYPE_BUY else Side.SELL
                     liq_price = 0.0
                     if account is not None:
-                        equity_without = float(account.equity) - float(pos.profit)
+                        try:
+                            equity_without = float(account.equity) - float(pos.profit)
 
-                        def profit_at(close: float, _p=pos) -> float:
-                            value = mt5.order_calc_profit(
-                                _p.symbol,
-                                _p.type,
-                                float(_p.volume),
-                                float(_p.price_open),
-                                float(close),
+                            def profit_at(close: float, _p=pos) -> float:
+                                value = mt5.order_calc_profit(
+                                    _p.symbol,
+                                    _p.type,
+                                    float(_p.volume),
+                                    float(_p.price_open),
+                                    float(close),
+                                )
+                                if value is None:
+                                    raise RuntimeError(
+                                        f"order_calc_profit 无结果 (last_error={mt5.last_error()})"
+                                    )
+                                return float(value)
+
+                            liq_price = calc_liquidation_price_from_profit(
+                                side,
+                                float(pos.price_open),
+                                equity_without,
+                                float(account.margin),
+                                float(account.margin_so_so),
+                                profit_at,
                             )
-                            return float(value or 0.0)
-
-                        liq_price = calc_liquidation_price_from_profit(
-                            side,
-                            float(pos.price_open),
-                            equity_without,
-                            float(account.margin),
-                            float(account.margin_so_so),
-                            profit_at,
-                        )
+                        except Exception as exc:
+                            # 单笔爆仓价算不出（多为该品种暂无报价/非交易时段）不应拖垮
+                            # 整个 EX 持仓查询：降级为未知爆仓价(0) 并保留持仓本身。
+                            liq_price = 0.0
+                            self._log(
+                                LogLevel.DEBUG,
+                                f"Exness {symbol} 爆仓价暂不可用: {exc}",
+                            )
                     positions.append(
                         Position(
                             platform="MT5",
