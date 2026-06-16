@@ -67,11 +67,20 @@ def format_binance_price(price: float, tick_size: float) -> str:
 
 
 def get_mt5_filling_mode(symbol_info) -> int:
+    """按品种支持的成交模式选出下单用的 filling 类型。
+
+    注意：symbol_info.filling_mode 是「品种支持模式」位掩码
+    (SYMBOL_FILLING_FOK=1, SYMBOL_FILLING_IOC=2)，与下单用的 ORDER_FILLING_*
+    枚举(FOK=0 / IOC=1 / RETURN=2)取值体系不同，二者不能混用做位与，
+    否则会选到品种不支持的模式，导致 retcode=10030 Unsupported filling mode。
+    """
     import MetaTrader5 as mt5
 
-    filling = symbol_info.filling_mode
-    if filling & mt5.ORDER_FILLING_FOK:
+    supported = symbol_info.filling_mode
+    fok_bit = getattr(mt5, "SYMBOL_FILLING_FOK", 1)
+    ioc_bit = getattr(mt5, "SYMBOL_FILLING_IOC", 2)
+    if supported & fok_bit:
         return mt5.ORDER_FILLING_FOK
-    if filling & mt5.ORDER_FILLING_IOC:
+    if supported & ioc_bit:
         return mt5.ORDER_FILLING_IOC
     return mt5.ORDER_FILLING_RETURN

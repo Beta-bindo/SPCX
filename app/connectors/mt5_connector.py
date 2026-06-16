@@ -463,6 +463,29 @@ class MT5Connector(QObject):
         """覆盖模拟模式下的虚拟持仓。"""
         self._demo_positions = {p.symbol: p for p in positions}
 
+    def _order_send_auto_filling(self, request: dict, info):
+        """下单；若返回 retcode=10030（不支持的成交模式）则自动回退其它 filling 模式重试。
+
+        不同 Exness 服务器/品种支持的成交模式不同，单一模式可能被拒。仅对「不支持
+        成交模式」这一种错误换模式重发，其它错误（资金不足/价格无效等）原样返回，
+        避免无意义重试。
+        """
+        invalid_fill = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030)
+        preferred = get_mt5_filling_mode(info)
+        candidates = [preferred]
+        for fm in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN):
+            if fm not in candidates:
+                candidates.append(fm)
+        result = None
+        for fm in candidates:
+            request["type_filling"] = fm
+            result = mt5.order_send(request)
+            if result is None:
+                return None
+            if result.retcode != invalid_fill:
+                return result
+        return result
+
     def open_hedge_leg(
         self,
         preset_id: str,
@@ -595,7 +618,7 @@ class MT5Connector(QObject):
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": get_mt5_filling_mode(info),
                 }
-            result = mt5.order_send(request)
+            result = self._order_send_auto_filling(request, info)
             if result is None:
                 return LegResult(platform="MT5", success=False, message=f"order_send 失败: {mt5.last_error()}")
             if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -738,7 +761,7 @@ class MT5Connector(QObject):
                         "type_time": mt5.ORDER_TIME_GTC,
                         "type_filling": get_mt5_filling_mode(info),
                     }
-                result = mt5.order_send(request)
+                result = self._order_send_auto_filling(request, info)
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                     comment = result.comment if result else mt5.last_error()
                     return LegResult(platform="MT5", success=False, message=f"Exness {action_label}失败: {comment}")
