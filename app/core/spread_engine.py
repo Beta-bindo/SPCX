@@ -56,6 +56,7 @@ class SpreadEngine(QObject):
     log_message = Signal(str)                  # 日志行
     positions_updated = Signal(list, object)   # (持仓列表, 盈亏汇总)
     open_orders_updated = Signal(list)         # 委托单列表 OpenOrder[]
+    order_book_updated = Signal(str)           # BA 盘口已更新（symbol），驱动 UI 重绘订单簿
     account_updated = Signal(object)           # 账户资金快照（AccountSnapshot）
     trade_finished = Signal(object)            # 交易完成结果
     trade_started = Signal(str, str, str)      # (动作, 品种, 下单模式)
@@ -83,6 +84,7 @@ class SpreadEngine(QObject):
         self.binance.state_changed.connect(lambda s: self.connection_changed.emit("BA", s))
         self.binance.account_received.connect(self.account_updated.emit)
         self.binance.open_orders_detail.connect(self._on_ba_open_orders_detail)
+        self.binance.order_book_updated.connect(self.order_book_updated.emit)
         self.binance.log.connect(self.log_message.emit)
 
         self.mt5.quote_received.connect(self._on_mt5_quote)

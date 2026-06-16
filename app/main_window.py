@@ -163,8 +163,18 @@ class MainWindow(QMainWindow):
         self.status_bar.setVisible(False)
         self.status_bar.showMessage("就绪 · 演示模式可直接启动")
 
+        # 订单簿改为「数据驱动」：盘口写入时引擎发 order_book_updated 置脏，
+        # 由 _book_timer 以固定低延迟间隔合并刷新一次，避免行情 tick 重复重绘。
+        self._book_flush_ms = 150
+        self._book_dirty = False
         self._book_timer = QTimer(self)
-        self._book_timer.timeout.connect(self._refresh_order_book)
+        self._book_timer.timeout.connect(self._flush_order_book)
+
+        # 低频兜底：把 UI 设置同步给引擎/连接器，防止个别控件信号漏接。
+        # 行情热路径已不再每 tick 合并配置，仅靠控件改动即时同步 + 此处定时校正。
+        self._cfg_sync_timer = QTimer(self)
+        self._cfg_sync_timer.timeout.connect(self._periodic_cfg_sync)
+        self._cfg_sync_timer.start(2500)
 
         self._wire_signals()
         self._monitor_start_checked.connect(self._on_monitor_start_checked)
@@ -431,11 +441,30 @@ class MainWindow(QMainWindow):
         if not self.engine.is_running:
             timer.stop()
             return
-        ms = max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))
-        if timer.isActive():
-            timer.setInterval(ms)
-        else:
-            timer.start(ms)
+        # 固定低延迟合并间隔（与 BA 轮询间隔解耦）：盘口随 depth WS/兜底数据置脏后在此刷新
+        if not timer.isActive():
+            timer.start(self._book_flush_ms)
+
+    def _on_book_updated(self, symbol: str) -> None:
+        """引擎通知盘口数据已更新：仅置脏，由 _book_timer 合并节流后统一重绘。"""
+        self._book_dirty = True
+
+    def _flush_order_book(self) -> None:
+        if not self._book_dirty:
+            return
+        self._book_dirty = False
+        self._refresh_order_book()
+
+    def _periodic_cfg_sync(self) -> None:
+        """低频兜底同步：每 ~2.5s 把 UI 设置合并并下发给引擎/连接器。
+
+        行情热路径已不再每 tick 调用 _merge_config()/sync_config()，控件改动会即时同步；
+        此处仅作为防漏接的兜底，监控未运行时跳过以省开销。
+        """
+        if not self.engine.is_running:
+            return
+        self.config = self._merge_config()
+        self.engine.sync_config(self.config)
 
     def _open_settings(self) -> None:
         dlg = ConnectionSettingsDialog(self.config, self)
@@ -630,6 +659,7 @@ class MainWindow(QMainWindow):
             auto.manual_cancel_requested.connect(self._on_manual_cancel_orders)
 
         self.engine.market_updated.connect(self._on_market)
+        self.engine.order_book_updated.connect(self._on_book_updated)
         self.engine.connection_changed.connect(self._on_connection)
         self.engine.network_status_changed.connect(self._on_network_status)
         self.engine.binance.ws_state_changed.connect(self._on_ws_state)
@@ -888,6 +918,8 @@ class MainWindow(QMainWindow):
     def _on_auto_trade_toggled(self) -> None:
         self.config = self._merge_config()
         save_config(self.config)
+        # 控件改动即时下发给引擎/连接器（热路径已不再每 tick sync），确保新参数立即生效
+        self.engine.sync_config(self.config)
         # 人工调整勾选/阈值视为显式意图：清掉冷却与计时，满足条件即可立即触发
         self._auto_trade_state.last_fire.clear()
         self._auto_trade_state.last_close_fire.clear()
@@ -1008,8 +1040,8 @@ class MainWindow(QMainWindow):
         # 自动下单未经运营后台开通时，禁止任何自动开/平仓评估（防止隐藏后仍按旧配置触发）
         if not self.gold_actions.auto_trade_available:
             return
-        cfg = self._merge_config()
-        self.engine.sync_config(cfg)
+        # 热路径不再每 tick 合并/下发配置；改由控件改动即时同步 + _cfg_sync_timer 低频兜底。
+        cfg = self.config
         now = time.time()
         single = self.config.layout_mode == LayoutMode.SINGLE.value
         preset_ids: tuple[str, ...] = ("xau", "xag")
@@ -1159,6 +1191,7 @@ class MainWindow(QMainWindow):
     def _on_stop(self) -> None:
         self.engine.stop()
         self._sync_monitor_buttons()
+        self._sync_ba_refresh_timers()
         self._refresh_status_badges()
         self.status_bar.showMessage("监控已停止")
 
@@ -1333,7 +1366,7 @@ class MainWindow(QMainWindow):
             xag.ba_bid if xag else (xag_ba.bid if xag_ba and xag_ba.bid > 0 else None)
         )
         self._maybe_auto_trade(update)
-        self._refresh_order_book()
+        # 订单簿不再随行情 tick 重绘；由 order_book_updated 信号置脏 + _book_timer 合并刷新
 
     def _on_alert(self, message: str) -> None:
         self.status_bar.showMessage(f"⚠ 告警：{message}")

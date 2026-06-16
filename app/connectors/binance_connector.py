@@ -138,6 +138,7 @@ class BinanceConnector(QObject):
     latency_updated = Signal(float)   # 接口往返延迟（ms）
     open_orders_changed = Signal(object)  # 当前存在挂单的 BA 交易对集合（frozenset[str]）
     open_orders_detail = Signal(object)  # 当前 BA 存活委托快照（list[OpenOrder]，带数量）
+    order_book_updated = Signal(str)  # 某交易对盘口已更新（symbol），驱动 UI 重绘订单簿
     account_received = Signal(object)  # 账户资金快照（AccountSnapshot）
     log = Signal(str)                 # 日志行
 
@@ -1519,6 +1520,7 @@ class BinanceConnector(QObject):
                 self._quotes[symbol] = ba
                 self._order_books[symbol] = self._build_demo_book(mid, preset_id == "xau")
             self.quote_received.emit(ba)
+            self.order_book_updated.emit(symbol)
 
     def _depth_refresh_every(self) -> int:
         """全深度订单簿刷新频率：约每 3 秒一次，减轻限频。"""
@@ -1614,6 +1616,7 @@ class BinanceConnector(QObject):
         )
         with self._book_lock:
             self._order_books[symbol] = new_book
+        self.order_book_updated.emit(symbol)
 
     def _ws_quotes_live(self) -> bool:
         stream = self._ws_stream
@@ -1900,6 +1903,7 @@ class BinanceConnector(QObject):
                 self._update_top_of_book(symbol, bid, ask)
                 self._quotes[symbol] = q
             out.append(q)
+            self.order_book_updated.emit(symbol)
         return out
 
     def _fetch_one_depth(self, symbol: str) -> None:
@@ -1922,6 +1926,7 @@ class BinanceConnector(QObject):
         with self._book_lock:
             self._order_books[symbol] = new_book
             self._quotes[symbol] = new_quote
+        self.order_book_updated.emit(symbol)
 
     def _fetch_watched_depths(self, watched: set[str]) -> None:
         """逐个刷新受监控交易对的盘口；有下单等优先请求待处理则让路。"""

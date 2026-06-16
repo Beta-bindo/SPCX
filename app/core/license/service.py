@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from typing import Callable
@@ -24,6 +26,33 @@ class LicenseService(QObject):
         self._timer.timeout.connect(self._on_timer)
         self._retry_timer = QTimer(self)
         self._retry_timer.timeout.connect(self._retry_pending_uploads)
+        # 串行化所有授权服务器网络访问，避免多个后台线程并发读写 client.state
+        self._net_lock = threading.RLock()
+        # 正在后台执行的周期任务名，去重防止心跳/补传线程堆积
+        self._async_lock = threading.Lock()
+        self._async_active: set[str] = set()
+
+    def _run_async(self, name: str, fn: Callable[[], None]) -> None:
+        """后台 daemon 线程执行网络任务；同名任务进行中则跳过（心跳/补传幂等）。
+
+        定时心跳与补传都含同步 HTTP（最长 15s），放到后台避免阻塞 UI 主线程；
+        信号 emit 跨线程会自动以 QueuedConnection 投递回主线程，安全。
+        """
+        with self._async_lock:
+            if name in self._async_active:
+                return
+            self._async_active.add(name)
+
+        def _worker() -> None:
+            try:
+                fn()
+            except Exception:
+                pass
+            finally:
+                with self._async_lock:
+                    self._async_active.discard(name)
+
+        threading.Thread(target=_worker, daemon=True, name=f"license-{name}").start()
 
     def set_telemetry_provider(
         self, provider: Callable[[], dict[str, str]] | None
@@ -54,7 +83,7 @@ class LicenseService(QObject):
     def start_heartbeat(self, *, flush: bool = True, defer_retry_min: int = 0) -> None:
         """启动定时心跳；defer_retry_min>0 时推迟补传重试，避免启动阶段联网。"""
         if flush:
-            self.flush_pending()
+            self._run_async("flush", self.flush_pending)
         self._timer.start(HEARTBEAT_MS)
         if defer_retry_min > 0:
             QTimer.singleShot(
@@ -69,14 +98,15 @@ class LicenseService(QObject):
         self._retry_timer.stop()
 
     def flush_pending(self) -> int:
-        if not self.client.can_upload_trades:
-            try:
-                self.refresh()
-            except LicenseError:
-                pass
-        if not self.client.can_upload_trades:
-            return 0
-        return self.client.flush_pending_trades()
+        with self._net_lock:
+            if not self.client.can_upload_trades:
+                try:
+                    self.refresh()
+                except LicenseError:
+                    pass
+            if not self.client.can_upload_trades:
+                return 0
+            return self.client.flush_pending_trades()
 
     def register(self, display_name: str, contact: str, note: str) -> None:
         state = self.client.register(display_name, contact, note)
@@ -91,29 +121,30 @@ class LicenseService(QObject):
             return {}
 
     def refresh(self) -> None:
-        try:
-            prev_device = self.client.state.status
-            prev_ba = self.client.state.ba_account_status
-            prev_ex = self.client.state.ex_account_status
-            prev_auto = self.client.is_auto_trade_enabled
-            state = self.client.heartbeat(**self._telemetry_payload())
-        except LicenseError as exc:
-            self.status_changed.emit(self.client.state.status, str(exc))
-            return
-        self.status_changed.emit(state.status, state.message)
-        if self.client.is_auto_trade_enabled != prev_auto:
-            self.auto_trade_changed.emit(self.client.is_auto_trade_enabled)
-        if state.status == "approved" or self.client.can_upload_trades:
-            self.flush_pending()
-        if prev_device == "approved" and state.status != "approved":
-            self.revoked.emit(state.message or "授权已失效")
-            return
-        if state.status == "approved" and self._platform_accounts_blocked():
-            ba = self.client.state.ba_account_status
-            ex = self.client.state.ex_account_status
-            if prev_ba == "enabled" or prev_ex == "enabled":
-                msg = state.message or "交易账号已停用或待审核"
-                self.revoked.emit(msg)
+        with self._net_lock:
+            try:
+                prev_device = self.client.state.status
+                prev_ba = self.client.state.ba_account_status
+                prev_ex = self.client.state.ex_account_status
+                prev_auto = self.client.is_auto_trade_enabled
+                state = self.client.heartbeat(**self._telemetry_payload())
+            except LicenseError as exc:
+                self.status_changed.emit(self.client.state.status, str(exc))
+                return
+            self.status_changed.emit(state.status, state.message)
+            if self.client.is_auto_trade_enabled != prev_auto:
+                self.auto_trade_changed.emit(self.client.is_auto_trade_enabled)
+            if state.status == "approved" or self.client.can_upload_trades:
+                self.flush_pending()
+            if prev_device == "approved" and state.status != "approved":
+                self.revoked.emit(state.message or "授权已失效")
+                return
+            if state.status == "approved" and self._platform_accounts_blocked():
+                ba = self.client.state.ba_account_status
+                ex = self.client.state.ex_account_status
+                if prev_ba == "enabled" or prev_ex == "enabled":
+                    msg = state.message or "交易账号已停用或待审核"
+                    self.revoked.emit(msg)
 
     def _platform_accounts_blocked(self) -> bool:
         try:
@@ -123,9 +154,13 @@ class LicenseService(QObject):
         return False
 
     def _on_timer(self) -> None:
-        self.refresh()
+        # 定时心跳含同步 HTTP，放后台线程执行，避免每 10 分钟卡顿 UI 主线程
+        self._run_async("heartbeat", self.refresh)
 
     def _retry_pending_uploads(self) -> None:
+        self._run_async("retry-upload", self._do_retry_pending_uploads)
+
+    def _do_retry_pending_uploads(self) -> None:
         if not self.client.can_upload_trades:
             return
         from app.core.license.pending_trades import load_pending
@@ -187,52 +222,54 @@ class LicenseService(QObject):
 
     def ensure_reporting_ready(self) -> None:
         """免授权版：静默注册/续期上报令牌；尽量单次心跳，无积压则不再额外请求。"""
-        if self._reporting_fresh_enough():
-            return
-        import os
+        with self._net_lock:
+            if self._reporting_fresh_enough():
+                return
+            import os
 
-        st = self.client.state
-        needs_register = st.status in ("unknown", "") or (
-            st.status == "pending" and not st.access_token
-        )
-        if needs_register:
-            name = (st.display_name or os.environ.get("COMPUTERNAME", "免授权用户"))[:32]
+            st = self.client.state
+            needs_register = st.status in ("unknown", "") or (
+                st.status == "pending" and not st.access_token
+            )
+            if needs_register:
+                name = (st.display_name or os.environ.get("COMPUTERNAME", "免授权用户"))[:32]
+                try:
+                    self.client.register(name, "13000000000", "免授权版自动注册")
+                except LicenseError:
+                    pass
             try:
-                self.client.register(name, "13000000000", "免授权版自动注册")
-            except LicenseError:
-                pass
-        try:
-            state = self.client.heartbeat()
-            self.status_changed.emit(state.status, state.message)
-        except LicenseError:
-            pass
-        if not self.client.can_upload_trades:
-            return
-        from app.core.license.pending_trades import load_pending
-
-        if load_pending():
-            try:
-                self.client.flush_pending_trades()
-            except Exception:
-                pass
-
-    def upload_trade(self, record: TradeRecord) -> None:
-        if not self.client.can_upload_trades:
-            try:
-                self.ensure_reporting_ready()
+                state = self.client.heartbeat()
+                self.status_changed.emit(state.status, state.message)
             except LicenseError:
                 pass
             if not self.client.can_upload_trades:
+                return
+            from app.core.license.pending_trades import load_pending
+
+            if load_pending():
                 try:
-                    self.refresh()
+                    self.client.flush_pending_trades()
+                except Exception:
+                    pass
+
+    def upload_trade(self, record: TradeRecord) -> None:
+        with self._net_lock:
+            if not self.client.can_upload_trades:
+                try:
+                    self.ensure_reporting_ready()
                 except LicenseError:
                     pass
-        trade = trade_record_to_payload(record)
-        if not self.client.can_upload_trades:
-            from app.core.license.pending_trades import enqueue_trades
+                if not self.client.can_upload_trades:
+                    try:
+                        self.refresh()
+                    except LicenseError:
+                        pass
+            trade = trade_record_to_payload(record)
+            if not self.client.can_upload_trades:
+                from app.core.license.pending_trades import enqueue_trades
 
-            enqueue_trades([trade])
-            return
-        if not self.client.upload_trades([trade]):
-            return
-        self.flush_pending()
+                enqueue_trades([trade])
+                return
+            if not self.client.upload_trades([trade]):
+                return
+            self.flush_pending()
