@@ -13,7 +13,7 @@ def test_spread_snapshot_exec_vs_mid():
     snap = build_spread_snapshot(ba, mt5)
     assert snap is not None
     assert snap.exec_spread == 2652.0 - 2649.2
-    assert abs(snap.mid_spread - (2652.15 - 2649.1)) < 0.01
+    assert abs(snap.mid_spread - (2652.0 - 2649.0)) < 0.01
 
 
 def test_pnl_with_fees():

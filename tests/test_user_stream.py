@@ -33,11 +33,27 @@ def _live_ba_conn() -> BinanceConnector:
     return BinanceConnector(cfg)
 
 
-def _order_event(symbol: str, oid: int, status: str, z: float, ap: float = 0.0) -> dict:
-    """构造一条 ORDER_TRADE_UPDATE 事件（z=累计成交量，ap=均价）。"""
+def _order_event(
+    symbol: str,
+    oid: int,
+    status: str,
+    z: float,
+    ap: float = 0.0,
+    q: float = 0.0,
+    side: str = "",
+) -> dict:
+    """构造一条 ORDER_TRADE_UPDATE 事件（q=原始委托量，z=累计成交量，ap=均价）。"""
     return {
         "e": "ORDER_TRADE_UPDATE",
-        "o": {"s": symbol, "i": oid, "X": status, "z": str(z), "ap": str(ap)},
+        "o": {
+            "s": symbol,
+            "i": oid,
+            "X": status,
+            "z": str(z),
+            "ap": str(ap),
+            "q": str(q),
+            "S": side,
+        },
     }
 
 
@@ -181,6 +197,42 @@ def test_order_update_drives_open_orders_indicator():
     print("  ✓ 推送维护委托指示灯")
 
 
+def test_stream_open_orders_carry_quantity():
+    """WS 委托推送带出总量/已成交/剩余量，供 UI 即时显示真实数量。"""
+    from app.core.models import Side
+
+    conn = _live_ba_conn()
+    conn._client = MagicMock()
+    captured: list = []
+    conn.open_orders_detail.connect(captured.append)
+
+    # 新建挂单：带原始量与方向
+    conn._on_user_order_update(
+        _order_event("XAUUSDT", 1001, "NEW", 0.0, q=500.0, side="SELL")
+    )
+    assert captured, "应推送带数量的委托明细"
+    ba = [o for o in captured[-1] if o.symbol == "XAUUSDT"]
+    assert len(ba) == 1
+    assert ba[0].total_quantity == 500.0
+    assert ba[0].remaining_quantity == 500.0
+    assert ba[0].side == Side.SELL
+
+    # 部分成交：剩余量下降
+    conn._on_user_order_update(
+        _order_event("XAUUSDT", 1001, "PARTIALLY_FILLED", 200.0, q=500.0, side="SELL")
+    )
+    ba = [o for o in captured[-1] if o.symbol == "XAUUSDT"]
+    assert ba[0].filled_quantity == 200.0
+    assert ba[0].remaining_quantity == 300.0
+
+    # 全部成交：从快照移除
+    conn._on_user_order_update(
+        _order_event("XAUUSDT", 1001, "FILLED", 500.0, q=500.0, side="SELL")
+    )
+    assert not [o for o in captured[-1] if o.symbol == "XAUUSDT"]
+    print("  ✓ WS 委托推送带数量")
+
+
 def test_account_update_invalidates_cache():
     """ACCOUNT_UPDATE 推送失效持仓缓存并置脏。"""
     conn = _live_ba_conn()
@@ -284,6 +336,7 @@ if __name__ == "__main__":
     test_wait_for_limit_order_dispatch_stream()
     test_wait_fills_falls_back_to_rest_when_no_stream()
     test_order_update_drives_open_orders_indicator()
+    test_stream_open_orders_carry_quantity()
     test_account_update_invalidates_cache()
     test_listen_key_lifecycle()
     test_seed_stream_open_orders_from_rest()

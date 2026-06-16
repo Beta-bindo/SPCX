@@ -1,6 +1,8 @@
-"""Binance U 本位合约 bookTicker WebSocket 推流（后台线程 + asyncio）。
+"""Binance U 本位合约行情 WebSocket 推流（后台线程 + asyncio）。
 
-订阅 XAU/XAG 等受监控品种的 @bookTicker，盘口变化即推送。
+一条组合连接同时订阅：
+- @bookTicker：买一/卖一变化即推（顶档，tick 级，供点差/告警最快更新）；
+- @depth20@{ms}ms：前 20 档部分深度快照（多档订单簿展示，可选）。
 断线自动重连；连接状态与最近消息时间供上层判断 REST 兜底。
 """
 
@@ -34,6 +36,8 @@ class BinanceWsStream:
         proxy_port: int,
         on_quote: Callable[[str, float, float], None],
         on_state: Callable[[str], None],
+        on_depth: Callable[[str, list, list], None] | None = None,
+        depth_ms: int = 0,
     ) -> None:
         self._symbols = [s.lower() for s in symbols]
         self._use_proxy = use_proxy
@@ -41,12 +45,15 @@ class BinanceWsStream:
         self._proxy_port = proxy_port
         self._on_quote = on_quote
         self._on_state = on_state
+        self._on_depth = on_depth
+        self._depth_ms = int(depth_ms) if on_depth is not None else 0
         # 独立 stop_event，绝不与连接器共享，避免误停 REST 兜底轮询
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._last_message_at: float = 0.0
+        self._last_depth_at: float = 0.0
         self._connected = False
         self._session_connected = False
 
@@ -65,6 +72,14 @@ class BinanceWsStream:
         if self._last_message_at <= 0:
             return False
         return time.time() - self._last_message_at <= stale_sec
+
+    def depth_is_live(self, *, stale_sec: float = WS_STALE_SEC) -> bool:
+        """已连接且近期收到深度快照，视为 WS 订单簿可用（否则上层走 REST 兜底）。"""
+        if not self._connected:
+            return False
+        if self._last_depth_at <= 0:
+            return False
+        return time.time() - self._last_depth_at <= stale_sec
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -121,7 +136,12 @@ class BinanceWsStream:
             self._task = None
 
     def _build_url(self) -> str:
-        streams = "/".join(f"{sym}@bookTicker" for sym in self._symbols)
+        parts: list[str] = []
+        for sym in self._symbols:
+            parts.append(f"{sym}@bookTicker")
+            if self._depth_ms > 0:
+                parts.append(f"{sym}@depth20@{self._depth_ms}ms")
+        streams = "/".join(parts)
         return f"{FUTURES_WS_BASE}?streams={streams}"
 
     def _proxy_url(self) -> str | None:
@@ -144,6 +164,7 @@ class BinanceWsStream:
             # 连接已断开：立即清掉最近消息时间并标记未连接，
             # 让 is_live 立刻转 False，迫使上层切回 REST 兜底，避免用过期数据。
             self._last_message_at = 0.0
+            self._last_depth_at = 0.0
             self._set_connected(False)
             if self._stop_event.is_set():
                 break
@@ -196,6 +217,15 @@ class BinanceWsStream:
         symbol = str(data.get("s", "")).upper()
         if not symbol:
             return
+
+        # 区分流类型：bookTicker 的 b/a 是最优价（字符串单值），
+        # depth20 的 b/a 是 [[价,量],...] 数组。
+        if isinstance(data.get("b"), list):
+            self._handle_depth(symbol, data)
+        else:
+            self._handle_book_ticker(symbol, data)
+
+    def _handle_book_ticker(self, symbol: str, data: dict) -> None:
         try:
             bid = float(data.get("b", 0) or 0)
             ask = float(data.get("a", 0) or 0)
@@ -207,3 +237,19 @@ class BinanceWsStream:
 
         self._last_message_at = time.time()
         self._on_quote(symbol, bid, ask)
+
+    def _handle_depth(self, symbol: str, data: dict) -> None:
+        if self._on_depth is None:
+            return
+        try:
+            bids = [(float(p), float(q)) for p, q in data.get("b", [])]
+            asks = [(float(p), float(q)) for p, q in data.get("a", [])]
+        except (TypeError, ValueError):
+            return
+        if not bids or not asks:
+            return
+
+        now = time.time()
+        self._last_message_at = now
+        self._last_depth_at = now
+        self._on_depth(symbol, bids, asks)

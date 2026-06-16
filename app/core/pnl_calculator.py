@@ -1,7 +1,7 @@
 """跨平台盈亏（PnL）与点差计算。
 
 统一根据两端实时报价计算：
-- 点差快照（BA 与 Exness 的中价差 / 可执行差价）；
+- 点差快照（BA 与 Exness 的买价差 / 可执行差价）；
 - 每个持仓的浮动盈亏与预估手续费；
 - 全局汇总（毛利、手续费、净利）。
 """
@@ -26,13 +26,13 @@ class PnlSummary:
     total_fees: float = 0.0      # 手续费合计
     net_pnl: float = 0.0         # 净利 = 毛利 − 手续费
     exec_spread: float = 0.0     # 可执行点差（主品种）
-    mid_spread: float = 0.0      # 中价点差（主品种）
+    mid_spread: float = 0.0      # 买价点差（主品种，字段名保留兼容）
 
 
 def build_spread_snapshot(ba: Quote, mt5: Quote, preset_id: str = "xau") -> SpreadSnapshot | None:
     """由两端最新报价构造点差快照；任一端缺买卖价则返回 None。
 
-    - mid_spread（点差指数）：BA 中价 − Exness 中价，用于展示与告警判断；
+    - mid_spread（点差指数）：BA 买一 − Exness 买一，用于展示与告警判断；
     - exec_spread（可执行点差）：BA 买一 − Exness 卖一，更贴近实际成交差价。
     """
     if ba.bid <= 0 or ba.ask <= 0 or mt5.bid <= 0 or mt5.ask <= 0:
@@ -49,7 +49,7 @@ def build_spread_snapshot(ba: Quote, mt5: Quote, preset_id: str = "xau") -> Spre
         mt5_ask=mt5.ask,
         ba_mid=ba_mid,
         mt5_mid=mt5_mid,
-        mid_spread=ba_mid - mt5_mid,
+        mid_spread=ba.bid - mt5.bid,
         exec_spread=ba.bid - mt5.ask,
         ba_platform_spread=ba.ask - ba.bid,
         mt5_platform_spread=mt5.ask - mt5.bid,

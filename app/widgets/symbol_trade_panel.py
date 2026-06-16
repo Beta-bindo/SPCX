@@ -2,7 +2,7 @@
 
 包含三块：
 - SymbolActionStrip：点差大字、持仓/盈亏状态、对冲入口与告警/自动交易设置（中栏）。
-- SymbolTradePanel：盘口深度表（买/卖各若干档 + BA 中价）。
+- SymbolTradePanel：盘口深度表（买/卖各若干档 + BA 买价）。
 - PanelSectionDialog：自定义中栏各区块的显示与顺序。
 """
 
@@ -79,7 +79,7 @@ SYMBOL_ICON = {"xau": "🥇", "xag": "🥈"}
 
 
 class BookMidLabel(QLabel):
-    """订单簿买卖盘之间的 BA 中价，随可用宽度缩放字号。"""
+    """订单簿买卖盘之间的 BA 买价，随可用宽度缩放字号。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,7 +116,7 @@ class SymbolActionStrip(QFrame):
     section_layout_changed = Signal()              # 中栏区块布局变更
 
     def __init__(self, preset_id: str, parent=None):
-        # 构建中栏：点差大字、两端中价、持仓状态、对冲入口按钮，
+        # 构建中栏：点差大字、两端买价、持仓状态、对冲入口按钮，
         # 以及可配置显隐/顺序的告警与自动交易设置区块。
         super().__init__(parent)
         self.preset_id = preset_id
@@ -614,8 +614,7 @@ class SymbolActionStrip(QFrame):
             return
         self._last_spread = snap
         self.spread_value.set_spread(snap.mid_spread)
-        # 两端价格展示买价（Bid），与 BA/Exness 终端默认显示口径一致；
-        # 点差大字仍用中价点差（mid_spread），作为稳定的点差指数与告警依据。
+        # 点差大字与两端价格均用买价（Bid），与 BA/Exness 终端默认显示口径一致。
         ba_text = f"{snap.ba_bid:.3f}"
         ex_text = f"{snap.mt5_bid:.3f}"
         if ba_text != self._last_ba_text:
@@ -875,7 +874,7 @@ class PanelSectionDialog(QDialog):
 
 
 class SymbolTradePanel(QFrame):
-    """单品种盘口面板：买盘表 + BA 中价 + 卖盘表，支持紧凑/完整两种密度。"""
+    """单品种盘口面板：买盘表 + BA 买价 + 卖盘表，支持紧凑/完整两种密度。"""
 
     def __init__(self, preset_id: str, title: str, parent=None):
         super().__init__(parent)
@@ -933,7 +932,7 @@ class SymbolTradePanel(QFrame):
         self._sync_table_heights()
 
     def _book_panel_min_height(self) -> int:
-        """计算完整模式下盘口面板的最小高度（两表 + 中价 + 边距）。"""
+        """计算完整模式下盘口面板的最小高度（两表 + 买价 + 边距）。"""
         rows = max(self.bid_table.rowCount(), 1)
         row_h = self.bid_table.verticalHeader().defaultSectionSize()
         hdr_h = self.bid_table.horizontalHeader().height()
@@ -1038,19 +1037,23 @@ class SymbolTradePanel(QFrame):
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return table
 
-    def update_ba_mid(self, mid: float | None) -> None:
-        """刷新买卖盘之间的 BA 中价标签（无效则隐藏）。"""
-        if mid is None or mid <= 0:
+    def update_ba_bid(self, bid: float | None) -> None:
+        """刷新买卖盘之间的 BA 买价标签（无效则隐藏）。"""
+        if bid is None or bid <= 0:
             if self.ba_mid_label.isVisible():
                 self.ba_mid_label.setVisible(False)
             if self.ba_mid_label.text():
                 self.ba_mid_label.setText("")
         else:
-            text = f"{mid:.3f}"
+            text = f"{bid:.3f}"
             if not self.ba_mid_label.isVisible():
                 self.ba_mid_label.setVisible(True)
             if self.ba_mid_label.text() != text:
                 self.ba_mid_label.setText(text)
+
+    def update_ba_mid(self, mid: float | None) -> None:
+        """兼容旧名：请改用 update_ba_bid。"""
+        self.update_ba_bid(mid)
 
     def update_book(self, book: OrderBook) -> None:
         """用最新盘口刷新买/卖盘表格（买绿卖红，空档灰显）。"""

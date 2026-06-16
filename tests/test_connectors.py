@@ -258,6 +258,92 @@ def test_gold_maker_vs_market_demo():
     print("  ✓ 黄金 Maker/市价 demo 下单模式")
 
 
+def test_ws_stream_dispatches_depth_vs_book_ticker():
+    """组合流消息按 b/a 类型分发：字符串→bookTicker，数组→depth20。"""
+    import json as _json
+
+    from app.connectors.binance_ws_stream import BinanceWsStream
+
+    quotes: list[tuple] = []
+    depths: list[tuple] = []
+    stream = BinanceWsStream(
+        ["XAUUSDT"],
+        use_proxy=False,
+        proxy_host="",
+        proxy_port=0,
+        on_quote=lambda s, b, a: quotes.append((s, b, a)),
+        on_state=lambda _s: None,
+        on_depth=lambda s, b, a: depths.append((s, b, a)),
+        depth_ms=500,
+    )
+
+    # bookTicker：b/a 为字符串最优价
+    stream._handle_message(
+        _json.dumps({"stream": "xauusdt@bookTicker",
+                     "data": {"s": "XAUUSDT", "b": "2650.0", "a": "2650.2"}})
+    )
+    assert quotes == [("XAUUSDT", 2650.0, 2650.2)]
+    assert not depths
+
+    # depth20：b/a 为 [[价,量],...] 数组
+    stream._handle_message(
+        _json.dumps({"stream": "xauusdt@depth20@500ms", "data": {
+            "s": "XAUUSDT",
+            "b": [["2650.0", "3"], ["2649.5", "5"]],
+            "a": [["2650.2", "2"], ["2650.7", "4"]],
+        }})
+    )
+    assert len(depths) == 1
+    sym, bids, asks = depths[0]
+    assert sym == "XAUUSDT"
+    assert bids[0] == (2650.0, 3.0)
+    assert asks[1] == (2650.7, 4.0)
+    assert stream.depth_is_live() is False  # 未连接，仅收到消息不算 live
+    print("  ✓ WS 行情流分发 bookTicker/depth20")
+
+
+def test_ws_depth_url_includes_depth_stream():
+    """订阅 URL 同时含 bookTicker 与 depth20。"""
+    from app.connectors.binance_ws_stream import BinanceWsStream
+
+    stream = BinanceWsStream(
+        ["XAUUSDT", "XAGUSDT"],
+        use_proxy=False,
+        proxy_host="",
+        proxy_port=0,
+        on_quote=lambda *_: None,
+        on_state=lambda _s: None,
+        on_depth=lambda *_: None,
+        depth_ms=500,
+    )
+    url = stream._build_url()
+    assert "xauusdt@bookTicker" in url
+    assert "xauusdt@depth20@500ms" in url
+    assert "xagusdt@depth20@500ms" in url
+    print("  ✓ WS 订阅 URL 含 depth20")
+
+
+def test_connector_on_ws_depth_replaces_order_book():
+    """连接器 _on_ws_depth 用快照替换多档订单簿。"""
+    cfg = AppConfig(
+        connection_mode=ConnectionMode.LIVE_BA.value,
+        ba_api_key="key",
+        ba_api_secret="secret",
+    )
+    conn = BinanceConnector(cfg)
+    conn._on_ws_depth(
+        "XAUUSDT",
+        [(2650.0, 3.0), (2649.5, 5.0)],
+        [(2650.2, 2.0), (2650.7, 4.0)],
+    )
+    book = conn.order_book("XAUUSDT")
+    assert book.bids[0].price == 2650.0
+    assert book.bids[0].quantity == 3.0
+    assert book.asks[1].price == 2650.7
+    assert book.is_simulated is False
+    print("  ✓ _on_ws_depth 替换订单簿")
+
+
 if __name__ == "__main__":
     print("Connector tests:")
     test_binance_uses_futures_ping()
@@ -268,4 +354,7 @@ if __name__ == "__main__":
     test_hedge_expansion_demo()
     test_binance_get_positions_uses_lock()
     test_gold_maker_vs_market_demo()
+    test_ws_stream_dispatches_depth_vs_book_ticker()
+    test_ws_depth_url_includes_depth_stream()
+    test_connector_on_ws_depth_replaces_order_book()
     print("ALL CONNECTOR TESTS PASSED")

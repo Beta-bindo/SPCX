@@ -1,4 +1,4 @@
-"""Paired demo quotes so BA / MT5 mids stay aligned and spread stays realistic."""
+"""Paired demo quotes so BA / MT5 bid spread stays aligned and realistic."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 from app.core.models import Quote
 from app.core.symbols import WATCHED_PRESETS, find_preset
 
-# Max |mid_spread| we accept when rebuilding; beyond this is almost always stale/mixed quotes.
+# Max |bid spread| we accept when rebuilding; beyond this is almost always stale/mixed quotes.
 SANITY_MAX_SPREAD = {"xau": 25.0, "xag": 8.0}
 
 
@@ -27,30 +27,31 @@ def target_demo_spread(preset_id: str, t: float) -> float:
 
 
 def generate_demo_pair(preset_id: str, t: float) -> tuple[Quote, Quote]:
-    """Return (ba_quote, mt5_quote) with mid_spread ≈ target_demo_spread."""
+    """Return (ba_quote, mt5_quote) with bid spread ≈ target_demo_spread."""
     preset = find_preset(preset_id)
     i = 0 if preset_id == "xau" else 1
     spread = target_demo_spread(preset_id, t)
     drift = math.sin(t / 8.0 + i) * (0.8 if preset_id == "xau" else 0.025)
-    ba_mid = preset.demo_ba_base + drift + random.uniform(-0.08, 0.08)
-    mt5_mid = ba_mid - spread
     if preset_id == "xau":
         ba_half = random.uniform(0.12, 0.35)
         mt5_half = random.uniform(0.10, 0.30)
     else:
         ba_half = random.uniform(0.004, 0.015)
         mt5_half = random.uniform(0.004, 0.012)
+    ba_mid = preset.demo_ba_base + drift + random.uniform(-0.08, 0.08)
+    ba_bid = ba_mid - ba_half
+    mt5_bid = ba_bid - spread
     ba = Quote(
         symbol=preset.symbol_ba,
-        bid=ba_mid - ba_half,
+        bid=ba_bid,
         ask=ba_mid + ba_half,
         timestamp=t,
         is_simulated=True,
     )
     mt5 = Quote(
         symbol=preset.symbol_mt5,
-        bid=mt5_mid - mt5_half,
-        ask=mt5_mid + mt5_half,
+        bid=mt5_bid,
+        ask=mt5_bid + mt5_half * 2,
         timestamp=t,
         is_simulated=True,
     )
@@ -67,15 +68,15 @@ def spread_is_sane(preset_id: str, mid_spread: float) -> bool:
 
 
 def align_sim_mt5_to_ba(ba: Quote, mt5: Quote, preset_id: str, *, interval_sec: float = 0.8) -> Quote:
-    """混合模式：实盘 BA + 模拟 MT5 时，将 MT5 演示价锚定到 BA 现价，避免基数偏差。"""
+    """混合模式：实盘 BA + 模拟 MT5 时，将 MT5 演示价锚定到 BA 买价，避免基数偏差。"""
     if ba.is_simulated or not mt5.is_simulated:
         return mt5
     if ba.bid <= 0 or ba.ask <= 0:
         return mt5
     t = demo_tick_time(time.time(), interval_sec)
     spread = target_demo_spread(preset_id, t)
-    ba_mid = (ba.bid + ba.ask) / 2
-    mt5_mid = ba_mid - spread
+    ba_bid = ba.bid
+    mt5_bid = ba_bid - spread
     if mt5.ask > mt5.bid > 0:
         mt5_half = (mt5.ask - mt5.bid) / 2
     elif preset_id == "xau":
@@ -84,8 +85,8 @@ def align_sim_mt5_to_ba(ba: Quote, mt5: Quote, preset_id: str, *, interval_sec: 
         mt5_half = 0.008
     return Quote(
         symbol=mt5.symbol,
-        bid=mt5_mid - mt5_half,
-        ask=mt5_mid + mt5_half,
+        bid=mt5_bid,
+        ask=mt5_bid + mt5_half * 2,
         timestamp=t,
         is_simulated=True,
     )

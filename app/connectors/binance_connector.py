@@ -60,6 +60,9 @@ HAS_BINANCE = importlib.util.find_spec("binance") is not None
 # listenKey 有效期约 60 分钟，每 30 分钟续期一次（留足余量）
 LISTEN_KEY_KEEPALIVE_SEC = 30 * 60
 
+# 订单簿多档（@depth20）WS 推送频率：500ms 一次快照，足够流畅且消息量适中
+BA_DEPTH_WS_MS = 500
+
 
 @dataclass
 class _OrderStreamState:
@@ -134,6 +137,7 @@ class BinanceConnector(QObject):
     ws_state_changed = Signal(str)    # WS 行情：streaming / rest / connecting / off
     latency_updated = Signal(float)   # 接口往返延迟（ms）
     open_orders_changed = Signal(object)  # 当前存在挂单的 BA 交易对集合（frozenset[str]）
+    open_orders_detail = Signal(object)  # 当前 BA 存活委托快照（list[OpenOrder]，带数量）
     account_received = Signal(object)  # 账户资金快照（AccountSnapshot）
     log = Signal(str)                 # 日志行
 
@@ -183,8 +187,9 @@ class BinanceConnector(QObject):
         self._order_states: dict[str, _OrderStreamState] = {}
         # 正在 _stream_wait_fills 中等待的 orderId，prune 时跳过避免误删等待者状态对象
         self._waiting_orders: set[str] = set()
-        # 推送驱动的"各交易对存活委托集合"，用于委托指示灯（替代 REST 轮询）
-        self._stream_active_orders: dict[str, set[str]] = {}
+        # 推送驱动的"各交易对存活委托快照"（symbol -> {order_id: OpenOrder}），
+        # 用于委托指示灯与带数量明细（替代 REST 轮询）
+        self._stream_active_orders: dict[str, dict[str, OpenOrder]] = {}
         self._open_orders_emit_lock = threading.RLock()
         # 指示灯是否已用 REST 现存挂单打底（断线重连后需重新打底，置 False）
         self._user_stream_seeded = False
@@ -470,24 +475,38 @@ class BinanceConnector(QObject):
         self._open_orders_cache = orders
         return orders
 
-    def _emit_open_orders(self, symbols: frozenset[str]) -> None:
-        """挂单交易对集合变化时通知 UI（用于委托指示灯）。
+    def _emit_open_orders(
+        self, symbols: frozenset[str], detail: list[OpenOrder] | None = None
+    ) -> None:
+        """挂单变化时通知 UI：symbols 驱动委托指示灯，detail 为带数量的委托快照。
 
         REST 轮询线程与 User Data Stream 线程都可能调用，故加锁保护快照比较。
+        symbols 仅在集合变化时发；detail 只要提供就发（部分成交时集合不变但数量需刷新）。
         """
         with self._open_orders_emit_lock:
-            if symbols == self._open_order_symbols:
-                return
-            self._open_order_symbols = symbols
-        self.open_orders_changed.emit(symbols)
+            symbols_changed = symbols != self._open_order_symbols
+            if symbols_changed:
+                self._open_order_symbols = symbols
+        if symbols_changed:
+            self.open_orders_changed.emit(symbols)
+        if detail is not None:
+            self.open_orders_detail.emit(list(detail))
+
+    def _collect_stream_orders_locked(self) -> list[OpenOrder]:
+        """汇总各交易对的存活委托快照（须持有 _open_orders_emit_lock）。"""
+        out: list[OpenOrder] = []
+        for bag in self._stream_active_orders.values():
+            out.extend(bag.values())
+        return out
 
     def _poll_open_orders(self, watched: set[str]) -> None:
-        """刷新委托指示灯：复用 get_open_orders 结果。"""
+        """刷新委托指示灯：复用 get_open_orders 结果（REST 兜底，带数量）。"""
         if not self._client:
             return
         orders = self.get_open_orders()
-        active = {o.symbol for o in orders if o.symbol in watched}
-        self._emit_open_orders(frozenset(active))
+        watched_orders = [o for o in orders if o.symbol in watched]
+        active = {o.symbol for o in watched_orders}
+        self._emit_open_orders(frozenset(active), watched_orders)
 
     def _wait_for_limit_order_fills(
         self,
@@ -1581,12 +1600,28 @@ class BinanceConnector(QObject):
             proxy_port=self.config.proxy_port,
             on_quote=_on_quote,
             on_state=_on_state,
+            on_depth=self._on_ws_depth,
+            depth_ms=BA_DEPTH_WS_MS,
         )
         self._ws_stream.start()
+
+    def _on_ws_depth(self, symbol: str, bids: list, asks: list) -> None:
+        """WS 线程：用 @depth20 推送的完整快照替换订单簿多档（顶档仍由 bookTicker 维护）。"""
+        new_book = OrderBook(
+            bids=[OrderBookLevel(p, q) for p, q in bids[:10]],
+            asks=[OrderBookLevel(p, q) for p, q in asks[:10]],
+            is_simulated=False,
+        )
+        with self._book_lock:
+            self._order_books[symbol] = new_book
 
     def _ws_quotes_live(self) -> bool:
         stream = self._ws_stream
         return stream is not None and stream.is_live(stale_sec=WS_STALE_SEC)
+
+    def _depth_ws_live(self) -> bool:
+        stream = self._ws_stream
+        return stream is not None and stream.depth_is_live(stale_sec=WS_STALE_SEC)
 
     # ------------------------------------------------------------------
     # User Data Stream（账户私有推送）：listenKey 生命周期 + 事件处理
@@ -1762,22 +1797,49 @@ class BinanceConnector(QObject):
             st.status = status
             st.updated_at = time.monotonic()
             self._order_cond.notify_all()
-        self._update_stream_open_orders(symbol, oid, status)
+        self._update_stream_open_orders(self._parse_stream_order(o), status)
 
-    def _update_stream_open_orders(self, symbol: str, order_id: str, status: str) -> None:
-        """按推送的委托状态维护"存活委托集合"，驱动委托指示灯。"""
+    @staticmethod
+    def _parse_stream_order(o: dict) -> OpenOrder:
+        """将 ORDER_TRADE_UPDATE 的 o 对象解析为带数量的 OpenOrder。"""
+        total = float(o.get("q", 0) or 0)        # 原始委托量
+        filled = float(o.get("z", 0) or 0)       # 累计已成交量
+        side_raw = str(o.get("S", "")).upper()
+        if side_raw == "BUY":
+            side = Side.BUY
+        elif side_raw == "SELL":
+            side = Side.SELL
+        else:
+            side = Side.NONE
+        return OpenOrder(
+            platform="BA",
+            symbol=str(o.get("s", "")),
+            order_id=str(o.get("i", "")),
+            side=side,
+            order_type=str(o.get("o", "")),
+            total_quantity=total,
+            filled_quantity=filled,
+            remaining_quantity=max(0.0, total - filled),
+            price=float(o.get("p", 0) or 0),
+            reduce_only=bool(o.get("R", False)),
+        )
+
+    def _update_stream_open_orders(self, order: OpenOrder, status: str) -> None:
+        """按推送的委托快照维护"存活委托"，驱动委托指示灯与带数量明细。"""
+        symbol = order.symbol
         if not symbol:
             return
         with self._open_orders_emit_lock:
-            bag = self._stream_active_orders.setdefault(symbol, set())
+            bag = self._stream_active_orders.setdefault(symbol, {})
             if status in ("NEW", "PARTIALLY_FILLED"):
-                bag.add(order_id)
+                bag[order.order_id] = order
             else:  # FILLED / CANCELED / EXPIRED / REJECTED 等终态
-                bag.discard(order_id)
+                bag.pop(order.order_id, None)
             active = frozenset(
                 sym for sym, ids in self._stream_active_orders.items() if ids
             )
-        self._emit_open_orders(active)
+            detail = self._collect_stream_orders_locked()
+        self._emit_open_orders(active, detail)
 
     def _seed_stream_open_orders(self, watched: set[str]) -> None:
         """启动推送后用一次 REST 现存挂单为指示灯打底（推送只覆盖增量变化）。"""
@@ -1789,13 +1851,14 @@ class BinanceConnector(QObject):
             self._stream_active_orders.clear()
             for o in orders:
                 if o.symbol in watched:
-                    self._stream_active_orders.setdefault(o.symbol, set()).add(
+                    self._stream_active_orders.setdefault(o.symbol, {})[
                         str(o.order_id)
-                    )
+                    ] = o
             active = frozenset(
                 sym for sym, ids in self._stream_active_orders.items() if ids
             )
-        self._emit_open_orders(active)
+            detail = self._collect_stream_orders_locked()
+        self._emit_open_orders(active, detail)
 
     def _on_user_account_update(self, payload: dict) -> None:
         """WS 线程：持仓/余额变化，失效缓存并置脏，由 poll 循环尽快强刷。"""
@@ -1978,9 +2041,11 @@ class BinanceConnector(QObject):
                         for q in quotes:
                             self.quote_received.emit(q)
                         rest_sleep = self._rest_quote_fallback_interval()
-                    need_depth = (
-                        not self._order_books
-                        or self._quote_poll_count % depth_every == 1
+                    # WS 深度（@depth20）在线时不再 REST 拉深度；
+                    # 仅在无任何盘口打底、或深度 WS 不可用时按 ~3 秒兜底。
+                    need_depth = not self._order_books or (
+                        not self._depth_ws_live()
+                        and self._quote_poll_count % depth_every == 1
                     )
                     if need_depth:
                         for sym in watched:

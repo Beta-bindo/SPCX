@@ -1326,11 +1326,11 @@ class MainWindow(QMainWindow):
 
         xau_ba = update.ba_quotes.get(find_preset("xau").symbol_ba)
         xag_ba = update.ba_quotes.get(find_preset("xag").symbol_ba)
-        self.gold_panel.update_ba_mid(
-            xau.ba_mid if xau else (xau_ba.mid if xau_ba and xau_ba.bid > 0 else None)
+        self.gold_panel.update_ba_bid(
+            xau.ba_bid if xau else (xau_ba.bid if xau_ba and xau_ba.bid > 0 else None)
         )
-        self.silver_panel.update_ba_mid(
-            xag.ba_mid if xag else (xag_ba.mid if xag_ba and xag_ba.bid > 0 else None)
+        self.silver_panel.update_ba_bid(
+            xag.ba_bid if xag else (xag_ba.bid if xag_ba and xag_ba.bid > 0 else None)
         )
         self._maybe_auto_trade(update)
         self._refresh_order_book()

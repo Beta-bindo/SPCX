@@ -82,6 +82,7 @@ class SpreadEngine(QObject):
         self.binance.quote_received.connect(self._on_ba_quote)
         self.binance.state_changed.connect(lambda s: self.connection_changed.emit("BA", s))
         self.binance.account_received.connect(self.account_updated.emit)
+        self.binance.open_orders_detail.connect(self._on_ba_open_orders_detail)
         self.binance.log.connect(self.log_message.emit)
 
         self.mt5.quote_received.connect(self._on_mt5_quote)
@@ -177,14 +178,14 @@ class SpreadEngine(QObject):
         self._log(
             LogLevel.TRADE,
             f"{prefix} · 点差指数 {snap.mid_spread:+.3f} "
-            f"(BA {snap.ba_mid:.3f} / Ex {snap.mt5_mid:.3f})",
+            f"(BA {snap.ba_bid:.3f} / Ex {snap.mt5_bid:.3f})",
         )
 
     def _order_snapshot(self, preset_id: str) -> tuple[float, float, float]:
         snap = self._spreads.get(preset_id)
         if snap is None:
             return 0.0, 0.0, 0.0
-        return snap.mid_spread, snap.ba_mid, snap.mt5_mid
+        return snap.mid_spread, snap.ba_bid, snap.mt5_bid
 
     def _order_quantities(self, preset_id: str) -> tuple[float, float]:
         return (
@@ -596,6 +597,19 @@ class SpreadEngine(QObject):
         self.positions_updated.emit(updated, summary)
         self.open_orders_updated.emit(open_orders)
         self._emit_market(risk)
+
+    def _on_ba_open_orders_detail(self, ba_orders: list) -> None:
+        """BA User Data Stream 推送的带数量委托快照：立即合并 MT5 上次快照并推送 UI。
+
+        实现"WS 速度 + 真实数量"：BA 端用推送的最新委托（含总量/已成交/剩余）即时刷新，
+        MT5 端无私有推送，沿用最近一次 REST 轮询结果，待下一轮持仓刷新补齐校正。
+        """
+        if not self._running:
+            return
+        mt5_orders = [o for o in self._open_orders if o.platform != "BA"]
+        merged = list(ba_orders) + mt5_orders
+        self._open_orders = merged
+        self.open_orders_updated.emit(merged)
 
     @property
     def last_summary(self) -> PnlSummary:

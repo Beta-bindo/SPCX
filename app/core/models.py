@@ -283,7 +283,7 @@ class SpreadSnapshot:
 
     @property
     def spread(self) -> float:
-        """币安 − Exness（中间价差）."""
+        """币安 − Exness（买价差）."""
         return self.mid_spread
 
 

@@ -41,7 +41,7 @@ def run_spread_tests(r: Report) -> None:
     ba = Quote("XAUUSDT", bid=2652.0, ask=2652.3)
     mt5 = Quote("XAUUSD", bid=2649.0, ask=2649.2)
     snap = build_spread_snapshot(ba, mt5, "xau")
-    r.check("点差 mid = BA中价 - Exness中价", snap is not None and abs(snap.mid_spread - (2652.15 - 2649.1)) < 1e-9)
+    r.check("点差 = BA买价 - Exness买价", snap is not None and abs(snap.mid_spread - (2652.0 - 2649.0)) < 1e-9)
     r.check("点差 exec = BA买价 - Exness卖价", abs(snap.exec_spread - (2652.0 - 2649.2)) < 1e-9)
     r.check("点差保留3位精度展示", f"{snap.mid_spread:.3f}" == f"{snap.mid_spread:.3f}")
 
