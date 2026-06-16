@@ -27,6 +27,7 @@ from app.core.models import (
     OpenOrder,
     Position,
     Quote,
+    Side,
     SpreadSnapshot,
 )
 from app.core.network_status import NetworkStatus
@@ -424,8 +425,14 @@ class SpreadEngine(QObject):
                 )
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
-                self._log(LogLevel.TRADE, f"【结算】{label} 平仓{mlabel} · 净利 {rec.net_pnl:+.2f}")
+                self._log(
+                    LogLevel.TRADE,
+                    f"【结算】{label} 平仓{mlabel} · 点差 {rec.spread:+.3f} "
+                    f"BA {rec.ba_price:.3f} / Ex {rec.ex_price:.3f} · 净利 {rec.net_pnl:+.2f}",
+                )
                 self.trade_recorded.emit(rec)
+            if result.success:
+                self._log_remaining_positions(preset_id)
             self.trade_finished.emit(result)
             finished = True
             self.refresh_positions()
@@ -437,6 +444,33 @@ class SpreadEngine(QObject):
                 self.trade_finished.emit(
                     HedgeTradeResult(action="close", success=False, message="平仓异常")
                 )
+
+    def _log_remaining_positions(self, preset_id: str) -> None:
+        """平仓后把该品种两端剩余持仓打印到日志，便于核对是否平干净。"""
+        preset = find_preset(preset_id)
+        label = "黄金" if preset_id == "xau" else "白银"
+        try:
+            ba_pos = next(
+                (p for p in self.binance.get_positions() if p.symbol == preset.symbol_ba),
+                None,
+            )
+            mt5_pos = next(
+                (p for p in self.mt5.get_positions() if p.symbol == preset.symbol_mt5),
+                None,
+            )
+        except Exception:  # noqa: BLE001 — 仅日志用途，取持仓失败不影响主流程
+            return
+
+        def _fmt(pos: Position | None, unit: str) -> str:
+            if pos is None or pos.quantity <= 0:
+                return "无"
+            side = "空" if pos.side == Side.SELL else "多"
+            return f"{pos.quantity:g}{unit} {side}"
+
+        self._log(
+            LogLevel.TRADE,
+            f"{label}平仓后剩余持仓 · BA {_fmt(ba_pos, '')} / Ex {_fmt(mt5_pos, '手')}",
+        )
 
     def _position_poll_ms(self) -> int:
         """持仓轮询间隔（毫秒），随报价刷新间隔联动，但不低于 4 秒。"""

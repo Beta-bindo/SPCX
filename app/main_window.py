@@ -965,12 +965,16 @@ class MainWindow(QMainWindow):
             return
         self.config = self._merge_config()
         self.engine.sync_config(self.config)
-        if self.engine.is_trading:
+        # 互斥：engine.is_trading 由后台线程同步重置，会先于 trade_finished 回主线程取消勾选，
+        # 中间存在窗口；用 _pending_auto_trade(主线程读写、随取消勾选同一时机清空)兜住该窗口，
+        # 避免同一笔尚未收尾就被重复触发。
+        if self.engine.is_trading or self._pending_auto_trade is not None:
             self._append_log(LogLevel.INFO, "自动下单：上一笔交易尚未完成，已跳过")
             return
-        self._pending_auto_trade = ("open", preset_id, mode, order_mode)
         self.engine.open_hedge(preset_id, mode, order_mode)
+        # 仅在交易确实启动后才置位，避免前置校验失败(未发 trade_finished)时把标志永久卡死。
         if self.engine.is_trading:
+            self._pending_auto_trade = ("open", preset_id, mode, order_mode)
             save_config_async(self.config)
 
     def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
@@ -978,11 +982,14 @@ class MainWindow(QMainWindow):
             return
         self.config = self._merge_config()
         self.engine.sync_config(self.config)
-        if self.engine.is_trading:
+        # 互斥：同 _execute_auto_open，用 _pending_auto_trade 兜住 is_trading 重置与取消勾选之间的窗口，
+        # 防止点差持续满足时一次性平掉多手。
+        if self.engine.is_trading or self._pending_auto_trade is not None:
             self._append_log(LogLevel.INFO, "自动平仓：上一笔交易尚未完成，已跳过")
             return
-        self._pending_auto_trade = ("close", preset_id, mode, order_mode)
         self.engine.close_hedge(preset_id, mode, order_mode)
+        if self.engine.is_trading:
+            self._pending_auto_trade = ("close", preset_id, mode, order_mode)
 
     def _disable_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
         from app.core.auto_trade import _reset_lane_open_timers
