@@ -1390,11 +1390,13 @@ class BinanceConnector(QObject):
         mode: str = "contraction",
         *,
         close_all: bool = False,
+        qty_override: float | None = None,
     ) -> LegResult:
         """平 BA 端对冲仓（reduceOnly）。close_all=True 全平，否则按单次交易量部分平。
 
         与开仓对称：限价单等待成交并复查减仓量，未确认则返回 needs_reconciliation。
-        回滚场景由上层以 close_all=True 调用。
+        qty_override 指定本次要平的数量（用于「加仓失败回滚」时只平掉本次成交的增量，
+        避免误平用户原有持仓）；给定时优先于单次交易量，且忽略 close_all。
         """
         symbol_ba, _, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
@@ -1402,7 +1404,11 @@ class BinanceConnector(QObject):
         use_limit, maker_only = resolve_execution_flags(preset_id, order_mode)
         with self._book_lock:
             quote = self._quotes.get(symbol_ba, Quote(symbol=symbol_ba))
-        trade_qty = self.config.ba_quantity_for(preset_id)
+        if qty_override is not None and qty_override > 0:
+            trade_qty = float(qty_override)
+            close_all = False  # 精确回滚本次增量，绝不全平
+        else:
+            trade_qty = self.config.ba_quantity_for(preset_id)
         action_label = hedge_action_label("close", mode)
 
         if not self.config.use_live_ba:

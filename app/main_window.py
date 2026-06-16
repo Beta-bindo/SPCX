@@ -991,7 +991,9 @@ class MainWindow(QMainWindow):
         if self.engine.is_trading:
             self._pending_auto_trade = ("close", preset_id, mode, order_mode)
 
-    def _disable_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
+    def _disable_auto_open(
+        self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
+    ) -> None:
         from app.core.auto_trade import _reset_lane_open_timers
         from app.core.order_mode import auto_trade_lane
 
@@ -1011,12 +1013,20 @@ class MainWindow(QMainWindow):
         sym = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
+        if outcome == "success":
+            status = "已成功"
+        elif outcome == "partial":
+            status = "部分成功"
+        else:
+            status = "未成功"
         self._append_log(
             LogLevel.INFO,
-            f"自动开仓{mlabel}({lane_label})已成功，已取消{sym}对应勾选，可手动重新开启",
+            f"自动开仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
         )
 
-    def _disable_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
+    def _disable_auto_close(
+        self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
+    ) -> None:
         from app.core.auto_trade import _reset_lane_close_timers
         from app.core.order_mode import auto_trade_lane
 
@@ -1035,9 +1045,15 @@ class MainWindow(QMainWindow):
         sym = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
+        if outcome == "success":
+            status = "已平一手"
+        elif outcome == "partial":
+            status = "部分成功"
+        else:
+            status = "未成功"
         self._append_log(
             LogLevel.INFO,
-            f"自动平仓{mlabel}({lane_label})已平一手，已取消{sym}对应勾选，可手动重新开启",
+            f"自动平仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
         )
 
     def _on_manual_cancel_orders(self) -> None:
@@ -1335,16 +1351,24 @@ class MainWindow(QMainWindow):
         pending = self._pending_auto_trade
         self._pending_auto_trade = None
         is_auto = pending is not None
-        if pending and pending[0] == "open":
-            # 自动开仓无论成功/部分/失败都取消勾选：需人工重新勾选授权，
-            # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
-            _, preset_id_p, mode, order_mode = pending
-            self._disable_auto_open(preset_id_p, mode, order_mode)
-        elif pending and pending[0] == "close":
-            # 自动平仓与开仓对称：每次只平一手，平成功/部分/失败后均取消勾选，
-            # 需人工重新勾选才平下一手，避免点差持续满足时连续平到光。
-            _, preset_id_p, mode, order_mode = pending
-            self._disable_auto_close(preset_id_p, mode, order_mode)
+        if is_auto and pending:
+            outcome = (
+                "partial"
+                if result.partial
+                else "failed"
+                if not result.success
+                else "success"
+            )
+            if pending[0] == "open":
+                # 自动开仓无论成功/部分/失败都取消勾选：需人工重新勾选授权，
+                # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
+                _, preset_id_p, mode, order_mode = pending
+                self._disable_auto_open(preset_id_p, mode, order_mode, outcome)
+            elif pending[0] == "close":
+                # 自动平仓与开仓对称：每次只平一手，平成功/部分/失败后均取消勾选，
+                # 需人工重新勾选才平下一手，避免点差持续满足时连续平到光。
+                _, preset_id_p, mode, order_mode = pending
+                self._disable_auto_close(preset_id_p, mode, order_mode, outcome)
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:

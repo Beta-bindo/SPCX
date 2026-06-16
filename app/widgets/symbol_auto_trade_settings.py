@@ -525,12 +525,13 @@ class SymbolAutoTradeSettings(QFrame):
                 threshold.setEnabled(True)
 
             if self._active_mode is not None:
+                # 持仓方向锁：只锁「反向开仓」，防止开成方向矛盾的双向仓。
+                # 不再锁/取消任何「平仓」勾选——自动平仓评估以真实持仓方向(detect_hedge_mode)
+                # 为准，反向平仓勾选根本不会被评估/触发，锁它只会无谓清掉用户的平仓策略勾选。
                 lock_pairs = (
-                    (widgets[1], widgets[3]),
-                    (widgets[5], widgets[7]),
-                ) if self._active_mode == "contraction" else (
-                    (widgets[0], widgets[2]),
-                    (widgets[4], widgets[6]),
+                    ((widgets[1], widgets[3]),)  # 持收缩仓：仅锁开扩张
+                    if self._active_mode == "contraction"
+                    else ((widgets[0], widgets[2]),)  # 持扩张仓：仅锁开收缩
                 )
                 for enabled, threshold in lock_pairs:
                     enabled.blockSignals(True)

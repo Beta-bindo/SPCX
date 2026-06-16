@@ -732,16 +732,23 @@ class MT5Connector(QObject):
         mode: str = "contraction",
         *,
         close_all: bool = False,
+        lots_override: float | None = None,
     ) -> LegResult:
         """平 MT5 端对冲仓（按持仓 ticket 反向下单）。close_all=True 全平，否则部分平。
 
         下单后轮询确认减仓量，未确认则返回 needs_reconciliation。
+        lots_override 指定本次要平的手数（用于「加仓失败回滚」时只平掉本次成交的增量，
+        避免误平用户原有持仓）；给定时优先于单次交易量，且忽略 close_all。
         """
         _, symbol_mt5, _ = resolve_symbols(
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
         # 注：MT5 平仓统一走市价（对冲账户无法真正 Maker 平仓），不再按 order_mode 分流。
-        trade_lots = self.config.mt5_lot_for(preset_id)
+        if lots_override is not None and lots_override > 0:
+            trade_lots = float(lots_override)
+            close_all = False  # 精确回滚本次增量，绝不全平
+        else:
+            trade_lots = self.config.mt5_lot_for(preset_id)
         action_label = hedge_action_label("close", mode)
 
         if not self.config.use_live_mt5:
