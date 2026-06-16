@@ -252,6 +252,55 @@ def test_config_roundtrip():
     print("  ✓ 自动下单配置持久化")
 
 
+def test_manual_cancel_button_emits_signal():
+    app = QApplication.instance() or QApplication(sys.argv)
+    from app.widgets.symbol_auto_trade_settings import SymbolAutoTradeSettings
+
+    gold = SymbolAutoTradeSettings("xau")
+    assert hasattr(gold, "cancel_orders_btn")
+    assert gold.cancel_orders_btn.text() == "撤销委托"
+
+    fired: list[bool] = []
+    gold.manual_cancel_requested.connect(lambda: fired.append(True))
+    gold.cancel_orders_btn.click()
+    assert fired == [True]
+
+    silver = SymbolAutoTradeSettings("xag")
+    assert not hasattr(silver, "cancel_orders_btn")
+    print("  ✓ 撤销委托按钮：仅黄金面板存在且点击触发信号")
+
+
+def test_pending_light_states():
+    app = QApplication.instance() or QApplication(sys.argv)
+    from app.widgets.symbol_auto_trade_settings import SymbolAutoTradeSettings
+
+    gold = SymbolAutoTradeSettings("xau")
+    light = gold.maker_pending_light
+
+    # 初始：无委托，灰色
+    assert light.text() == "○ 无委托"
+    assert light.property("pendingActive") == "false"
+
+    # 有委托并带数量：点亮（绿色）、文案「有委托」、数量显示在后面
+    gold.set_pending_order(True, 500.0)
+    assert light.text() == "● 有委托 500"
+    assert light.property("pendingActive") == "true"
+
+    # 数量变化时实时刷新
+    gold.set_pending_order(True, 1234.0)
+    assert light.text() == "● 有委托 1234"
+
+    # 仅集合更新（不带数量）时沿用上次数量
+    gold.set_pending_order(True)
+    assert light.text() == "● 有委托 1234"
+
+    # 撤销后恢复无委托
+    gold.set_pending_order(False)
+    assert light.text() == "○ 无委托"
+    assert light.property("pendingActive") == "false"
+    print("  ✓ 委托指示灯：无委托/有委托+数量/清空 状态正确")
+
+
 def main() -> int:
     errors: list[str] = []
     tests = [
@@ -268,6 +317,8 @@ def main() -> int:
         test_market_auto_open_fires_with_market_order_mode,
         test_maker_fire_preserves_market_contraction_timer,
         test_config_roundtrip,
+        test_manual_cancel_button_emits_signal,
+        test_pending_light_states,
     ]
     for fn in tests:
         try:

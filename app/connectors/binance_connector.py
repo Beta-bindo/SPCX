@@ -353,6 +353,27 @@ class BinanceConnector(QObject):
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA 撤单 #{order_id}: {exc}")
 
+    def cancel_all_open_orders(self) -> int:
+        """撤销所有受监控交易对的未成交委托，返回成功撤销的委托笔数。"""
+        if not self.config.use_live_ba or not self._client:
+            return 0
+        orders = self.get_open_orders()
+        pending = [o for o in orders if o.remaining_quantity > 0]
+        symbols = sorted({o.symbol for o in pending})
+        cancelled = 0
+        for symbol in symbols:
+            def _cancel(s=symbol) -> None:
+                self._client.futures_cancel_all_open_orders(symbol=s)
+
+            try:
+                self._run_ba_api(_cancel, log_failures=False)
+                count = sum(1 for o in pending if o.symbol == symbol)
+                cancelled += count
+                self._log(LogLevel.TRADE, f"BA 已撤销 {symbol} 全部委托（{count} 笔）")
+            except Exception as exc:
+                self._log(LogLevel.ERROR, f"BA 撤单失败 {symbol}: {exc}")
+        return cancelled
+
     def _wait_for_limit_order(
         self,
         symbol: str,

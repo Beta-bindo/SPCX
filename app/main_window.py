@@ -627,6 +627,7 @@ class MainWindow(QMainWindow):
                     w.toggled.connect(self._on_auto_trade_toggled)
                 else:
                     w.valueChanged.connect(self._on_auto_trade_toggled)
+            auto.manual_cancel_requested.connect(self._on_manual_cancel_orders)
 
         self.engine.market_updated.connect(self._on_market)
         self.engine.connection_changed.connect(self._on_connection)
@@ -974,6 +975,14 @@ class MainWindow(QMainWindow):
             f"自动平仓{mlabel}({lane_label})已平一手，已取消{sym}对应勾选，可手动重新开启",
         )
 
+    def _on_manual_cancel_orders(self) -> None:
+        """手动撤销全部未成交委托：仅在监控运行时有效，后台执行避免阻塞 UI。"""
+        if not self.engine.is_running:
+            self._append_log(LogLevel.INFO, "未开始监控，无法撤单")
+            return
+        self._append_log(LogLevel.INFO, "手动撤单 · 正在撤销全部委托…")
+        self.engine.cancel_all_open_orders()
+
     def _on_open_orders_changed(self, symbols) -> None:
         """委托单集合变化：点亮/熄灭各品种委托灯，并联动禁用 Maker 自动开仓。"""
         from app.core.symbols import preset_for_ba_symbol
@@ -1178,13 +1187,15 @@ class MainWindow(QMainWindow):
         self.silver_actions.update_open_orders(orders)
         for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
             preset = find_preset(preset_id)
-            has_ba_pending = any(
-                o.platform == "BA"
+            ba_pending = [
+                o
+                for o in orders
+                if o.platform == "BA"
                 and o.symbol == preset.symbol_ba
                 and o.remaining_quantity > 0
-                for o in orders
-            )
-            strip.auto_trade_settings.set_pending_order(has_ba_pending)
+            ]
+            pending_qty = sum(o.remaining_quantity for o in ba_pending)
+            strip.auto_trade_settings.set_pending_order(bool(ba_pending), pending_qty)
 
         summary = build_open_orders_summary(orders)
         if summary != self._last_open_orders_log:

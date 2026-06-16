@@ -566,6 +566,25 @@ class SpreadEngine(QObject):
 
         threading.Thread(target=_work, daemon=True, name="refresh-positions").start()
 
+    def cancel_all_open_orders(self) -> None:
+        """后台撤销 BA 全部未成交委托，完成后刷新一次持仓与委托。"""
+        if not self._running:
+            return
+
+        def _work() -> None:
+            try:
+                count = self.binance.cancel_all_open_orders()
+                if count > 0:
+                    self._log(LogLevel.TRADE, f"手动撤单 · 已撤销 {count} 笔委托")
+                else:
+                    self._log(LogLevel.INFO, "手动撤单 · 当前无可撤委托")
+            except Exception as exc:
+                self._log(LogLevel.ERROR, f"手动撤单失败: {exc}")
+            finally:
+                self.refresh_positions()
+
+        threading.Thread(target=_work, daemon=True, name="cancel-all-orders").start()
+
     def _apply_positions_refresh(
         self, updated: list[Position], summary: PnlSummary, risk, open_orders: list[OpenOrder]
     ) -> None:

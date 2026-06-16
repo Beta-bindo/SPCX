@@ -28,7 +28,7 @@ QLabel#mt5PlatformTag {{
     font-size: {font_pt}pt;
 }}
 QLabel#fieldLabel[pendingActive="true"] {{
-    color: #e67e22;
+    color: #22c55e;
 }}
 QCheckBox#settingsCheck {{
     font-size: {font_pt}pt;

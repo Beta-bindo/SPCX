@@ -195,6 +195,53 @@ def test_binance_get_positions_uses_lock():
     print("  ✓ BA 持仓查询 futures API")
 
 
+def test_cancel_all_open_orders_cancels_pending():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
+    conn = BinanceConnector(cfg)
+    client = MagicMock()
+
+    def _open_orders(symbol=None):
+        if symbol == "XAUUSDT":
+            return [{
+                "symbol": "XAUUSDT", "orderId": 123, "side": "BUY",
+                "type": "LIMIT", "origQty": "0.01", "executedQty": "0",
+                "price": "2650.0",
+            }]
+        return []
+
+    client.futures_get_open_orders.side_effect = _open_orders
+    conn._client = client
+
+    count = conn.cancel_all_open_orders()
+
+    assert count == 1
+    client.futures_cancel_all_open_orders.assert_called_once_with(symbol="XAUUSDT")
+    print("  ✓ 手动撤单：撤销委托中的挂单")
+
+
+def test_cancel_all_open_orders_noop_without_pending():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
+    conn = BinanceConnector(cfg)
+    client = MagicMock()
+    client.futures_get_open_orders.return_value = []
+    conn._client = client
+
+    count = conn.cancel_all_open_orders()
+
+    assert count == 0
+    client.futures_cancel_all_open_orders.assert_not_called()
+    print("  ✓ 手动撤单：无挂单时不调用撤单接口")
+
+
+def test_cancel_all_open_orders_skips_when_not_live():
+    cfg = AppConfig(connection_mode=ConnectionMode.DEMO.value)
+    conn = BinanceConnector(cfg)
+    conn._client = MagicMock()
+
+    assert conn.cancel_all_open_orders() == 0
+    print("  ✓ 手动撤单：非实盘直接跳过")
+
+
 def test_gold_maker_vs_market_demo():
     cfg = AppConfig(connection_mode=ConnectionMode.DEMO.value, xau_trade_lots=1.0, xau_ba_qty_map=500.0)
     conn = BinanceConnector(cfg)

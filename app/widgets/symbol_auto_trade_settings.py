@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
 )
@@ -46,6 +47,8 @@ def _maker_timeout_spin(value: float):
 class SymbolAutoTradeSettings(QFrame):
     """收缩/扩张自动开平仓：黄金 Maker+市价；白银仅市价。"""
 
+    manual_cancel_requested = Signal()  # 点击「撤销委托」按钮，请求撤销全部未成交委托
+
     def __init__(self, preset_id: str, parent=None):
         super().__init__(parent)
         self.preset_id = preset_id
@@ -53,6 +56,7 @@ class SymbolAutoTradeSettings(QFrame):
         # 锁定状态来源：持仓方向锁 + Maker 委托锁，统一在 _recompute_locks 合并
         self._active_mode: str | None = None
         self._maker_pending = False
+        self._maker_pending_qty = 0.0
         self._ui_font_pt = DEFAULT_PANEL_FONT_PT
 
         root = QVBoxLayout(self)
@@ -191,6 +195,15 @@ class SymbolAutoTradeSettings(QFrame):
         self.maker_pending_light = self._field_label("")
         self.maker_pending_light.setProperty("pendingActive", "false")
         row.addWidget(self.maker_pending_light)
+        row.addSpacing(8)
+        self.cancel_orders_btn = QPushButton("撤销委托")
+        self.cancel_orders_btn.setObjectName("ghostButton")
+        self.cancel_orders_btn.setProperty("compact", "true")
+        self.cancel_orders_btn.setToolTip("立即撤销所有未成交（委托中）的挂单")
+        self.cancel_orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_orders_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.cancel_orders_btn.clicked.connect(self.manual_cancel_requested.emit)
+        row.addWidget(self.cancel_orders_btn)
         row.addStretch()
         self._update_pending_light()
         return row
@@ -209,7 +222,11 @@ class SymbolAutoTradeSettings(QFrame):
             return
         self._sync_pending_light_font()
         if self._maker_pending:
-            self.maker_pending_light.setText("● 委托中")
+            qty = self._maker_pending_qty
+            if qty > 0:
+                self.maker_pending_light.setText(f"● 有委托 {qty:.4g}")
+            else:
+                self.maker_pending_light.setText("● 有委托")
             self.maker_pending_light.setProperty("pendingActive", "true")
         else:
             self.maker_pending_light.setText("○ 无委托")
@@ -469,16 +486,27 @@ class SymbolAutoTradeSettings(QFrame):
         self._active_mode = active_mode
         self._recompute_locks()
 
-    def set_pending_order(self, active: bool) -> None:
-        """设置 Maker 委托灯状态：有挂单时点亮并禁止勾选 Maker 自动开仓。"""
+    def set_pending_order(self, active: bool, quantity: float | None = None) -> None:
+        """设置 Maker 委托灯状态：有挂单时点亮（绿色「有委托 数量」）并禁止勾选 Maker 自动开仓。
+
+        quantity 为 BA 该品种未成交委托的剩余数量；传 None 时沿用上次数量
+        （供仅有挂单交易对集合、无数量的快速更新路径使用）。
+        """
         if self.preset_id != "xau":
             return
         active = bool(active)
-        if active == self._maker_pending:
+        qty = self._maker_pending_qty if quantity is None else max(0.0, float(quantity))
+        if not active:
+            qty = 0.0
+        active_changed = active != self._maker_pending
+        qty_changed = qty != self._maker_pending_qty
+        if not active_changed and not qty_changed:
             return
         self._maker_pending = active
+        self._maker_pending_qty = qty
         self._update_pending_light()
-        self._recompute_locks()
+        if active_changed:
+            self._recompute_locks()
 
     def _recompute_locks(self) -> None:
         """统一应用两类锁：先全部解锁，再叠加持仓方向锁与 Maker 委托锁。"""
