@@ -358,27 +358,55 @@ class MT5Connector(QObject):
             positions = []
             for symbol in watched_mt5_symbols():
                 live_positions = mt5.positions_get(symbol=symbol) or []
-                if live_positions:
-                    # order_calc_profit 需要该品种已在行情列表(Market Watch)且有报价，
-                    # 否则会抛 "returned a result with an error set"。先尝试选中提高成功率。
-                    try:
-                        mt5.symbol_select(symbol, True)
-                    except Exception:
-                        pass
+                if not live_positions:
+                    continue
+                # order_calc_profit 需要该品种已在行情列表(Market Watch)且有报价，
+                # 否则会抛 "returned a result with an error set"。先尝试选中提高成功率。
+                try:
+                    mt5.symbol_select(symbol, True)
+                except Exception:
+                    pass
+
+                # Exness 多为对冲(Hedging)账户：同品种同方向会有多张独立票据，
+                # 必须按「方向」合并为一条持仓（手数加总、入场价按手数加权、盈亏加总），
+                # 否则界面/盈亏/对冲数量核对只会取到其中一张票，导致数量与盈亏少算。
+                groups: dict[Side, dict] = {}
                 for pos in live_positions:
                     side = Side.BUY if pos.type == mt5.ORDER_TYPE_BUY else Side.SELL
+                    g = groups.setdefault(
+                        side,
+                        {"volume": 0.0, "pnl": 0.0, "notional": 0.0, "mark": 0.0, "sym": pos.symbol},
+                    )
+                    vol = float(pos.volume)
+                    g["volume"] += vol
+                    g["pnl"] += float(pos.profit)
+                    g["notional"] += float(pos.price_open) * vol
+                    g["mark"] = float(pos.price_current or 0.0)
+                    g["sym"] = pos.symbol
+
+                for side, g in groups.items():
+                    total_vol = g["volume"]
+                    if total_vol <= 0:
+                        continue
+                    avg_entry = g["notional"] / total_vol if total_vol else 0.0
+                    total_pnl = g["pnl"]
                     liq_price = 0.0
                     if account is not None:
                         try:
-                            equity_without = float(account.equity) - float(pos.profit)
+                            equity_without = float(account.equity) - total_pnl
+                            otype = (
+                                mt5.ORDER_TYPE_BUY if side == Side.BUY else mt5.ORDER_TYPE_SELL
+                            )
 
-                            def profit_at(close: float, _p=pos) -> float:
+                            def profit_at(
+                                close: float,
+                                _sym=g["sym"],
+                                _otype=otype,
+                                _vol=total_vol,
+                                _entry=avg_entry,
+                            ) -> float:
                                 value = mt5.order_calc_profit(
-                                    _p.symbol,
-                                    _p.type,
-                                    float(_p.volume),
-                                    float(_p.price_open),
-                                    float(close),
+                                    _sym, _otype, float(_vol), float(_entry), float(close)
                                 )
                                 if value is None:
                                     raise RuntimeError(
@@ -388,7 +416,7 @@ class MT5Connector(QObject):
 
                             liq_price = calc_liquidation_price_from_profit(
                                 side,
-                                float(pos.price_open),
+                                avg_entry,
                                 equity_without,
                                 float(account.margin),
                                 float(account.margin_so_so),
@@ -405,13 +433,13 @@ class MT5Connector(QObject):
                     positions.append(
                         Position(
                             platform="MT5",
-                            symbol=pos.symbol,
+                            symbol=g["sym"],
                             side=side,
-                            quantity=pos.volume,
-                            entry_price=pos.price_open,
-                            unrealized_pnl=pos.profit,
+                            quantity=total_vol,
+                            entry_price=avg_entry,
+                            unrealized_pnl=total_pnl,
                             liquidation_price=liq_price,
-                            mark_price=float(pos.price_current or 0.0),
+                            mark_price=g["mark"],
                             leverage=int(account.leverage if account else self.config.mt5_leverage),
                             exchange_liq_buffer=account_buffer,
                         )

@@ -62,7 +62,9 @@ def test_mt5_liquidation_price_matches_account_equity_model():
     assert 98.9 <= liq <= 99.0, f"expected ~98.98, got {liq}"
 
 
-def test_resolve_position_prefers_exchange_buffer():
+def test_resolve_position_reprices_from_live_quote():
+    # 有爆仓价 + 实时报价时，按实时价逐 tick 重算缓冲（使「爆」跟手），
+    # 不再停留在轮询时的交易所缓冲值。
     pos = Position(
         platform="BA",
         symbol="XAUUSDT",
@@ -73,7 +75,24 @@ def test_resolve_position_prefers_exchange_buffer():
         mark_price=2640,
         exchange_liq_buffer=888.0,
     )
+    # BUY 取买价 2640 → (2640 − 2600) × 500 = 20000
     buf = resolve_position_liq_buffer(pos, Quote("XAUUSDT", 2640, 2640.2), "xau", 100)
+    assert buf == 20000.0
+
+
+def test_resolve_position_falls_back_to_exchange_buffer():
+    # 无爆仓价 / 无实时价时，退回交易所返回的轮询缓冲。
+    pos = Position(
+        platform="BA",
+        symbol="XAUUSDT",
+        side=Side.BUY,
+        quantity=500,
+        entry_price=2650,
+        liquidation_price=0.0,
+        mark_price=0.0,
+        exchange_liq_buffer=888.0,
+    )
+    buf = resolve_position_liq_buffer(pos, None, "xau", 100)
     assert buf == 888.0
 
 
@@ -88,6 +107,7 @@ if __name__ == "__main__":
     test_liq_buffer_from_exchange_prices_long()
     test_mt5_account_buffer_with_zero_stop_out()
     test_mt5_liquidation_price_matches_account_equity_model()
-    test_resolve_position_prefers_exchange_buffer()
+    test_resolve_position_reprices_from_live_quote()
+    test_resolve_position_falls_back_to_exchange_buffer()
     test_estimate_fallback_for_demo()
     print("ALL LIQUIDATION TESTS PASSED")

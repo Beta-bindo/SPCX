@@ -136,6 +136,24 @@ def resolve_mark_price(pos: Position, quote: Quote | None) -> float:
     return quote.mid
 
 
+def _live_mark_price(pos: Position, quote: Quote | None) -> float:
+    """取「实时」盯市价：优先用实时报价的对侧盘口，缺报价再退回持仓自带盯市价。
+
+    与 resolve_mark_price 相反——这里优先实时报价，使「爆」资金缓冲能随行情逐 tick 跳动，
+    而不是停留在上次持仓轮询(约 4 秒)时的旧盯市价。
+    """
+    if quote is not None:
+        if pos.side == Side.SELL:
+            px = quote.ask if quote.ask > 0 else quote.mid
+        elif pos.side == Side.BUY:
+            px = quote.bid if quote.bid > 0 else quote.mid
+        else:
+            px = quote.mid
+        if px > 0:
+            return px
+    return pos.mark_price
+
+
 def resolve_position_liq_buffer(
     pos: Position,
     quote: Quote | None,
@@ -144,15 +162,13 @@ def resolve_position_liq_buffer(
 ) -> float:
     """求持仓距爆仓的缓冲，按可靠性依次尝试：
 
-    1) 交易所直接返回的缓冲（最准）；
-    2) 由交易所爆仓价 + 盯市价反推；
+    1) 实时报价 + 交易所爆仓价反推（随行情逐 tick 跳动，「爆」更跟手）；
+    2) 交易所直接返回的缓冲（轮询值，约 4 秒更新，作为无实时价时的兜底）；
     3) 退化方案：用"名义本金/杠杆"估算保证金再叠加浮盈。
     """
-    if pos.exchange_liq_buffer is not None:
-        return max(0.0, pos.exchange_liq_buffer)
-
     preset = find_preset(preset_id)
-    mark = resolve_mark_price(pos, quote)
+    # 1) 优先用实时报价 + 爆仓价逐 tick 重算，让「爆」跟随行情平滑变化
+    mark = _live_mark_price(pos, quote)
     if pos.liquidation_price > 0 and mark > 0:
         unit = preset.ba_qty_unit if pos.platform == "BA" else preset.mt5_oz_per_lot
         buf = liq_buffer_from_prices(
@@ -164,6 +180,10 @@ def resolve_position_liq_buffer(
         )
         if buf != float("inf"):
             return buf
+
+    # 2) 无实时价/无爆仓价时，退回交易所返回的轮询缓冲
+    if pos.exchange_liq_buffer is not None:
+        return max(0.0, pos.exchange_liq_buffer)
 
     if not quote or quote.mid <= 0:
         return float("inf")
