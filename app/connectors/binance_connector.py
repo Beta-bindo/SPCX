@@ -606,6 +606,42 @@ class BinanceConnector(QObject):
         _pnl, fee, known = self._fetch_order_trade_summary(symbol, order_id)
         return fee, known
 
+    def fetch_account_trade_history(
+        self, symbols: list[str], start_ms: int, end_ms: int
+    ) -> list[dict]:
+        """读取 BA 官方成交历史（futures_account_trades 原始字段）。"""
+        if not self.config.use_live_ba or not self._client or start_ms >= end_ms:
+            return []
+
+        def _fetch() -> list[dict]:
+            out: list[dict] = []
+            max_span_ms = 7 * 24 * 60 * 60 * 1000 - 1
+            for symbol in symbols:
+                window_start = start_ms
+                while window_start <= end_ms:
+                    window_end = min(end_ms, window_start + max_span_ms)
+                    cursor = window_start
+                    while cursor <= window_end:
+                        rows = self._client.futures_account_trades(
+                            symbol=symbol,
+                            startTime=cursor,
+                            endTime=window_end,
+                            limit=1000,
+                        ) or []
+                        if not rows:
+                            break
+                        out.extend(dict(row) for row in rows)
+                        if len(rows) < 1000:
+                            break
+                        next_cursor = int(rows[-1].get("time", cursor)) + 1
+                        if next_cursor <= cursor:
+                            break
+                        cursor = next_cursor
+                    window_start = window_end + 1
+            return out
+
+        return self._run_ba_api(_fetch, log_failures=False) or []
+
     @staticmethod
     def _maker_price_from_book(
         bid: float,
@@ -1240,6 +1276,44 @@ class BinanceConnector(QObject):
         except Exception:
             return 0.0
         return float(result or 0.0)
+
+    def fetch_income_history_rows(
+        self,
+        symbols: list[str],
+        start_ms: int,
+        end_ms: int,
+        income_types: tuple[str, ...] | None = None,
+    ) -> list[dict]:
+        """读取 BA 官方 income 历史原始行（资金费/返佣等）。"""
+        if not self.config.use_live_ba or not self._client or start_ms >= end_ms:
+            return []
+        types = income_types or ("FUNDING_FEE",) + self._BA_REBATE_INCOME_TYPES
+
+        def _fetch() -> list[dict]:
+            out: list[dict] = []
+            for symbol in symbols:
+                for income_type in types:
+                    cursor = start_ms
+                    while cursor <= end_ms:
+                        rows = self._client.futures_income_history(
+                            symbol=symbol,
+                            incomeType=income_type,
+                            startTime=cursor,
+                            endTime=end_ms,
+                            limit=1000,
+                        ) or []
+                        if not rows:
+                            break
+                        out.extend(dict(row) for row in rows)
+                        if len(rows) < 1000:
+                            break
+                        next_cursor = int(rows[-1].get("time", cursor)) + 1
+                        if next_cursor <= cursor:
+                            break
+                        cursor = next_cursor
+            return out
+
+        return self._run_ba_api(_fetch, log_failures=False) or []
 
     def transfer_spot_futures(self, amount: float, to_futures: bool) -> tuple[bool, str]:
         """现货钱包 ↔ U 本位合约钱包划转（USDT）。

@@ -20,9 +20,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.core.profit_calculator import ProfitRow, calculate_profit
+from app.core.official_profit import (
+    OFFICIAL_FIELD_LABELS,
+    OFFICIAL_FIELD_ORDER,
+    OfficialProfitReport,
+    OfficialProfitRow,
+)
 from app.core.profit_export import export_profit_xlsx
-from app.core.trade_ledger import load_ledger
 from app.widgets.date_range_picker import DateRangePicker
 from app.widgets.table_pagination import TablePagination
 
@@ -30,8 +34,9 @@ from app.widgets.table_pagination import TablePagination
 class ProfitCalculatorDialog(QDialog):
     """利润计算器：筛选条件 + 汇总卡 + 分页明细表 + 导出。"""
 
-    def __init__(self, parent=None, *, trade_recorded_signal=None):
+    def __init__(self, parent=None, *, engine=None, trade_recorded_signal=None):
         super().__init__(parent)
+        self._engine = engine
         self.setWindowTitle("利润计算器")
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.resize(1080, 640)
@@ -102,22 +107,10 @@ class ProfitCalculatorDialog(QDialog):
         summary_row.addStretch()
         root.addWidget(summary)
 
-        self._headers = [
-            "结算时间",
-            "产品",
-            "方向",
-            "BA数量",
-            "EX手数",
-            "点差",
-            "BA盈亏",
-            "EX盈亏",
-            "手续费(开+平)",
-            "BA资费",
-            "净利润",
-        ]
+        self._headers = list(OFFICIAL_FIELD_ORDER)
         self.table = QTableWidget(0, len(self._headers))
         self.table.setObjectName("profitTable")
-        self.table.setHorizontalHeaderLabels(self._headers)
+        self.table.setHorizontalHeaderLabels(self._header_labels(self._headers))
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
         self.table.setAlternatingRowColors(True)
@@ -147,8 +140,9 @@ class ProfitCalculatorDialog(QDialog):
             close_btn.setText("关闭")
         root.addWidget(buttons)
 
-        self._last_report = None
-        self._all_rows: list[ProfitRow] = []
+        self._last_report: OfficialProfitReport | None = None
+        self._all_rows: list[OfficialProfitRow] = []
+        self._empty_message = "该时段无官方历史成交"
         if trade_recorded_signal is not None:
             trade_recorded_signal.connect(self._on_trade_recorded)
         self._calculate()
@@ -160,17 +154,32 @@ class ProfitCalculatorDialog(QDialog):
         self.pagination.reset_page()
         self._render_page()
 
+    @staticmethod
+    def _header_labels(headers: list[str]) -> list[str]:
+        return [OFFICIAL_FIELD_LABELS.get(h, h) for h in headers]
+
+    def _set_headers(self, headers: list[str]) -> None:
+        self._headers = headers or list(OFFICIAL_FIELD_ORDER[:8])
+        self.table.setColumnCount(len(self._headers))
+        self.table.setHorizontalHeaderLabels(self._header_labels(self._headers))
+
     def _calculate(self) -> None:
-        """按当前筛选条件统计利润并刷新汇总与表格。"""
+        """按当前筛选条件查询 BA/EX 官方历史成交并刷新汇总与表格。"""
         start, end = self._date_range()
         symbol = self.symbol_combo.currentData()
-        report = calculate_profit(load_ledger(), start, end, symbol)
+        if self._engine is None:
+            report = OfficialProfitReport()
+            report.errors.append("未连接交易引擎，无法查询官方历史成交")
+        else:
+            report = self._engine.fetch_official_profit_report(start, end, symbol)
         self._last_report = report
-        count = len(report.records or [])
+        count = report.row_count
         self.count_lbl.setText(f"笔数 {count}")
         self.ba_pnl_lbl.setText(f"BA利润 ${report.ba_pnl:+.2f}")
-        self.mt5_pnl_lbl.setText(f"Exness利润 ${report.mt5_pnl:+.2f}")
-        self.fee_lbl.setText(f"总手续费(开+平) ${report.ba_fee + report.mt5_fee:.4f}")
+        self.mt5_pnl_lbl.setText(f"Exness利润 ${report.mt5_profit:+.2f}")
+        self.fee_lbl.setText(
+            f"BA手续费 ${report.ba_commission:.4f} · EX费用 ${report.mt5_charges:+.4f}"
+        )
         self.ba_charges_lbl.setText(
             f"BA资费 ${report.ba_charges:+.4f}"
             f"（资金费 {report.ba_funding_fee:+.4f} · 返佣 {report.ba_rebate:+.4f}）"
@@ -178,6 +187,8 @@ class ProfitCalculatorDialog(QDialog):
         self.total_lbl.setText(f"总利润 ${report.total_pnl:+.2f}")
 
         self._all_rows = report.rows
+        self._empty_message = "；".join(report.errors) if report.errors else "该时段无官方历史成交"
+        self._set_headers(report.headers)
         self.pagination.reset_page()
         self.pagination.set_total(len(self._all_rows))
         self._render_page()
@@ -195,26 +206,14 @@ class ProfitCalculatorDialog(QDialog):
 
         if not self._all_rows:
             self.table.setRowCount(1)
-            empty = QTableWidgetItem("该时段无已结算平仓记录")
+            empty = QTableWidgetItem(self._empty_message)
             empty.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(0, 0, empty)
             self.table.setSpan(0, 0, 1, len(self._headers))
             return
 
         for row_idx, row in enumerate(page_rows):
-            values = [
-                row.settled_at,
-                row.product,
-                row.direction,
-                f"{row.ba_qty:g}",
-                f"{row.mt5_qty:g}",
-                f"{row.spread:+.3f}",
-                f"${row.ba_pnl:+.2f}",
-                f"${row.ex_pnl:+.2f}",
-                f"${row.fee:.4f}",
-                f"${row.ba_charges:+.4f}",
-                f"${row.profit:+.2f}",
-            ]
+            values = row.values(self._headers)
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

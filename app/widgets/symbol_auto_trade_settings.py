@@ -77,7 +77,7 @@ class SymbolAutoTradeSettings(QFrame):
             root.addLayout(self._build_trade_block("市价自动开仓", "市价自动平仓", "market"))
 
         hint = QLabel(
-            "Maker：先 BA 挂单(GTX)，成交后立即 Ex 对冲；超时自动撤单"
+            "Maker：先 BA 挂单(GTX/Post-Only)，成交后立即 Ex 对冲；超时自动撤单"
             if preset_id == "xau"
             else "自动下单固定市价；有持仓时仅禁反向开/平仓"
         )

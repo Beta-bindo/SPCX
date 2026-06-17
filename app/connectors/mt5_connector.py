@@ -615,6 +615,51 @@ class MT5Connector(QObject):
         _profit, fee, known = self._fetch_deal_summary(symbol, order_ids, start_ts, end_ts)
         return fee, known
 
+    def fetch_history_deals(
+        self, symbols: list[str], start: datetime, end: datetime
+    ) -> list[dict]:
+        """读取 EX/MT5 官方历史成交（history_deals_get 原始字段）。"""
+        if not self._connected or not HAS_MT5:
+            return []
+        wanted = {s for s in symbols if s}
+
+        def _fetch() -> list[dict]:
+            deals = mt5.history_deals_get(start, end) or []
+            out: list[dict] = []
+            for deal in deals:
+                if hasattr(deal, "_asdict"):
+                    raw = dict(deal._asdict())
+                else:
+                    raw = {
+                        key: getattr(deal, key, "")
+                        for key in (
+                            "ticket",
+                            "order",
+                            "time",
+                            "time_msc",
+                            "type",
+                            "entry",
+                            "magic",
+                            "position_id",
+                            "reason",
+                            "volume",
+                            "price",
+                            "commission",
+                            "fee",
+                            "swap",
+                            "profit",
+                            "symbol",
+                            "comment",
+                            "external_id",
+                        )
+                    }
+                if wanted and str(raw.get("symbol", "") or "") not in wanted:
+                    continue
+                out.append(raw)
+            return out
+
+        return self._call_on_mt5_thread(_fetch)
+
     def _normalize_mt5_volume(self, volume: float, info, *, cap: float | None = None) -> float:
         """把按 BA 成交量换算出来的 MT5 手数对齐到品种 volume_step。
 

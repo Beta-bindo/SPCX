@@ -91,6 +91,8 @@ class MainWindow(QMainWindow):
         self._pending_auto_trade: tuple[str, str, str, str] | None = None
         self._pending_auto_maker_restore: list[tuple[str, str]] = []
         self._pending_auto_maker_manual_cancel = False
+        self._pending_auto_maker_auto_cancel_restore = False
+        self._pending_auto_maker_restored_after_cancel = False
         self._auto_trade_reevaluate_pending = False
         self._announced_auto_maker_orders: set[tuple[str, str]] = set()
         self._current_ba_open_order_keys: set[tuple[str, str]] = set()
@@ -954,13 +956,24 @@ class MainWindow(QMainWindow):
             or self.silver_actions.auto_trade_settings.any_enabled()
         )
 
-    def _auto_trade_hint(self, message: str) -> None:
+    def _auto_trade_hint(self, message: str, preset_id: str | None = None) -> None:
         now = time.time()
         if self._auto_trade_hint_last.get(message, 0.0) + 15.0 > now:
             return
         self._auto_trade_hint_last[message] = now
         self._append_log(LogLevel.INFO, message)
-        for strip in (self.gold_actions, self.silver_actions):
+        if preset_id is None:
+            if "黄金" in message:
+                preset_id = "xau"
+            elif "白银" in message:
+                preset_id = "xag"
+        if preset_id == "xau":
+            targets = (self.gold_actions,)
+        elif preset_id == "xag":
+            targets = (self.silver_actions,)
+        else:
+            targets = (self.gold_actions, self.silver_actions)
+        for strip in targets:
             if strip.auto_trade_settings.any_enabled():
                 strip.auto_trade_settings.set_status(message)
 
@@ -1053,6 +1066,8 @@ class MainWindow(QMainWindow):
             self._pending_auto_trade = None
             self._pending_auto_maker_restore = []
             self._pending_auto_maker_manual_cancel = False
+            self._pending_auto_maker_auto_cancel_restore = False
+            self._pending_auto_maker_restored_after_cancel = False
 
     def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动平仓", fast=True):
@@ -1073,6 +1088,8 @@ class MainWindow(QMainWindow):
             self._pending_auto_trade = None
             self._pending_auto_maker_restore = []
             self._pending_auto_maker_manual_cancel = False
+            self._pending_auto_maker_auto_cancel_restore = False
+            self._pending_auto_maker_restored_after_cancel = False
 
     def _capture_auto_maker_restore(
         self, preset_id: str, order_mode: str
@@ -1119,6 +1136,67 @@ class MainWindow(QMainWindow):
             self._sync_programmatic_auto_trade_change()
         return restored
 
+    def _auto_maker_snapshot_still_checked(
+        self, preset_id: str, snapshot: list[tuple[str, str]]
+    ) -> bool:
+        """判断快照中的 Maker 勾选是否已经恢复到位。"""
+        if not snapshot:
+            return False
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        auto = strip.auto_trade_settings
+        for action, mode in snapshot:
+            checkbox = (
+                auto.open_checkbox("maker", mode)
+                if action == "open"
+                else auto.close_checkbox("maker", mode)
+            )
+            if checkbox is None or not checkbox.isChecked():
+                return False
+        return True
+
+    def _clear_pending_auto_trade_state(self) -> None:
+        self._pending_auto_trade = None
+        self._pending_auto_maker_restore = []
+        self._pending_auto_maker_manual_cancel = False
+        self._pending_auto_maker_auto_cancel_restore = False
+        self._pending_auto_maker_restored_after_cancel = False
+
+    def _maybe_restore_auto_maker_after_cancel(
+        self,
+        preset_id: str,
+        snapshot: list[tuple[str, str]] | None = None,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """自动撤单后，若该品种已无 BA 委托，则恢复撤单前的 Maker 勾选。"""
+        if self._pending_auto_maker_manual_cancel:
+            return False
+        if self._pending_auto_maker_restored_after_cancel:
+            return False
+        pending = self._pending_auto_trade
+        if (
+            pending is None
+            or pending[1] != preset_id
+            or auto_trade_lane(pending[1], pending[3]) != "maker"
+        ):
+            return False
+        if not force and any(key[0] == preset_id for key in self._current_ba_open_order_keys):
+            return False
+        snap = list(snapshot if snapshot is not None else self._pending_auto_maker_restore)
+        if not snap:
+            return False
+        if not self._auto_maker_snapshot_still_checked(preset_id, snap):
+            restored = self._restore_auto_maker_checkboxes(preset_id, snap)
+            if restored <= 0:
+                return False
+        self._append_log(
+            LogLevel.INFO,
+            f"自动 Maker 委托未成交已自动撤单，已恢复{'黄金' if preset_id == 'xau' else '白银'}之前的自动勾选",
+        )
+        self._pending_auto_maker_restored_after_cancel = True
+        self._request_auto_trade_reevaluate()
+        return True
+
     @staticmethod
     def _maker_auto_cancelled_without_fill(result) -> bool:
         if result.success or result.partial:
@@ -1156,6 +1234,7 @@ class MainWindow(QMainWindow):
         outcome: str = "success",
         *,
         log_cancel: bool = True,
+        keep_checked: bool = False,
     ) -> None:
         from app.core.auto_trade import _reset_lane_open_timers
 
@@ -1164,7 +1243,7 @@ class MainWindow(QMainWindow):
         is_market = order_mode == GoldOrderMode.MARKET.value
         lane = auto_trade_lane(preset_id, order_mode)
         checkbox = auto.open_checkbox(lane, mode)
-        if checkbox is not None:
+        if checkbox is not None and not keep_checked:
             checkbox.blockSignals(True)
             checkbox.setChecked(False)
             checkbox.blockSignals(False)
@@ -1195,6 +1274,7 @@ class MainWindow(QMainWindow):
         outcome: str = "success",
         *,
         log_cancel: bool = True,
+        keep_checked: bool = False,
     ) -> None:
         from app.core.auto_trade import _reset_lane_close_timers
 
@@ -1203,7 +1283,7 @@ class MainWindow(QMainWindow):
         is_market = order_mode == GoldOrderMode.MARKET.value
         lane = auto_trade_lane(preset_id, order_mode)
         checkbox = auto.close_checkbox(lane, mode)
-        if checkbox is not None:
+        if checkbox is not None and not keep_checked:
             checkbox.blockSignals(True)
             checkbox.setChecked(False)
             checkbox.blockSignals(False)
@@ -1235,6 +1315,7 @@ class MainWindow(QMainWindow):
             and auto_trade_lane(self._pending_auto_trade[1], self._pending_auto_trade[3]) == "maker"
         ):
             self._pending_auto_maker_manual_cancel = True
+            self._pending_auto_maker_auto_cancel_restore = False
         self._append_log(LogLevel.INFO, "手动撤单 · 正在撤销全部委托…")
         self.engine.cancel_all_open_orders()
 
@@ -1284,6 +1365,7 @@ class MainWindow(QMainWindow):
             return
         timeout_sec = max(1.0, float(self.config.ba_maker_timeout_sec))
         sym = "黄金" if preset_id == "xau" else "白银"
+        self._pending_auto_maker_auto_cancel_restore = True
         self._append_log(
             LogLevel.INFO,
             f"{sym}自动 Maker 委托等待 {timeout_sec:.0f}s 未成交，已自动撤单",
@@ -1543,6 +1625,15 @@ class MainWindow(QMainWindow):
         if changed:
             self._sync_programmatic_auto_trade_change()
             self._request_auto_trade_reevaluate()
+        pending = self._pending_auto_trade
+        if (
+            pending is not None
+            and auto_trade_lane(pending[1], pending[3]) == "maker"
+            and self._pending_auto_maker_auto_cancel_restore
+        ):
+            self._maybe_restore_auto_maker_after_cancel(
+                pending[1], list(self._pending_auto_maker_restore)
+            )
 
         summary = build_open_orders_summary(orders)
         if summary != self._last_open_orders_log:
@@ -1570,6 +1661,7 @@ class MainWindow(QMainWindow):
         if dlg is None:
             dlg = ProfitCalculatorDialog(
                 self,
+                engine=self.engine,
                 trade_recorded_signal=self.engine.trade_recorded,
             )
             dlg.setWindowModality(Qt.WindowModality.NonModal)
@@ -1627,12 +1719,11 @@ class MainWindow(QMainWindow):
         pending = self._pending_auto_trade
         restore_snapshot = list(self._pending_auto_maker_restore)
         manual_auto_cancel = self._pending_auto_maker_manual_cancel
-        self._pending_auto_trade = None
-        self._pending_auto_maker_restore = []
-        self._pending_auto_maker_manual_cancel = False
+        auto_cancel_restore = self._pending_auto_maker_auto_cancel_restore
+        restored_after_cancel = self._pending_auto_maker_restored_after_cancel
         self._auto_maker_timeout_tokens.clear()
         is_auto = pending is not None
-        restored_auto_checkbox = False
+        restored_auto_checkbox = restored_after_cancel
         if is_auto and pending:
             outcome = (
                 "partial"
@@ -1647,6 +1738,7 @@ class MainWindow(QMainWindow):
                 and auto_trade_lane(pending[1], pending[3]) == "maker"
                 and self._maker_auto_cancelled_without_fill(result)
             )
+            log_cancel = not (restore_maker_auto or restored_after_cancel)
             if pending[0] == "open":
                 # 自动开仓无论成功/部分/失败都取消勾选：需人工重新勾选授权，
                 # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
@@ -1656,7 +1748,8 @@ class MainWindow(QMainWindow):
                     mode,
                     order_mode,
                     outcome,
-                    log_cancel=not restore_maker_auto,
+                    log_cancel=log_cancel,
+                    keep_checked=restored_after_cancel,
                 )
             elif pending[0] == "close":
                 # 自动平仓与开仓对称：每次只平一手，平成功/部分/失败后均取消勾选，
@@ -1667,19 +1760,18 @@ class MainWindow(QMainWindow):
                     mode,
                     order_mode,
                     outcome,
-                    log_cancel=not restore_maker_auto,
+                    log_cancel=log_cancel,
+                    keep_checked=restored_after_cancel,
                 )
-            if restore_maker_auto:
-                restored_auto_checkbox = (
-                    self._restore_auto_maker_checkboxes(pending[1], restore_snapshot) > 0
+            if not restored_after_cancel and restore_maker_auto and (
+                auto_cancel_restore
+                or not any(key[0] == pending[1] for key in self._current_ba_open_order_keys)
+            ):
+                restored_auto_checkbox = self._maybe_restore_auto_maker_after_cancel(
+                    pending[1], restore_snapshot, force=auto_cancel_restore
                 )
-                if restored_auto_checkbox:
-                    sym = "黄金" if pending[1] == "xau" else "白银"
-                    self._append_log(
-                        LogLevel.INFO,
-                        f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",
-                    )
-                    self._request_auto_trade_reevaluate()
+            if not restore_maker_auto or restored_auto_checkbox:
+                self._clear_pending_auto_trade_state()
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:

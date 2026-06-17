@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import date
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -31,6 +32,7 @@ from app.core.models import (
     SpreadSnapshot,
 )
 from app.core.network_status import NetworkStatus
+from app.core.official_profit import OfficialProfitReport, fetch_official_profit_report
 from app.core.pnl_calculator import (
     PnlSummary,
     build_spread_snapshot,
@@ -934,6 +936,19 @@ class SpreadEngine(QObject):
     @property
     def last_summary(self) -> PnlSummary:
         return self._last_summary
+
+    def fetch_official_profit_report(
+        self, start: date, end: date, symbol_filter: str = "all"
+    ) -> OfficialProfitReport:
+        """利润计算器使用官方历史成交，不再读取本地流水。"""
+        return fetch_official_profit_report(
+            self.binance,
+            self.mt5,
+            self.config,
+            start,
+            end,
+            symbol_filter,
+        )
 
     @property
     def positions(self) -> list[Position]:

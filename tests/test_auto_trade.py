@@ -535,6 +535,61 @@ def test_auto_maker_timeout_restore_accepts_cancel_variants():
     print("  ✓ 自动 Maker 自动撤单文案变化时仍恢复勾选")
 
 
+def test_auto_maker_timeout_restore_on_open_orders_cleared_before_trade_finished():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+    window._pending_auto_maker_auto_cancel_restore = True
+    window._current_ba_open_order_keys = set()
+
+    window._on_open_orders([])
+    assert auto.contraction_enabled.isChecked()
+    assert window._pending_auto_trade is not None
+    assert window._pending_auto_maker_restored_after_cancel is True
+    window._on_trade_finished(_maker_cancel_result("open"))
+    assert window._pending_auto_trade is None
+    assert auto.contraction_enabled.isChecked()
+    window.close()
+    print("  ✓ 自动 Maker 委托清空后先恢复勾选，再等 trade_finished 收尾")
+
+
+def test_auto_maker_timeout_restore_does_not_reclear_restored_checkbox():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+    window._pending_auto_maker_auto_cancel_restore = True
+    window._current_ba_open_order_keys = set()
+    window._on_open_orders([])
+    window._on_trade_finished(_maker_cancel_result("open"))
+    assert auto.contraction_enabled.isChecked()
+    window.close()
+    print("  ✓ 自动 Maker 恢复后不会被 trade_finished 再次取消")
+
+
 def test_auto_maker_restore_reevaluates_latest_market():
     from app.main_window import MainWindow
 
@@ -722,6 +777,24 @@ def test_auto_maker_pending_order_schedules_configured_timeout_cancel():
     print("  ✓ 自动 Maker 委托挂上后按设置秒数自动撤单")
 
 
+def test_auto_trade_hint_routes_to_matching_symbol_panel():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto_gold = window.gold_actions.auto_trade_settings
+    auto_silver = window.silver_actions.auto_trade_settings
+    _set_checked_no_signal(auto_gold.contraction_enabled, True)
+    _set_checked_no_signal(auto_silver.contraction_enabled, True)
+
+    window._auto_trade_hint("自动下单：白银 市价点差 -0.007 未达收缩阈值 ≥ 0.080")
+
+    assert auto_gold.status_label.text() == ""
+    assert "白银" in auto_silver.status_label.text()
+    window.close()
+    print("  ✓ 自动下单诊断提示只显示在对应品种板块")
+
+
 def test_open_orders_dedupes_same_ba_order_for_pending_light():
     from app.main_window import MainWindow
 
@@ -818,11 +891,14 @@ def main() -> int:
         test_pending_order_locks_all_maker_auto_checkboxes,
         test_auto_maker_timeout_restore_previous_checkbox,
         test_auto_maker_timeout_restore_accepts_cancel_variants,
+        test_auto_maker_timeout_restore_on_open_orders_cleared_before_trade_finished,
+        test_auto_maker_timeout_restore_does_not_reclear_restored_checkbox,
         test_auto_maker_restore_reevaluates_latest_market,
         test_manual_cancel_does_not_restore_auto_maker_checkbox,
         test_market_auto_failure_does_not_restore_checkbox,
         test_auto_maker_pending_order_announces_accepted,
         test_auto_maker_pending_order_schedules_configured_timeout_cancel,
+        test_auto_trade_hint_routes_to_matching_symbol_panel,
         test_open_orders_dedupes_same_ba_order_for_pending_light,
         test_pending_ba_order_displays_order_price_index,
     ]
