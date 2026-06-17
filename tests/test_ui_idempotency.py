@@ -85,6 +85,7 @@ def test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     panel = PnlDetailPanel("xau")
     cfg = AppConfig(
+        connection_mode="live_both",
         ba_fee_rate=0.01,
         mt5_commission_per_lot=1.0,
         mt5_spread_points=0.0,
@@ -92,8 +93,22 @@ def test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net() -> None:
     ba = Quote("XAUUSDT", bid=90.0, ask=90.0)
     mt5 = Quote("XAUUSD", bid=101.0, ask=101.0)
     positions = [
-        Position(platform="BA", symbol="XAUUSDT", side=Side.SELL, quantity=1.0, entry_price=100.0),
-        Position(platform="MT5", symbol="XAUUSD", side=Side.BUY, quantity=0.01, entry_price=100.0),
+        Position(
+            platform="BA",
+            symbol="XAUUSDT",
+            side=Side.SELL,
+            quantity=1.0,
+            entry_price=100.0,
+            unrealized_pnl=-19.15,
+        ),
+        Position(
+            platform="MT5",
+            symbol="XAUUSD",
+            side=Side.BUY,
+            quantity=0.01,
+            entry_price=100.0,
+            unrealized_pnl=16.99,
+        ),
     ]
 
     updated, summary = calculate_pnl(
@@ -105,11 +120,11 @@ def test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net() -> None:
     )
     panel.update(updated, {"XAUUSDT": ba}, {"XAUUSD": mt5}, cfg, summary)
 
-    assert panel._rows["BA"]["pnl"].text() == "$+10.00"
-    assert panel._rows["MT5"]["pnl"].text() == "$+1.00"
-    assert panel.total_label.text() == "实时净盈亏：$+9.08"
+    assert panel._rows["BA"]["pnl"].text() == "$-19.15"
+    assert panel._rows["MT5"]["pnl"].text() == "$+16.99"
+    assert panel.total_label.text() == "实时净盈亏：$-4.08"
     panel.deleteLater()
-    print("  ✓ 盈亏明细：平台行显示平台盈亏，总计扣往返费用")
+    print("  ✓ 盈亏明细：平台行显示官方盈亏，总计按平台盈亏扣往返费用")
 
 
 def main() -> int:

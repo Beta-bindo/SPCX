@@ -18,8 +18,8 @@ from app.core.symbols import find_preset, preset_for_ba_symbol
 class PnlSummary:
     """一次刷新后的盈亏汇总（金额单位均为计价货币 USDT/USD）。"""
 
-    ba_pnl: float = 0.0          # BA 端浮动盈亏合计
-    mt5_pnl: float = 0.0         # Exness/MT5 端浮动盈亏合计
+    ba_pnl: float = 0.0          # BA 端平台行盈亏合计
+    mt5_pnl: float = 0.0         # Exness/MT5 端平台行盈亏合计
     gross_pnl: float = 0.0       # 毛利 = ba_pnl + mt5_pnl
     ba_fee: float = 0.0          # BA 端往返预估手续费
     mt5_fee: float = 0.0         # MT5 端往返预估手续费（佣金 + 点差成本）
@@ -185,15 +185,14 @@ def calculate_pnl(
             quote = ba_quotes.get(pos.symbol, Quote(symbol=pos.symbol))
             mark = _mark_price(pos.side, quote)
             multiplier = preset.ba_qty_unit
-            if _use_exchange_pnl("BA", config):
-                pnl = pos.unrealized_pnl
-            else:
-                pnl = _position_pnl(pos, mark, multiplier)
+            display_pnl = pos.unrealized_pnl if _use_exchange_pnl("BA", config) else (
+                _position_pnl(pos, mark, multiplier)
+            )
             price_for_fee = mark if mark > 0 else pos.entry_price
             close_notional = price_for_fee * pos.quantity * multiplier
             open_notional = pos.entry_price * pos.quantity * multiplier
             pos.current_price = mark if mark > 0 else pos.entry_price
-            pos.unrealized_pnl = round(pnl, 2)
+            pos.unrealized_pnl = round(display_pnl, 2)
             pos.estimated_fee = round(
                 _estimate_ba_fee(close_notional, config.ba_fee_rate, _fee_legs_for_display()),
                 4,
@@ -208,12 +207,11 @@ def calculate_pnl(
             quote = mt5_quotes.get(pos.symbol, Quote(symbol=pos.symbol))
             mark = _mark_price(pos.side, quote)
             multiplier = preset.mt5_oz_per_lot
-            if _use_exchange_pnl("MT5", config):
-                pnl = pos.unrealized_pnl
-            else:
-                pnl = _position_pnl(pos, mark, multiplier)
+            display_pnl = pos.unrealized_pnl if _use_exchange_pnl("MT5", config) else (
+                _position_pnl(pos, mark, multiplier)
+            )
             pos.current_price = mark if mark > 0 else pos.entry_price
-            pos.unrealized_pnl = round(pnl, 2)
+            pos.unrealized_pnl = round(display_pnl, 2)
             pos.estimated_fee = round(
                 _estimate_mt5_fee(
                     pos.quantity,
