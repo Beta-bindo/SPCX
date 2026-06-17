@@ -814,7 +814,7 @@ class MainWindow(QMainWindow):
             return
         threading.Thread(
             target=service.upload_trade,
-            args=(record,),
+            args=(record, self.engine.fetch_official_profit_report),
             daemon=True,
             name="upload-trade",
         ).start()

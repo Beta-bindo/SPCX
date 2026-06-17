@@ -16,7 +16,17 @@ def _path() -> Path:
 
 
 def _trade_key(trade: dict) -> tuple:
+    if trade.get("report_source") == "official":
+        key = (
+            trade.get("report_source", ""),
+            trade.get("official_platform", ""),
+            trade.get("official_record_type", ""),
+            trade.get("official_key", ""),
+        )
+        if key[-1]:
+            return key
     return (
+        trade.get("report_source", "ledger"),
         trade.get("settled_at", ""),
         trade.get("preset_id", ""),
         trade.get("mode", ""),

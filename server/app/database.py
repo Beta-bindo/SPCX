@@ -50,9 +50,10 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_id TEXT NOT NULL,
-                settled_at TEXT NOT NULL,
-                preset_id TEXT NOT NULL,
-                mode TEXT NOT NULL,
+                report_source TEXT NOT NULL DEFAULT 'ledger',
+                settled_at TEXT NOT NULL DEFAULT '',
+                preset_id TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT '',
                 action TEXT NOT NULL DEFAULT 'close',
                 spread REAL NOT NULL DEFAULT 0,
                 ba_price REAL NOT NULL DEFAULT 0,
@@ -69,8 +70,39 @@ def init_db() -> None:
                 ba_funding_fee REAL NOT NULL DEFAULT 0,
                 ba_rebate REAL NOT NULL DEFAULT 0,
                 net_pnl REAL NOT NULL DEFAULT 0,
-                uploaded_at TEXT NOT NULL,
-                UNIQUE(device_id, settled_at, preset_id, mode, action)
+                official_platform TEXT NOT NULL DEFAULT '',
+                official_record_type TEXT NOT NULL DEFAULT '',
+                official_key TEXT NOT NULL DEFAULT '',
+                official_time TEXT NOT NULL DEFAULT '',
+                official_product TEXT NOT NULL DEFAULT '',
+                official_symbol TEXT NOT NULL DEFAULT '',
+                official_order_no TEXT NOT NULL DEFAULT '',
+                official_trade_no TEXT NOT NULL DEFAULT '',
+                official_side_type TEXT NOT NULL DEFAULT '',
+                official_entry TEXT NOT NULL DEFAULT '',
+                official_price TEXT NOT NULL DEFAULT '',
+                official_quantity TEXT NOT NULL DEFAULT '',
+                official_quote_qty TEXT NOT NULL DEFAULT '',
+                official_realized_pnl TEXT NOT NULL DEFAULT '',
+                official_profit TEXT NOT NULL DEFAULT '',
+                official_commission TEXT NOT NULL DEFAULT '',
+                official_commission_asset TEXT NOT NULL DEFAULT '',
+                official_fee TEXT NOT NULL DEFAULT '',
+                official_swap TEXT NOT NULL DEFAULT '',
+                official_income_type TEXT NOT NULL DEFAULT '',
+                official_income TEXT NOT NULL DEFAULT '',
+                official_funding_fee TEXT NOT NULL DEFAULT '',
+                official_rebate TEXT NOT NULL DEFAULT '',
+                official_position_side TEXT NOT NULL DEFAULT '',
+                official_maker TEXT NOT NULL DEFAULT '',
+                official_buyer TEXT NOT NULL DEFAULT '',
+                official_position_id TEXT NOT NULL DEFAULT '',
+                official_reason TEXT NOT NULL DEFAULT '',
+                official_comment TEXT NOT NULL DEFAULT '',
+                official_external_id TEXT NOT NULL DEFAULT '',
+                official_net REAL NOT NULL DEFAULT 0,
+                official_raw_json TEXT NOT NULL DEFAULT '',
+                uploaded_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -134,89 +166,180 @@ def log_audit(
         pass
 
 
+_TRADE_COLUMN_DEFAULTS: list[tuple[str, str]] = [
+    ("id", "NULL"),
+    ("device_id", "''"),
+    ("report_source", "'ledger'"),
+    ("settled_at", "''"),
+    ("preset_id", "''"),
+    ("mode", "''"),
+    ("action", "'close'"),
+    ("spread", "0"),
+    ("ba_price", "0"),
+    ("ex_price", "0"),
+    ("ba_quantity", "0"),
+    ("mt5_quantity", "0"),
+    ("ba_side", "''"),
+    ("mt5_side", "''"),
+    ("direction", "''"),
+    ("ba_pnl", "0"),
+    ("mt5_pnl", "0"),
+    ("ba_fee", "0"),
+    ("mt5_fee", "0"),
+    ("ba_funding_fee", "0"),
+    ("ba_rebate", "0"),
+    ("net_pnl", "0"),
+    ("official_platform", "''"),
+    ("official_record_type", "''"),
+    ("official_key", "''"),
+    ("official_time", "''"),
+    ("official_product", "''"),
+    ("official_symbol", "''"),
+    ("official_order_no", "''"),
+    ("official_trade_no", "''"),
+    ("official_side_type", "''"),
+    ("official_entry", "''"),
+    ("official_price", "''"),
+    ("official_quantity", "''"),
+    ("official_quote_qty", "''"),
+    ("official_realized_pnl", "''"),
+    ("official_profit", "''"),
+    ("official_commission", "''"),
+    ("official_commission_asset", "''"),
+    ("official_fee", "''"),
+    ("official_swap", "''"),
+    ("official_income_type", "''"),
+    ("official_income", "''"),
+    ("official_funding_fee", "''"),
+    ("official_rebate", "''"),
+    ("official_position_side", "''"),
+    ("official_maker", "''"),
+    ("official_buyer", "''"),
+    ("official_position_id", "''"),
+    ("official_reason", "''"),
+    ("official_comment", "''"),
+    ("official_external_id", "''"),
+    ("official_net", "0"),
+    ("official_raw_json", "''"),
+    ("uploaded_at", "''"),
+]
+
+
+def _trade_table_sql(table_name: str = "trades") -> str:
+    return f"""
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            report_source TEXT NOT NULL DEFAULT 'ledger',
+            settled_at TEXT NOT NULL DEFAULT '',
+            preset_id TEXT NOT NULL DEFAULT '',
+            mode TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT 'close',
+            spread REAL NOT NULL DEFAULT 0,
+            ba_price REAL NOT NULL DEFAULT 0,
+            ex_price REAL NOT NULL DEFAULT 0,
+            ba_quantity REAL NOT NULL DEFAULT 0,
+            mt5_quantity REAL NOT NULL DEFAULT 0,
+            ba_side TEXT NOT NULL DEFAULT '',
+            mt5_side TEXT NOT NULL DEFAULT '',
+            direction TEXT NOT NULL DEFAULT '',
+            ba_pnl REAL NOT NULL DEFAULT 0,
+            mt5_pnl REAL NOT NULL DEFAULT 0,
+            ba_fee REAL NOT NULL DEFAULT 0,
+            mt5_fee REAL NOT NULL DEFAULT 0,
+            ba_funding_fee REAL NOT NULL DEFAULT 0,
+            ba_rebate REAL NOT NULL DEFAULT 0,
+            net_pnl REAL NOT NULL DEFAULT 0,
+            official_platform TEXT NOT NULL DEFAULT '',
+            official_record_type TEXT NOT NULL DEFAULT '',
+            official_key TEXT NOT NULL DEFAULT '',
+            official_time TEXT NOT NULL DEFAULT '',
+            official_product TEXT NOT NULL DEFAULT '',
+            official_symbol TEXT NOT NULL DEFAULT '',
+            official_order_no TEXT NOT NULL DEFAULT '',
+            official_trade_no TEXT NOT NULL DEFAULT '',
+            official_side_type TEXT NOT NULL DEFAULT '',
+            official_entry TEXT NOT NULL DEFAULT '',
+            official_price TEXT NOT NULL DEFAULT '',
+            official_quantity TEXT NOT NULL DEFAULT '',
+            official_quote_qty TEXT NOT NULL DEFAULT '',
+            official_realized_pnl TEXT NOT NULL DEFAULT '',
+            official_profit TEXT NOT NULL DEFAULT '',
+            official_commission TEXT NOT NULL DEFAULT '',
+            official_commission_asset TEXT NOT NULL DEFAULT '',
+            official_fee TEXT NOT NULL DEFAULT '',
+            official_swap TEXT NOT NULL DEFAULT '',
+            official_income_type TEXT NOT NULL DEFAULT '',
+            official_income TEXT NOT NULL DEFAULT '',
+            official_funding_fee TEXT NOT NULL DEFAULT '',
+            official_rebate TEXT NOT NULL DEFAULT '',
+            official_position_side TEXT NOT NULL DEFAULT '',
+            official_maker TEXT NOT NULL DEFAULT '',
+            official_buyer TEXT NOT NULL DEFAULT '',
+            official_position_id TEXT NOT NULL DEFAULT '',
+            official_reason TEXT NOT NULL DEFAULT '',
+            official_comment TEXT NOT NULL DEFAULT '',
+            official_external_id TEXT NOT NULL DEFAULT '',
+            official_net REAL NOT NULL DEFAULT 0,
+            official_raw_json TEXT NOT NULL DEFAULT '',
+            uploaded_at TEXT NOT NULL
+        )
+    """
+
+
+def _create_trade_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP INDEX IF EXISTS idx_trades_event")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_settled ON trades(settled_at)")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_ledger_event
+        ON trades(device_id, settled_at, preset_id, mode, action)
+        WHERE report_source != 'official'
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_official_event
+        ON trades(device_id, official_platform, official_record_type, official_key)
+        WHERE report_source = 'official' AND official_key != ''
+        """
+    )
+
+
+def _rebuild_trades_table(conn: sqlite3.Connection, cols: set[str]) -> None:
+    conn.execute(_trade_table_sql("trades_migrated"))
+    insert_cols = [name for name, _default in _TRADE_COLUMN_DEFAULTS if name in cols or name != "id"]
+    select_exprs: list[str] = []
+    for name, default in _TRADE_COLUMN_DEFAULTS:
+        if name not in insert_cols:
+            continue
+        if name in cols:
+            select_exprs.append(name if name == "id" else f"COALESCE({name}, {default})")
+        else:
+            select_exprs.append(default)
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO trades_migrated ({", ".join(insert_cols)})
+        SELECT {", ".join(select_exprs)}
+        FROM trades
+        """
+    )
+    conn.execute("DROP TABLE trades")
+    conn.execute("ALTER TABLE trades_migrated RENAME TO trades")
+
+
 def _migrate_trades(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
     if not cols:
         return
-    for name, ddl in (
-        ("action", "ALTER TABLE trades ADD COLUMN action TEXT NOT NULL DEFAULT 'close'"),
-        ("spread", "ALTER TABLE trades ADD COLUMN spread REAL NOT NULL DEFAULT 0"),
-        ("ba_price", "ALTER TABLE trades ADD COLUMN ba_price REAL NOT NULL DEFAULT 0"),
-        ("ex_price", "ALTER TABLE trades ADD COLUMN ex_price REAL NOT NULL DEFAULT 0"),
-        ("ba_quantity", "ALTER TABLE trades ADD COLUMN ba_quantity REAL NOT NULL DEFAULT 0"),
-        ("mt5_quantity", "ALTER TABLE trades ADD COLUMN mt5_quantity REAL NOT NULL DEFAULT 0"),
-        ("ba_side", "ALTER TABLE trades ADD COLUMN ba_side TEXT NOT NULL DEFAULT ''"),
-        ("mt5_side", "ALTER TABLE trades ADD COLUMN mt5_side TEXT NOT NULL DEFAULT ''"),
-        ("direction", "ALTER TABLE trades ADD COLUMN direction TEXT NOT NULL DEFAULT ''"),
-        ("ba_funding_fee", "ALTER TABLE trades ADD COLUMN ba_funding_fee REAL NOT NULL DEFAULT 0"),
-        ("ba_rebate", "ALTER TABLE trades ADD COLUMN ba_rebate REAL NOT NULL DEFAULT 0"),
-    ):
-        if name not in cols:
-            conn.execute(ddl)
-
+    required_cols = {name for name, _default in _TRADE_COLUMN_DEFAULTS}
     index_rows = conn.execute("PRAGMA index_list(trades)").fetchall()
-    has_action_unique = False
-    for index_row in index_rows:
-        index_name = index_row[1]
-        if not index_name.startswith("sqlite_autoindex"):
-            continue
-        info = conn.execute(f"PRAGMA index_info({index_name})").fetchall()
-        col_names = [row[2] for row in info]
-        if col_names == ["device_id", "settled_at", "preset_id", "mode", "action"]:
-            has_action_unique = True
-            break
-        if col_names == ["device_id", "settled_at", "preset_id", "mode"]:
-            conn.executescript(
-                """
-                CREATE TABLE trades_migrated (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT NOT NULL,
-                    settled_at TEXT NOT NULL,
-                    preset_id TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    action TEXT NOT NULL DEFAULT 'close',
-                    spread REAL NOT NULL DEFAULT 0,
-                    ba_price REAL NOT NULL DEFAULT 0,
-                    ex_price REAL NOT NULL DEFAULT 0,
-                    ba_quantity REAL NOT NULL DEFAULT 0,
-                    mt5_quantity REAL NOT NULL DEFAULT 0,
-                    ba_side TEXT NOT NULL DEFAULT '',
-                    mt5_side TEXT NOT NULL DEFAULT '',
-                    direction TEXT NOT NULL DEFAULT '',
-                    ba_pnl REAL NOT NULL DEFAULT 0,
-                    mt5_pnl REAL NOT NULL DEFAULT 0,
-                    ba_fee REAL NOT NULL DEFAULT 0,
-                    mt5_fee REAL NOT NULL DEFAULT 0,
-                    ba_funding_fee REAL NOT NULL DEFAULT 0,
-                    ba_rebate REAL NOT NULL DEFAULT 0,
-                    net_pnl REAL NOT NULL DEFAULT 0,
-                    uploaded_at TEXT NOT NULL,
-                    UNIQUE(device_id, settled_at, preset_id, mode, action)
-                );
-                INSERT INTO trades_migrated (
-                    id, device_id, settled_at, preset_id, mode, action,
-                    spread, ba_price, ex_price, ba_quantity, mt5_quantity,
-                    ba_side, mt5_side, direction,
-                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, ba_funding_fee, ba_rebate, net_pnl, uploaded_at
-                )
-                SELECT
-                    id, device_id, settled_at, preset_id, mode, 'close',
-                    COALESCE(spread, 0), COALESCE(ba_price, 0), COALESCE(ex_price, 0),
-                    COALESCE(ba_quantity, 0), COALESCE(mt5_quantity, 0),
-                    COALESCE(ba_side, ''), COALESCE(mt5_side, ''), COALESCE(direction, ''),
-                    ba_pnl, mt5_pnl, ba_fee, mt5_fee, COALESCE(ba_funding_fee, 0), COALESCE(ba_rebate, 0), net_pnl, uploaded_at
-                FROM trades;
-                DROP TABLE trades;
-                ALTER TABLE trades_migrated RENAME TO trades;
-                CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id);
-                """
-            )
-            return
-    if not has_action_unique:
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_event "
-            "ON trades(device_id, settled_at, preset_id, mode, action)"
-        )
+    has_auto_unique = any(str(row[1]).startswith("sqlite_autoindex") for row in index_rows)
+    needs_rebuild = bool(required_cols - cols) or has_auto_unique
+    if needs_rebuild:
+        _rebuild_trades_table(conn, cols)
+    _create_trade_indexes(conn)
 
 
 def _migrate_devices(conn: sqlite3.Connection) -> None:

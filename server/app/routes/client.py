@@ -338,17 +338,33 @@ def upload_trades(
     with get_conn() as conn:
         for trade in body.trades:
             try:
+                report_source = "official" if trade.report_source == "official" else "ledger"
+                direction = trade.direction or (
+                    f"BA {trade.ba_side} / Ex {trade.mt5_side}"
+                    if trade.ba_side and trade.mt5_side
+                    else ""
+                )
                 cur = conn.execute(
                     """
                     INSERT OR IGNORE INTO trades (
-                        device_id, settled_at, preset_id, mode, action,
+                        device_id, report_source, settled_at, preset_id, mode, action,
                         spread, ba_price, ex_price, ba_quantity, mt5_quantity,
                         ba_side, mt5_side, direction,
-                        ba_pnl, mt5_pnl, ba_fee, mt5_fee, ba_funding_fee, ba_rebate, net_pnl, uploaded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ba_pnl, mt5_pnl, ba_fee, mt5_fee, ba_funding_fee, ba_rebate, net_pnl,
+                        official_platform, official_record_type, official_key, official_time,
+                        official_product, official_symbol, official_order_no, official_trade_no,
+                        official_side_type, official_entry, official_price, official_quantity,
+                        official_quote_qty, official_realized_pnl, official_profit,
+                        official_commission, official_commission_asset, official_fee, official_swap,
+                        official_income_type, official_income, official_funding_fee, official_rebate,
+                        official_position_side, official_maker, official_buyer, official_position_id,
+                        official_reason, official_comment, official_external_id, official_net,
+                        official_raw_json, uploaded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         device_id,
+                        report_source,
                         trade.settled_at,
                         trade.preset_id,
                         trade.mode,
@@ -360,11 +376,7 @@ def upload_trades(
                         trade.mt5_quantity,
                         trade.ba_side,
                         trade.mt5_side,
-                        trade.direction or (
-                            f"BA {trade.ba_side} / Ex {trade.mt5_side}"
-                            if trade.ba_side and trade.mt5_side
-                            else ""
-                        ),
+                        direction,
                         trade.ba_pnl,
                         trade.mt5_pnl,
                         trade.ba_fee,
@@ -372,6 +384,38 @@ def upload_trades(
                         trade.ba_funding_fee,
                         trade.ba_rebate,
                         trade.net_pnl,
+                        trade.official_platform,
+                        trade.official_record_type,
+                        trade.official_key,
+                        trade.official_time,
+                        trade.official_product,
+                        trade.official_symbol,
+                        trade.official_order_no,
+                        trade.official_trade_no,
+                        trade.official_side_type,
+                        trade.official_entry,
+                        trade.official_price,
+                        trade.official_quantity,
+                        trade.official_quote_qty,
+                        trade.official_realized_pnl,
+                        trade.official_profit,
+                        trade.official_commission,
+                        trade.official_commission_asset,
+                        trade.official_fee,
+                        trade.official_swap,
+                        trade.official_income_type,
+                        trade.official_income,
+                        trade.official_funding_fee,
+                        trade.official_rebate,
+                        trade.official_position_side,
+                        trade.official_maker,
+                        trade.official_buyer,
+                        trade.official_position_id,
+                        trade.official_reason,
+                        trade.official_comment,
+                        trade.official_external_id,
+                        trade.official_net,
+                        trade.official_raw_json,
                         now,
                     ),
                 )

@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from typing import Callable
 
+from app.core.official_profit import official_report_to_trade_payloads
 from app.core.license.client import LicenseClient, LicenseError
 from app.core.trade_ledger import TradeRecord, trade_record_to_payload
 
@@ -252,7 +253,32 @@ class LicenseService(QObject):
                 except Exception:
                     pass
 
-    def upload_trade(self, record: TradeRecord) -> None:
+    def _official_trade_payloads(
+        self,
+        record: TradeRecord,
+        report_provider: Callable | None,
+    ) -> list[dict]:
+        if report_provider is None:
+            return []
+        try:
+            from datetime import date, datetime
+
+            try:
+                settled_day = datetime.fromisoformat(
+                    record.settled_at.replace(" ", "T")
+                ).date()
+            except (TypeError, ValueError):
+                settled_day = date.today()
+            report = report_provider(settled_day, settled_day, record.preset_id or "all")
+            return official_report_to_trade_payloads(report, source_record=record)
+        except Exception:
+            return []
+
+    def upload_trade(
+        self,
+        record: TradeRecord,
+        report_provider: Callable | None = None,
+    ) -> None:
         with self._net_lock:
             if not self.client.can_upload_trades:
                 try:
@@ -264,12 +290,13 @@ class LicenseService(QObject):
                         self.refresh()
                     except LicenseError:
                         pass
-            trade = trade_record_to_payload(record)
+            official_trades = self._official_trade_payloads(record, report_provider)
+            trades = official_trades or [trade_record_to_payload(record)]
             if not self.client.can_upload_trades:
                 from app.core.license.pending_trades import enqueue_trades
 
-                enqueue_trades([trade])
+                enqueue_trades(trades)
                 return
-            if not self.client.upload_trades([trade]):
+            if not self.client.upload_trades(trades):
                 return
             self.flush_pending()

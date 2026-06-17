@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
@@ -143,6 +144,7 @@ class OfficialProfitRow:
 
     fields: dict[str, str]
     sort_ms: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def values(self, headers: list[str]) -> list[str]:
         return [self.fields.get(h, "") for h in headers]
@@ -226,7 +228,7 @@ def _ba_trade_row(raw: dict[str, Any]) -> tuple[OfficialProfitRow, float, float]
         "buyer": _as_text(raw.get("buyer")),
         "net": _money(net),
     }
-    return OfficialProfitRow(fields=fields, sort_ms=ms), realized, commission
+    return OfficialProfitRow(fields=fields, sort_ms=ms, raw=dict(raw)), realized, commission
 
 
 def _ba_income_row(raw: dict[str, Any]) -> tuple[OfficialProfitRow, float, float]:
@@ -247,7 +249,7 @@ def _ba_income_row(raw: dict[str, Any]) -> tuple[OfficialProfitRow, float, float
     }
     funding = income if income_type == "FUNDING_FEE" else 0.0
     rebate = income if income_type in BA_REBATE_TYPES else 0.0
-    return OfficialProfitRow(fields=fields, sort_ms=ms), funding, rebate
+    return OfficialProfitRow(fields=fields, sort_ms=ms, raw=dict(raw)), funding, rebate
 
 
 def _mt5_deal_row(raw: dict[str, Any]) -> tuple[OfficialProfitRow, float, float, float, float]:
@@ -279,7 +281,170 @@ def _mt5_deal_row(raw: dict[str, Any]) -> tuple[OfficialProfitRow, float, float,
         "external_id": _as_text(raw.get("external_id")),
         "net": _money(net),
     }
-    return OfficialProfitRow(fields=fields, sort_ms=ms), profit, commission, fee, swap
+    return OfficialProfitRow(fields=fields, sort_ms=ms, raw=dict(raw)), profit, commission, fee, swap
+
+
+def _official_key(row: OfficialProfitRow) -> str:
+    fields = row.fields
+    platform = fields.get("platform", "")
+    record_type = fields.get("recordType", "")
+    symbol = fields.get("symbol", "")
+    trade_no = fields.get("tradeNo", "")
+    order_no = fields.get("orderNo", "")
+    if platform == "BA" and record_type == "userTrades" and trade_no:
+        return "|".join((platform, record_type, symbol, trade_no))
+    if platform == "EX" and record_type == "history_deals" and trade_no:
+        return "|".join((platform, record_type, trade_no))
+    raw_id = _as_text(
+        row.raw.get("tranId")
+        or row.raw.get("incomeId")
+        or row.raw.get("id")
+        or row.raw.get("ticket")
+    )
+    if raw_id:
+        return "|".join((platform, record_type, symbol, raw_id))
+    parts = (
+        platform,
+        record_type,
+        symbol,
+        fields.get("time", ""),
+        fields.get("incomeType", ""),
+        fields.get("income", ""),
+        order_no,
+        trade_no,
+    )
+    return "|".join(parts)
+
+
+def _preset_from_official_product(product: str, fallback: str = "") -> str:
+    if product == "黄金":
+        return "xau"
+    if product == "白银":
+        return "xag"
+    return fallback
+
+
+def _source_attr(source_record: Any, name: str, fallback: Any = "") -> Any:
+    if source_record is None:
+        return fallback
+    return getattr(source_record, name, fallback)
+
+
+def official_report_to_trade_payloads(
+    report: OfficialProfitReport,
+    *,
+    source_record: Any | None = None,
+) -> list[dict]:
+    """Convert official rows into trade-upload payloads.
+
+    The old upload endpoint still accepts ledger-like numeric summary fields; the
+    official fields below keep one backend row per exchange-provided record.
+    """
+    payloads: list[dict] = []
+    source_settled_at = _source_attr(source_record, "settled_at", "")
+    fallback_preset = _source_attr(source_record, "preset_id", "")
+    fallback_mode = _source_attr(source_record, "mode", "")
+    fallback_action = _source_attr(source_record, "action", "close") or "close"
+    fallback_direction = _source_attr(source_record, "direction", "")
+    fallback_spread = _as_float(_source_attr(source_record, "spread", 0.0))
+    fallback_ba_side = _source_attr(source_record, "ba_side", "")
+    fallback_mt5_side = _source_attr(source_record, "mt5_side", "")
+
+    for row in report.rows:
+        fields = row.fields
+        platform = fields.get("platform", "")
+        record_type = fields.get("recordType", "")
+        official_time = fields.get("time", "")
+        net = _as_float(fields.get("net"))
+        commission = _as_float(fields.get("commission"))
+        fee = _as_float(fields.get("fee"))
+        swap = _as_float(fields.get("swap"))
+        product = fields.get("product", "")
+        preset_id = _preset_from_official_product(product, fallback_preset)
+
+        ba_pnl = 0.0
+        mt5_pnl = 0.0
+        ba_fee = 0.0
+        mt5_fee = 0.0
+        ba_funding_fee = 0.0
+        ba_rebate = 0.0
+        ba_price = 0.0
+        ex_price = 0.0
+        ba_quantity = 0.0
+        mt5_quantity = 0.0
+
+        if platform == "BA":
+            ba_pnl = _as_float(fields.get("realizedPnl"))
+            ba_fee = abs(commission) if record_type == "userTrades" else 0.0
+            ba_funding_fee = _as_float(fields.get("fundingFee"))
+            ba_rebate = _as_float(fields.get("rebate"))
+            ba_price = _as_float(fields.get("price"))
+            ba_quantity = _as_float(fields.get("quantity"))
+        elif platform == "EX":
+            mt5_pnl = _as_float(fields.get("profit"))
+            mt5_fee = -(commission + fee + swap)
+            ex_price = _as_float(fields.get("price"))
+            mt5_quantity = _as_float(fields.get("quantity"))
+
+        payloads.append(
+            {
+                "report_source": "official",
+                "settled_at": official_time or source_settled_at,
+                "preset_id": preset_id,
+                "mode": fallback_mode,
+                "action": fallback_action,
+                "spread": fallback_spread,
+                "ba_price": ba_price,
+                "ex_price": ex_price,
+                "ba_quantity": ba_quantity,
+                "mt5_quantity": mt5_quantity,
+                "ba_side": fallback_ba_side,
+                "mt5_side": fallback_mt5_side,
+                "direction": fallback_direction,
+                "ba_pnl": round(ba_pnl, 4),
+                "mt5_pnl": round(mt5_pnl, 4),
+                "ba_fee": round(ba_fee, 4),
+                "mt5_fee": round(mt5_fee, 4),
+                "ba_funding_fee": round(ba_funding_fee, 4),
+                "ba_rebate": round(ba_rebate, 4),
+                "net_pnl": round(net, 4),
+                "official_platform": platform,
+                "official_record_type": record_type,
+                "official_key": _official_key(row),
+                "official_time": official_time,
+                "official_product": product,
+                "official_symbol": fields.get("symbol", ""),
+                "official_order_no": fields.get("orderNo", ""),
+                "official_trade_no": fields.get("tradeNo", ""),
+                "official_side_type": fields.get("sideType", ""),
+                "official_entry": fields.get("entry", ""),
+                "official_price": fields.get("price", ""),
+                "official_quantity": fields.get("quantity", ""),
+                "official_quote_qty": fields.get("quoteQty", ""),
+                "official_realized_pnl": fields.get("realizedPnl", ""),
+                "official_profit": fields.get("profit", ""),
+                "official_commission": fields.get("commission", ""),
+                "official_commission_asset": fields.get("commissionAsset", ""),
+                "official_fee": fields.get("fee", ""),
+                "official_swap": fields.get("swap", ""),
+                "official_income_type": fields.get("incomeType", ""),
+                "official_income": fields.get("income", ""),
+                "official_funding_fee": fields.get("fundingFee", ""),
+                "official_rebate": fields.get("rebate", ""),
+                "official_position_side": fields.get("positionSide", ""),
+                "official_maker": fields.get("maker", ""),
+                "official_buyer": fields.get("buyer", ""),
+                "official_position_id": fields.get("position_id", ""),
+                "official_reason": fields.get("reason", ""),
+                "official_comment": fields.get("comment", ""),
+                "official_external_id": fields.get("external_id", ""),
+                "official_net": round(net, 4),
+                "official_raw_json": json.dumps(
+                    row.raw or fields, ensure_ascii=False, default=str
+                ),
+            }
+        )
+    return payloads
 
 
 def fetch_official_profit_report(
