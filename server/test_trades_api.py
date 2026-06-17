@@ -13,13 +13,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.auth import create_device_token
-from app.database import enable_accounts_on_device_approve, get_conn, init_db
-from app.routes.client import heartbeat, register, upload_trades
-from app.schemas import (
+from server.app.auth import create_device_token
+from server.app.database import enable_accounts_on_device_approve, get_conn, init_db
+from server.app.routes.client import heartbeat, register, upload_trades
+from server.app.schemas import (
     HeartbeatRequest,
     RegisterRequest,
     TradeBatchRequest,
@@ -30,9 +30,9 @@ from app.schemas import (
 @contextmanager
 def patched_settings(db_path, **overrides):
     """同时替换 config/database/client 三处 settings 绑定，确保覆盖生效。"""
-    from app import config as cfg_mod
-    from app import database as db_mod
-    from app.routes import client as client_mod
+    from server.app import config as cfg_mod
+    from server.app import database as db_mod
+    from server.app.routes import client as client_mod
 
     patched = replace(cfg_mod.settings, db_path=str(db_path), **overrides)
     with patch.object(cfg_mod, "settings", patched), patch.object(
@@ -55,11 +55,11 @@ class ServerTradeApiTests(unittest.TestCase):
     def test_trade_upload_persists_order_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "license.db"
-            from app import config as cfg_mod
+            from server.app import config as cfg_mod
 
             patched = replace(cfg_mod.settings, db_path=str(db_path))
             with patch.object(cfg_mod, "settings", patched), patch(
-                "app.database.settings", patched
+                "server.app.database.settings", patched
             ):
                 init_db()
 
@@ -147,11 +147,11 @@ class ServerTradeApiTests(unittest.TestCase):
             conn.commit()
             conn.close()
 
-            from app import config as cfg_mod
+            from server.app import config as cfg_mod
 
             patched = replace(cfg_mod.settings, db_path=str(db_path))
             with patch.object(cfg_mod, "settings", patched), patch(
-                "app.database.settings", patched
+                "server.app.database.settings", patched
             ):
                 init_db()
                 with get_conn() as conn:

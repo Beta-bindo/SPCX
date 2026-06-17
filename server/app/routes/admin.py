@@ -9,7 +9,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from app.auth import (
+from ..auth import (
     change_admin_password,
     change_admin_user_password,
     create_admin_token,
@@ -17,8 +17,8 @@ from app.auth import (
     verify_admin_password,
     verify_admin_user_password,
 )
-from app.config import bump_admin_token_version, settings
-from app.database import (
+from ..config import bump_admin_token_version, settings
+from ..database import (
     _utc_now,
     ACCOUNT_STATUS_DISABLED,
     ACCOUNT_STATUS_ENABLED,
@@ -32,8 +32,8 @@ from app.database import (
     normalize_expires_at,
     row_to_dict,
 )
-from app.rbac import AdminUser, get_admin_user, parse_modules, require_module
-from app.schemas import AdminLoginRequest, ChangePasswordRequest, DeviceActionRequest, DeviceUpdateRequest
+from ..rbac import AdminUser, get_admin_user, parse_modules, require_module
+from ..schemas import AdminLoginRequest, ChangePasswordRequest, DeviceActionRequest, DeviceUpdateRequest
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -160,7 +160,7 @@ def admin_verify_password_route(
     admin: RequireAuth,
 ) -> dict:
     if admin.user_id:
-        from app.database import get_admin_user_by_id
+        from ..database import get_admin_user_by_id
 
         user = get_admin_user_by_id(admin.user_id)
         if not user or not verify_admin_user_password(body.password, user["password_hash"]):

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.core.models import AppConfig, ConnectionMode
 from app.core.spread_engine import SpreadEngine
+from app.core.trade_result import HedgeTradeResult, LegResult
 from app.main_window import MainWindow
 
 
@@ -49,9 +50,42 @@ def test_trading_guard_prevents_duplicate_orders() -> None:
     print("  ✓ 交易中重复开平仓不会重复下单")
 
 
+def test_close_compensation_log_uses_restore_word() -> None:
+    engine = SpreadEngine(AppConfig(connection_mode=ConnectionMode.DEMO.value))
+    logs: list[str] = []
+    engine.log_message.connect(logs.append)
+
+    result = HedgeTradeResult(
+        action="close",
+        success=False,
+        legs=[
+            LegResult(
+                platform="BA",
+                success=True,
+                message="BA 平仓成功",
+                compensated=True,
+                compensation_message="BA 已按刚平仓量 250 市价恢复对冲",
+                filled_quantity=250.0,
+            ),
+            LegResult(platform="MT5", success=False, message="Exness 平仓失败"),
+        ],
+        message="部分成功",
+    )
+
+    engine._log_trade_leg_details(result)
+
+    assert any("↳ 恢复成功" in line for line in logs)
+    assert not any("↳ 回滚成功" in line for line in logs)
+    print("  ✓ 平仓补偿日志使用恢复文案")
+
+
 def main() -> int:
     errors: list[str] = []
-    for fn in (test_header_buttons_are_idempotent, test_trading_guard_prevents_duplicate_orders):
+    for fn in (
+        test_header_buttons_are_idempotent,
+        test_trading_guard_prevents_duplicate_orders,
+        test_close_compensation_log_uses_restore_word,
+    ):
         try:
             fn()
         except Exception as exc:

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.config import settings
+from .config import settings
 
 ONLINE_WINDOW_SEC = 900  # 15 分钟内视为在线
 
@@ -96,7 +96,7 @@ def init_db() -> None:
 
 def audit_log_where_excluding_superadmin(*, action: str | None = None) -> tuple[str, list]:
     """构建 audit_log 查询条件，排除角色为超级管理员的用户产生的记录。"""
-    from app.rbac import SUPERADMIN_ROLE_NAME
+    from .rbac import SUPERADMIN_ROLE_NAME
 
     clauses = [
         """actor NOT IN (
@@ -382,8 +382,8 @@ def normalize_expires_at(value: str | None) -> str | None:
 def _migrate_admin_rbac(conn: sqlite3.Connection) -> None:
     import os
 
-    from app.auth import hash_admin_password
-    from app.rbac import SUPERADMIN_ROLE_NAME, modules_to_json
+    from .auth import hash_admin_password
+    from .rbac import SUPERADMIN_ROLE_NAME, modules_to_json
 
     conn.executescript(
         """

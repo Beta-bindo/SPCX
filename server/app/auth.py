@@ -9,7 +9,7 @@ from typing import Optional
 
 from jose import JWTError, jwt
 
-from app.config import settings
+from .config import settings
 
 ALGORITHM = "HS256"
 PBKDF2_ITERATIONS = 260_000
@@ -62,7 +62,7 @@ def change_admin_password(old_password: str, new_password: str) -> None:
     new_password = new_password.strip()
     if len(new_password) < 12:
         raise ValueError("新密码至少 12 位")
-    from app.config import bump_admin_token_version, remove_env_key, update_env_value
+    from .config import bump_admin_token_version, remove_env_key, update_env_value
 
     new_hash = hash_admin_password(new_password)
     update_env_value("TA_ADMIN_PASSWORD_HASH", new_hash)
@@ -71,7 +71,7 @@ def change_admin_password(old_password: str, new_password: str) -> None:
 
 
 def change_admin_user_password(user_id: int, old_password: str, new_password: str) -> None:
-    from app.database import get_admin_user_by_id, get_conn
+    from .database import get_admin_user_by_id, get_conn
 
     user = get_admin_user_by_id(user_id)
     if not user:
@@ -87,7 +87,7 @@ def change_admin_user_password(user_id: int, old_password: str, new_password: st
             "UPDATE admin_users SET password_hash = ? WHERE id = ?",
             (new_hash, user_id),
         )
-    from app.config import bump_admin_token_version
+    from .config import bump_admin_token_version
 
     bump_admin_token_version()
 
@@ -122,7 +122,7 @@ def create_admin_token(
     role_name: str,
     modules: list[str],
 ) -> str:
-    from app.config import admin_token_version
+    from .config import admin_token_version
 
     expire = datetime.now(timezone.utc) + timedelta(hours=8)
     payload = {
@@ -140,7 +140,7 @@ def create_admin_token(
 
 
 def create_legacy_admin_token() -> str:
-    from app.config import admin_token_version
+    from .config import admin_token_version
 
     expire = datetime.now(timezone.utc) + timedelta(hours=8)
     payload = {
@@ -154,7 +154,7 @@ def create_legacy_admin_token() -> str:
 
 
 def decode_admin_token(token: str) -> Optional[dict]:
-    from app.config import admin_token_version
+    from .config import admin_token_version
 
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])

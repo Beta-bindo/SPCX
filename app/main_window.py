@@ -43,6 +43,7 @@ from app.core.app_log import LogLevel, should_log
 from app.core.config import load_config, save_config, save_config_async
 from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, LayoutMode
 from app.core.network_status import NetworkStatus
+from app.core.order_mode import auto_trade_lane
 from app.core.spread_engine import SpreadEngine
 from app.core.theme import load_stylesheet, repolish_tree
 from app.core.trading_service import detect_hedge_mode
@@ -976,7 +977,20 @@ class MainWindow(QMainWindow):
         # 完成并 emit trade_finished，若等调用后再读 is_trading 会读到 False 而漏置位，
         # 导致 trade_finished 误判非自动交易、不取消勾选 → 下一拍重复委托(委托2单)。
         self._pending_auto_trade = ("open", preset_id, mode, order_mode)
-        if self.engine.open_hedge(preset_id, mode, order_mode):
+        lane = auto_trade_lane(preset_id, order_mode)
+        min_open_spread = None
+        max_open_spread = None
+        if mode == HedgeMode.CONTRACTION.value:
+            min_open_spread = self.config.auto_contraction_threshold_lane(preset_id, lane)
+        else:
+            max_open_spread = self.config.auto_expansion_threshold_lane(preset_id, lane)
+        if self.engine.open_hedge(
+            preset_id,
+            mode,
+            order_mode,
+            min_open_spread=min_open_spread,
+            max_open_spread=max_open_spread,
+        ):
             save_config_async(self.config)
         else:
             # 前置校验失败/未启动(不会发 trade_finished)：撤销置位，避免永久卡死

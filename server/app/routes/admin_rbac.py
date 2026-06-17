@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.auth import (
+from ..auth import (
     hash_admin_password,
 )
-from app.database import _utc_now, get_conn, log_audit, row_to_dict
-from app.rbac import (
+from ..database import _utc_now, get_conn, log_audit, row_to_dict
+from ..rbac import (
     ADMIN_MODULES,
     HIDDEN_ADMIN_USERNAME,
     SUPERADMIN_ROLE_NAME,
@@ -17,7 +17,7 @@ from app.rbac import (
     parse_modules,
     require_module,
 )
-from app.schemas import (
+from ..schemas import (
     AdminRoleCreateRequest,
     AdminRoleUpdateRequest,
     AdminUserCreateRequest,

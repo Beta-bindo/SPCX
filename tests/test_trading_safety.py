@@ -12,10 +12,12 @@ class _FakeConnector:
         open_success: bool,
         *,
         needs_reconciliation: bool = False,
+        open_filled: float | None = None,
     ) -> None:
         self.platform = platform
         self.open_success = open_success
         self.needs_reconciliation = needs_reconciliation
+        self.open_filled = open_filled
         self.close_calls = 0
 
     def get_positions(self, force=False):
@@ -29,13 +31,24 @@ class _FakeConnector:
         *,
         on_fill_delta=None,
         lots_override=None,
+        should_keep_waiting=None,
     ) -> LegResult:
+        if should_keep_waiting is not None and not should_keep_waiting():
+            return LegResult(
+                platform=self.platform,
+                success=False,
+                message="BA Maker 开仓点差回落，未成交部分已撤单",
+            )
         return LegResult(
             platform=self.platform,
             success=self.open_success,
             message="opened" if self.open_success else "failed",
             needs_reconciliation=self.needs_reconciliation,
-            filled_quantity=1.0 if self.open_success else 0.0,
+            filled_quantity=(
+                self.open_filled
+                if self.open_filled is not None
+                else 1.0 if self.open_success else 0.0
+            ),
         )
 
     def close_hedge_leg(
@@ -53,11 +66,13 @@ class _FakeCloseConnector:
         *,
         close_filled: float = 0.0,
         open_success: bool = True,
+        close_needs_reconciliation: bool = False,
     ) -> None:
         self.platform = platform
         self.close_success = close_success
         self.close_filled = close_filled
         self.open_success = open_success
+        self.close_needs_reconciliation = close_needs_reconciliation
         self.config = AppConfig(xau_trade_lots=1.0, xau_ba_qty_map=500.0, xau_mt5_lot_map=1.0)
         self.close_calls: list[dict] = []
         self.open_calls: list[dict] = []
@@ -78,6 +93,7 @@ class _FakeCloseConnector:
             success=self.close_success,
             message="closed" if self.close_success else "close failed",
             filled_quantity=self.close_filled if self.close_success else 0.0,
+            needs_reconciliation=self.close_needs_reconciliation,
         )
 
     def open_hedge_leg(
@@ -147,7 +163,27 @@ def test_open_hedge_skips_mt5_when_binance_fails_maker():
     assert "跳过" in result.legs[1].message
 
 
-def test_open_hedge_rolls_back_unconfirmed_order():
+def test_open_hedge_maker_spread_guard_cancels_before_ba_fill():
+    ba = _FakeConnector("BA", open_success=True)
+    mt5 = _FakeConnector("MT5", open_success=True)
+
+    result = open_hedge(
+        ba,
+        mt5,
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+        spread_guard=lambda: False,
+    )
+
+    assert result.success is False
+    assert result.partial is False
+    assert mt5.close_calls == 0
+    assert "点差回落" in result.legs[0].message
+    assert "跳过" in result.legs[1].message
+
+
+def test_open_hedge_skips_rollback_for_unconfirmed_order_without_fill():
     ba = _FakeConnector("BA", open_success=False, needs_reconciliation=True)
     mt5 = _FakeConnector("MT5", open_success=False)
 
@@ -155,9 +191,25 @@ def test_open_hedge_rolls_back_unconfirmed_order():
 
     assert result.success is False
     assert result.partial is True
-    assert ba.close_calls == 1
-    assert result.legs[0].compensated is True
-    assert "自动回滚" in result.message
+    assert ba.close_calls == 0
+    assert result.legs[0].compensated is False
+    assert "状态待对账" in result.message
+    assert "系统已尝试自动回滚" not in result.message
+
+
+def test_open_hedge_skips_rollback_when_opposite_status_unknown():
+    ba = _FakeConnector("BA", open_success=True)
+    mt5 = _FakeConnector("MT5", open_success=False, needs_reconciliation=True)
+
+    result = open_hedge(
+        ba, mt5, "xau", HedgeMode.CONTRACTION.value, GoldOrderMode.MARKET.value
+    )
+
+    assert result.success is False
+    assert result.partial is True
+    assert ba.close_calls == 0
+    assert result.legs[0].compensated is False
+    assert "状态待对账" in result.message
 
 
 def test_close_hedge_restores_ba_when_mt5_fails_after_maker_fill():
@@ -178,6 +230,24 @@ def test_close_hedge_restores_ba_when_mt5_fails_after_maker_fill():
     assert "自动恢复对冲" in result.message
 
 
+def test_close_hedge_skips_ba_restore_when_mt5_status_unknown_after_maker_fill():
+    ba = _FakeCloseConnector("BA", close_success=True, close_filled=250.0)
+    mt5 = _FakeCloseConnector(
+        "MT5", close_success=False, close_needs_reconciliation=True
+    )
+
+    result = close_hedge(
+        ba, mt5, "xau", HedgeMode.CONTRACTION.value, GoldOrderMode.MAKER.value
+    )
+
+    assert result.success is False
+    assert result.partial is True
+    assert ba.open_calls == []
+    assert result.legs[0].compensated is False
+    assert "状态待对账" in result.message
+    assert "自动恢复对冲" not in result.message
+
+
 def test_close_hedge_restores_mt5_when_binance_fails_market_close():
     ba = _FakeCloseConnector("BA", close_success=False)
     mt5 = _FakeCloseConnector("MT5", close_success=True, close_filled=0.5)
@@ -193,6 +263,24 @@ def test_close_hedge_restores_mt5_when_binance_fails_market_close():
     assert mt5.open_calls[0]["lots_override"] == 0.5
     assert result.legs[1].compensated is True
     assert "自动恢复对冲" in result.message
+
+
+def test_close_hedge_skips_mt5_restore_when_binance_status_unknown():
+    ba = _FakeCloseConnector(
+        "BA", close_success=False, close_needs_reconciliation=True
+    )
+    mt5 = _FakeCloseConnector("MT5", close_success=True, close_filled=0.5)
+
+    result = close_hedge(
+        ba, mt5, "xau", HedgeMode.EXPANSION.value, GoldOrderMode.MARKET.value
+    )
+
+    assert result.success is False
+    assert result.partial is True
+    assert mt5.open_calls == []
+    assert result.legs[1].compensated is False
+    assert "状态待对账" in result.message
+    assert "自动恢复对冲" not in result.message
 
 
 def test_spread_allows_add_blocks_worse_contraction_spread():
@@ -258,9 +346,13 @@ def main() -> int:
     test_open_hedge_rolls_back_binance_when_mt5_fails()
     test_open_hedge_rolls_back_mt5_when_binance_fails_market()
     test_open_hedge_skips_mt5_when_binance_fails_maker()
-    test_open_hedge_rolls_back_unconfirmed_order()
+    test_open_hedge_maker_spread_guard_cancels_before_ba_fill()
+    test_open_hedge_skips_rollback_for_unconfirmed_order_without_fill()
+    test_open_hedge_skips_rollback_when_opposite_status_unknown()
     test_close_hedge_restores_ba_when_mt5_fails_after_maker_fill()
+    test_close_hedge_skips_ba_restore_when_mt5_status_unknown_after_maker_fill()
     test_close_hedge_restores_mt5_when_binance_fails_market_close()
+    test_close_hedge_skips_mt5_restore_when_binance_status_unknown()
     test_spread_allows_add_blocks_worse_contraction_spread()
     test_spread_allows_add_blocks_worse_expansion_spread()
     print("ALL TRADING SAFETY TESTS PASSED")

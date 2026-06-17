@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from app.core.models import GoldOrderMode, HedgeMode, Position, Side
 from app.core.order_mode import order_mode_log_label
@@ -153,9 +153,19 @@ def _mt5_lots_for_ba_fill(config, preset_id: str, ba_filled_qty: float) -> float
     return max(0.0, mt5_cfg * float(ba_filled_qty) / ba_cfg)
 
 
-def _rollback_needed(leg: LegResult) -> bool:
-    """该腿是否需要回滚：已成交，或状态未知需对账（防止漏掉真实成交）。"""
-    return leg.success or leg.needs_reconciliation
+def _has_known_execution(leg: LegResult) -> bool:
+    """该腿是否有确认成交量：自动补偿只允许基于确认成交，而不是状态未知。"""
+    return leg.success or leg.filled_quantity > 0
+
+
+def _confirmed_failure(leg: LegResult) -> bool:
+    """明确未成交/未执行的失败；状态未知时不能拿它作为反向补单依据。"""
+    return not leg.success and not leg.needs_reconciliation
+
+
+def _open_rollback_allowed(leg: LegResult, opposite: LegResult) -> bool:
+    """开仓失败时，仅在本腿确认成交且对手腿确认失败时才自动回滚。"""
+    return _has_known_execution(leg) and _confirmed_failure(opposite)
 
 
 def _mark_ba_followup_failed(ba: LegResult, *, action: str) -> None:
@@ -177,8 +187,12 @@ def _restore_closed_legs(
     ba: LegResult,
     mt5_leg: LegResult,
 ) -> None:
-    """平仓部分失败时，重新打开已平掉的腿，尽量恢复原有对冲敞口。"""
-    if ba.success and not mt5_leg.success and ba.filled_quantity > 0:
+    """平仓部分失败时，只在对手腿确认失败时按确认平仓量恢复。"""
+    if (
+        _has_known_execution(ba)
+        and _confirmed_failure(mt5_leg)
+        and ba.filled_quantity > 0
+    ):
         restore = binance.open_hedge_leg(
             preset_id,
             mode,
@@ -191,7 +205,11 @@ def _restore_closed_legs(
             if restore.success
             else restore.message
         )
-    if mt5_leg.success and not ba.success and mt5_leg.filled_quantity > 0:
+    if (
+        _has_known_execution(mt5_leg)
+        and _confirmed_failure(ba)
+        and mt5_leg.filled_quantity > 0
+    ):
         restore = mt5.open_hedge_leg(
             preset_id,
             mode,
@@ -214,6 +232,7 @@ def open_hedge(
     order_mode: str = GoldOrderMode.MAKER.value,
     *,
     had_position: bool | None = None,
+    spread_guard: Callable[[], bool] | None = None,
 ) -> HedgeTradeResult:
     """开（加）对冲仓：BA 与 Exness 各下一腿，失败时自动回滚已成交腿。
 
@@ -260,9 +279,13 @@ def open_hedge(
             mode,
             order_mode,
             on_fill_delta=hedge_ba_fill,
+            should_keep_waiting=spread_guard,
         )
         if mt5_legs:
             mt5_success = all(leg.success for leg in mt5_legs)
+            mt5_needs_reconciliation = any(
+                leg.needs_reconciliation for leg in mt5_legs
+            )
             mt5_leg = LegResult(
                 platform="MT5",
                 success=mt5_success,
@@ -272,7 +295,7 @@ def open_hedge(
                     else "Exness 分批补对冲失败，请立即检查单边敞口"
                 ),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
-                needs_reconciliation=not mt5_success,
+                needs_reconciliation=mt5_needs_reconciliation,
             )
         else:
             mt5_leg = LegResult(
@@ -281,7 +304,8 @@ def open_hedge(
                 message="BA 委托未成交，已跳过 Exness 对冲下单",
             )
         if mt5_failed:
-            ba.needs_reconciliation = True
+            if mt5_leg.needs_reconciliation:
+                ba.needs_reconciliation = True
             _mark_ba_followup_failed(ba, action="open")
     legs = [ba, mt5_leg]
     success = all(leg.success for leg in legs)
@@ -289,8 +313,8 @@ def open_hedge(
     # 超时被撤后敞口仍残留（曾导致「部分成功，自动回滚失败」）。
     # 关键：只回滚「本次实际成交的增量」(filled_quantity)，绝不能 close_all——
     # 否则加仓失败回滚会把用户原有持仓一并平掉（曾导致加 0.01 却平 0.05 全仓）。
-    # filled 未知(needs_reconciliation 且未捕获成交量)时回退按单次交易量保守回滚。
-    if not success and _rollback_needed(ba):
+    # 状态未知时不按默认量盲目回滚；否则可能在对手腿其实已成交时反向补出新单边。
+    if not success and _open_rollback_allowed(ba, mt5_leg):
         rollback = binance.close_hedge_leg(
             preset_id,
             GoldOrderMode.MARKET.value,
@@ -299,7 +323,7 @@ def open_hedge(
         )
         ba.compensated = rollback.success
         ba.compensation_message = rollback.message
-    if not success and _rollback_needed(mt5_leg):
+    if not success and _open_rollback_allowed(mt5_leg, ba):
         rollback = mt5.close_hedge_leg(
             preset_id,
             GoldOrderMode.MARKET.value,
@@ -314,12 +338,28 @@ def open_hedge(
     verb = "加仓" if had_position else "开仓"
     if success:
         message = f"{label}{verb}{mlabel}({om_label})完成"
-    elif any(_rollback_needed(leg) for leg in legs):
-        compensated = all(leg.compensated for leg in legs if _rollback_needed(leg))
-        if compensated:
-            message = f"⚠ {label}{verb}{mlabel}({om_label})部分成功，系统已尝试自动回滚"
+    elif any(
+        leg.success or leg.needs_reconciliation or leg.filled_quantity > 0
+        for leg in legs
+    ):
+        compensated_legs = [leg for leg in legs if leg.compensation_message]
+        if compensated_legs and all(leg.compensated for leg in compensated_legs):
+            message = (
+                f"⚠ {label}{verb}{mlabel}({om_label})部分成功，"
+                "系统已尝试自动回滚"
+            )
+        elif compensated_legs:
+            message = (
+                f"⚠ {label}{verb}{mlabel}({om_label})部分成功，"
+                "自动回滚失败，请立即检查单边敞口"
+            )
+        elif any(leg.needs_reconciliation for leg in legs):
+            message = (
+                f"⚠ {label}{verb}{mlabel}({om_label})部分成功，"
+                "状态待对账，已暂停自动回滚，请立即检查持仓"
+            )
         else:
-            message = f"⚠ {label}{verb}{mlabel}({om_label})部分成功，自动回滚失败，请立即检查单边敞口"
+            message = f"⚠ {label}{verb}{mlabel}({om_label})部分成功，请立即检查单边敞口"
     else:
         message = f"{label}{verb}{mlabel}({om_label})失败"
     return HedgeTradeResult(action="open", success=success, legs=legs, message=message)
@@ -374,6 +414,9 @@ def close_hedge(
         )
         if mt5_legs:
             mt5_success = all(leg.success for leg in mt5_legs)
+            mt5_needs_reconciliation = any(
+                leg.needs_reconciliation for leg in mt5_legs
+            )
             failed_msgs = "; ".join(
                 leg.message for leg in mt5_legs if not leg.success and leg.message
             )
@@ -386,7 +429,7 @@ def close_hedge(
                     else f"Exness 分批平对冲失败：{failed_msgs or '请立即检查单边敞口'}"
                 ),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
-                needs_reconciliation=not mt5_success,
+                needs_reconciliation=mt5_needs_reconciliation,
             )
         elif ba.success:
             # BA 端本就无可平持仓（已为空）：此时不存在"BA 成交驱动"，直接清理
@@ -402,7 +445,8 @@ def close_hedge(
                 message="BA 委托未成交，已跳过 Exness 对冲平仓",
             )
         if mt5_failed:
-            ba.needs_reconciliation = True
+            if mt5_leg.needs_reconciliation:
+                ba.needs_reconciliation = True
             _mark_ba_followup_failed(ba, action="close")
     legs = [ba, mt5_leg]
     success = all(leg.success for leg in legs)
@@ -413,12 +457,26 @@ def close_hedge(
     om_label = order_mode_log_label(preset_id, order_mode)
     if success:
         message = f"{label}平仓{mlabel}({om_label})完成"
-    elif any(leg.success for leg in legs):
+    elif any(
+        leg.success or leg.needs_reconciliation or leg.filled_quantity > 0
+        for leg in legs
+    ):
         restored = [leg for leg in legs if leg.compensation_message]
         if restored and all(leg.compensated for leg in restored):
-            message = f"⚠ {label}平仓{mlabel}({om_label})部分成功，系统已尝试自动恢复对冲，请检查剩余持仓"
+            message = (
+                f"⚠ {label}平仓{mlabel}({om_label})部分成功，"
+                "系统已尝试自动恢复对冲，请检查剩余持仓"
+            )
         elif restored:
-            message = f"⚠ {label}平仓{mlabel}({om_label})部分成功，自动恢复对冲失败，请立即检查单边敞口"
+            message = (
+                f"⚠ {label}平仓{mlabel}({om_label})部分成功，"
+                "自动恢复对冲失败，请立即检查单边敞口"
+            )
+        elif any(leg.needs_reconciliation for leg in legs):
+            message = (
+                f"⚠ {label}平仓{mlabel}({om_label})部分成功，"
+                "状态待对账，已暂停自动恢复，请立即检查持仓"
+            )
         else:
             message = f"⚠ {label}平仓{mlabel}({om_label})部分成功，请检查剩余持仓"
     else:

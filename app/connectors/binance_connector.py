@@ -562,6 +562,7 @@ class BinanceConnector(QObject):
         *,
         target_qty: float,
         on_fill_delta: Callable[[float], bool] | None = None,
+        should_keep_waiting: Callable[[], bool] | None = None,
     ) -> tuple[bool, float]:
         """等待 Maker/限价委托成交，按新增成交量回调；返回(是否全成, 总成交量)。
 
@@ -569,10 +570,18 @@ class BinanceConnector(QObject):
         回退 REST 轮询。"""
         if self._user_stream_active():
             return self._stream_wait_fills(
-                symbol, order_id, target_qty=target_qty, on_fill_delta=on_fill_delta
+                symbol,
+                order_id,
+                target_qty=target_qty,
+                on_fill_delta=on_fill_delta,
+                should_keep_waiting=should_keep_waiting,
             )
         return self._poll_wait_for_limit_order_fills(
-            symbol, order_id, target_qty=target_qty, on_fill_delta=on_fill_delta
+            symbol,
+            order_id,
+            target_qty=target_qty,
+            on_fill_delta=on_fill_delta,
+            should_keep_waiting=should_keep_waiting,
         )
 
     def _poll_wait_for_limit_order_fills(
@@ -582,6 +591,7 @@ class BinanceConnector(QObject):
         *,
         target_qty: float,
         on_fill_delta: Callable[[float], bool] | None = None,
+        should_keep_waiting: Callable[[], bool] | None = None,
     ) -> tuple[bool, float]:
         """轮询 Maker/限价委托，按新增成交量回调；返回(是否全成, 总成交量)。"""
         timeout = self._maker_timeout_sec()
@@ -592,6 +602,8 @@ class BinanceConnector(QObject):
         while time.monotonic() < deadline:
             if self._manual_cancel_event.is_set():
                 return False, last_executed  # 手动撤单中断
+            if should_keep_waiting is not None and not should_keep_waiting():
+                return False, last_executed
             try:
                 order = self._fetch_order_status(symbol, order_id)
             except Exception:
@@ -618,6 +630,7 @@ class BinanceConnector(QObject):
         *,
         target_qty: float,
         on_fill_delta: Callable[[float], bool] | None = None,
+        should_keep_waiting: Callable[[], bool] | None = None,
     ) -> tuple[bool, float]:
         """事件驱动等待委托成交：阻塞在条件变量上等 ORDER_TRADE_UPDATE 推送，
         并以 REST 作低频安全兜底（防止漏推/延迟），返回(是否达到目标, 总成交量)。"""
@@ -634,6 +647,8 @@ class BinanceConnector(QObject):
             while True:
                 if self._manual_cancel_event.is_set():
                     return False, last_executed  # 手动撤单中断：交由调用方撤掉本挂单
+                if should_keep_waiting is not None and not should_keep_waiting():
+                    return False, last_executed
                 now = time.monotonic()
                 remaining = deadline - now
                 if remaining <= 0:
@@ -1137,12 +1152,13 @@ class BinanceConnector(QObject):
         *,
         qty_override: float | None = None,
         on_fill_delta: Callable[[float], bool] | None = None,
+        should_keep_waiting: Callable[[], bool] | None = None,
     ) -> LegResult:
         """在 BA 端开/加一腿对冲仓。
 
         收缩 → 卖出（SELL），扩张 → 买入（BUY）。模拟模式直接更新虚拟持仓；
         实盘按市价/限价/Maker 下单，限价单等待成交、超时撤单，并通过复查持仓确认成交，
-        状态不明时返回 needs_reconciliation 交由上层回滚。
+        状态不明时返回 needs_reconciliation 交由上层暂停自动补偿并提示对账。
         qty_override 用于平仓补偿时按刚刚被平掉的实际 BA 数量恢复对冲。
         """
         from app.core.models import HedgeMode
@@ -1275,11 +1291,21 @@ class BinanceConnector(QObject):
                         reduce_only=False,
                     )
                 )
+                guard_cancelled = False
+
+                def _should_keep_waiting() -> bool:
+                    nonlocal guard_cancelled
+                    if should_keep_waiting is not None and not should_keep_waiting():
+                        guard_cancelled = True
+                        return False
+                    return True
+
                 confirmed, filled_qty = self._wait_for_limit_order_fills(
                     symbol_ba,
                     oid,
                     target_qty=float(quantity),
                     on_fill_delta=on_fill_delta,
+                    should_keep_waiting=_should_keep_waiting,
                 )
                 if not confirmed:
                     self._try_cancel_order(symbol_ba, oid)
@@ -1311,6 +1337,13 @@ class BinanceConnector(QObject):
                             message=f"BA Maker 部分成交 {filled_qty:g}/{quantity}，已按成交量补 Exness",
                             order_id=oid,
                             filled_quantity=filled_qty,
+                        )
+                    if guard_cancelled:
+                        return LegResult(
+                            platform="BA",
+                            success=False,
+                            message="BA Maker 开仓点差回落，未成交部分已撤单",
+                            order_id=oid,
                         )
                     return LegResult(
                         platform="BA",

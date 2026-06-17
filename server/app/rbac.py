@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import Header, HTTPException
 
-from app.auth import decode_admin_token
+from .auth import decode_admin_token
 
 # 后台可授权模块（与导航/页面一一对应）
 ADMIN_MODULES: dict[str, str] = {

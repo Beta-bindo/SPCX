@@ -4,9 +4,9 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from app.auth import create_device_token, decode_device_token
-from app.config import settings
-from app.database import (
+from ..auth import create_device_token, decode_device_token
+from ..config import settings
+from ..database import (
     _utc_now,
     ACCOUNT_STATUS_DISABLED,
     ACCOUNT_STATUS_ENABLED,
@@ -20,7 +20,7 @@ from app.database import (
     row_to_dict,
     sync_platform_account,
 )
-from app.schemas import HeartbeatRequest, HeartbeatResponse, RegisterRequest, TradeBatchRequest
+from ..schemas import HeartbeatRequest, HeartbeatResponse, RegisterRequest, TradeBatchRequest
 
 router = APIRouter(prefix="/api/v1", tags=["client"])
 

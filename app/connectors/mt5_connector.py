@@ -572,7 +572,7 @@ class MT5Connector(QObject):
         """在 MT5 端开/加一腿对冲仓。
 
         收缩 → 买入（BUY），扩张 → 卖出（SELL）；与 BA 端方向相反构成对冲。
-        实盘下单后轮询确认持仓出现，未确认则返回 needs_reconciliation 交由上层回滚。
+        实盘下单后轮询确认持仓出现，未确认则返回 needs_reconciliation 交由上层暂停自动补偿并提示对账。
         """
         from app.core.models import HedgeMode
 

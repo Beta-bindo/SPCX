@@ -35,4 +35,7 @@ class HedgeTradeResult:
             return False
         if all(leg.success for leg in self.legs):
             return False
-        return any(leg.success or leg.needs_reconciliation for leg in self.legs)
+        return any(
+            leg.success or leg.needs_reconciliation or leg.filled_quantity > 0
+            for leg in self.legs
+        )

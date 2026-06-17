@@ -129,10 +129,17 @@ class SpreadEngine(QObject):
             if comp:
                 comp_state = "成功" if leg.compensated else "失败"
                 comp_level = LogLevel.TRADE if leg.compensated else LogLevel.ERROR
-                self._log(comp_level, f"     ↳ 回滚{comp_state}：{comp}")
+                comp_action = "恢复" if result.action == "close" else "回滚"
+                self._log(comp_level, f"     ↳ {comp_action}{comp_state}：{comp}")
 
     def open_hedge(
-        self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
+        self,
+        preset_id: str,
+        mode: str = "contraction",
+        order_mode: str = "limit",
+        *,
+        min_open_spread: float | None = None,
+        max_open_spread: float | None = None,
     ) -> bool:
         """对外的开仓入口：前置校验通过后，在后台线程执行开仓。
 
@@ -150,7 +157,9 @@ class SpreadEngine(QObject):
         self._trading = True
         self.trade_started.emit("open", preset_id, order_mode)
         threading.Thread(
-            target=self._run_open, args=(preset_id, mode, order_mode), daemon=True
+            target=self._run_open,
+            args=(preset_id, mode, order_mode, min_open_spread, max_open_spread),
+            daemon=True,
         ).start()
         return True
 
@@ -248,7 +257,49 @@ class SpreadEngine(QObject):
         )
         return ba_pos, mt5_pos
 
-    def _run_open(self, preset_id: str, mode: str, order_mode: str) -> None:
+    def _auto_open_spread_check(
+        self,
+        preset_id: str,
+        mode: str,
+        min_open_spread: float | None,
+        max_open_spread: float | None,
+    ) -> tuple[bool, str, float | None]:
+        if min_open_spread is None and max_open_spread is None:
+            return True, "", None
+        snap = self._spreads.get(preset_id)
+        label = "黄金" if preset_id == "xau" else "白银"
+        mlabel = "收缩" if mode == "contraction" else "扩张"
+        if snap is None:
+            return False, f"自动开仓{mlabel}取消：{label}缺少最新点差", None
+        spread = snap.executable_spread("open", mode)
+        if min_open_spread is not None and spread < min_open_spread:
+            return (
+                False,
+                (
+                    f"自动开仓{mlabel}取消：当前点差 {spread:+.3f} "
+                    f"低于阈值 {min_open_spread:.3f}"
+                ),
+                spread,
+            )
+        if max_open_spread is not None and spread > max_open_spread:
+            return (
+                False,
+                (
+                    f"自动开仓{mlabel}取消：当前点差 {spread:+.3f} "
+                    f"高于阈值 {max_open_spread:.3f}"
+                ),
+                spread,
+            )
+        return True, "", spread
+
+    def _run_open(
+        self,
+        preset_id: str,
+        mode: str,
+        order_mode: str,
+        min_open_spread: float | None = None,
+        max_open_spread: float | None = None,
+    ) -> None:
         """后台线程：执行开仓、记录成交、刷新持仓，并发出相应信号。"""
         finished = False
         try:
@@ -258,6 +309,23 @@ class SpreadEngine(QObject):
                 f"正在{hedge_mode_word(mode)}开仓 · {om}",
             )
             self._spread_log(preset_id, "下单前")
+            ok, guard_msg, _ = self._auto_open_spread_check(
+                preset_id, mode, min_open_spread, max_open_spread
+            )
+            if not ok:
+                self._log(LogLevel.INFO, guard_msg)
+                self.trade_finished.emit(
+                    HedgeTradeResult(action="open", success=False, message=guard_msg)
+                )
+                finished = True
+                return
+
+            def spread_guard() -> bool:
+                ok_now, _, _ = self._auto_open_spread_check(
+                    preset_id, mode, min_open_spread, max_open_spread
+                )
+                return ok_now
+
             spread, ba_price, ex_price = self._order_snapshot(preset_id)
             ba_qty, mt5_qty = self._order_quantities(preset_id)
             ba_side, mt5_side = hedge_sides(mode)
@@ -277,6 +345,11 @@ class SpreadEngine(QObject):
                 mode,
                 order_mode,
                 had_position=had_position,
+                spread_guard=(
+                    spread_guard
+                    if min_open_spread is not None or max_open_spread is not None
+                    else None
+                ),
             )
             self._log(LogLevel.TRADE, result.message)
             if not result.success:
@@ -338,6 +411,22 @@ class SpreadEngine(QObject):
                 entry_spread = position_entry_spread(ba_pos, mt5_pos)
                 if entry_spread is not None:
                     self._log(LogLevel.TRADE, f"持仓入场点差指数 {entry_spread:+.3f}")
+                    if min_open_spread is not None and entry_spread < min_open_spread:
+                        self._log(
+                            LogLevel.ERROR,
+                            (
+                                f"持仓入场点差 {entry_spread:+.3f} 低于自动阈值 "
+                                f"{min_open_spread:.3f}，请检查成交期间滑点/价差回落"
+                            ),
+                        )
+                    if max_open_spread is not None and entry_spread > max_open_spread:
+                        self._log(
+                            LogLevel.ERROR,
+                            (
+                                f"持仓入场点差 {entry_spread:+.3f} 高于自动阈值 "
+                                f"{max_open_spread:.3f}，请检查成交期间滑点/价差回落"
+                            ),
+                        )
             self.trade_finished.emit(result)
             finished = True
             self.refresh_positions()

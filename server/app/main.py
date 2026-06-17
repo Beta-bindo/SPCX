@@ -7,9 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.config import validate_production_settings
-from app.database import init_db
-from app.routes import admin, admin_rbac, client
+from .config import validate_production_settings
+from .database import init_db
+from .routes import admin, admin_rbac, client
 
 
 @asynccontextmanager

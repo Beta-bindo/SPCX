@@ -13,23 +13,36 @@ os.environ.setdefault("TA_JWT_SECRET", "test-jwt-secret-for-rbac")
 
 class AdminRbacTests(unittest.TestCase):
     def setUp(self) -> None:
-        from app.auth import hash_admin_password
+        from server.app.auth import hash_admin_password
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self._db_path = str(Path(self._tmpdir.name) / "rbac.db")
-        os.environ["TA_DB_PATH"] = self._db_path
         os.environ.pop("TA_ADMIN_PASSWORD", None)
 
-        import app.config as config_mod
+        import server.app.config as config_mod
 
         importlib.reload(config_mod)
+        os.environ["TA_DB_PATH"] = self._db_path
         os.environ["TA_ADMIN_PASSWORD_HASH"] = hash_admin_password(TEST_PASSWORD)
+        config_mod.settings = config_mod.Settings.from_env()
 
-        from app.database import init_db
+        import server.app.auth as auth_mod
+        import server.app.database as database_mod
+        import server.app.rbac as rbac_mod
+        import server.app.routes.admin as admin_routes_mod
+        import server.app.routes.admin_rbac as admin_rbac_routes_mod
+        import server.app.routes.client as client_routes_mod
 
-        init_db()
+        importlib.reload(auth_mod)
+        importlib.reload(database_mod)
+        importlib.reload(rbac_mod)
+        importlib.reload(client_routes_mod)
+        importlib.reload(admin_routes_mod)
+        importlib.reload(admin_rbac_routes_mod)
 
-        import app.main as main_mod
+        database_mod.init_db()
+
+        import server.app.main as main_mod
 
         importlib.reload(main_mod)
         from fastapi.testclient import TestClient
@@ -99,7 +112,7 @@ class AdminRbacTests(unittest.TestCase):
         self.assertEqual(allowed.status_code, 200)
 
     def test_admin_user_hidden_from_user_list(self) -> None:
-        from app.database import get_admin_user_by_username
+        from server.app.database import get_admin_user_by_username
 
         res = self.client.get("/api/v1/admin/users", headers=self.headers)
         self.assertEqual(res.status_code, 200)
@@ -123,7 +136,7 @@ class AdminRbacTests(unittest.TestCase):
         )
 
     def test_audit_hides_superadmin_operations(self) -> None:
-        from app.database import get_conn, log_audit
+        from server.app.database import get_conn, log_audit
 
         with get_conn() as conn:
             log_audit(conn, "test_super_op", detail="super", actor="admin")
