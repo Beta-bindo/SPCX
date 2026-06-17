@@ -102,6 +102,8 @@ class SpreadEngine(QObject):
         self._network_timer.timeout.connect(self._emit_network_status)
         self._trading = False
         self._refresh_inflight = False
+        self._last_full_refresh_at = 0.0
+        self._full_refresh_interval_sec = 5.0
         self._positions_refresh_ready.connect(self._apply_positions_refresh)
         self._spread_rebuild_timer = QTimer(self)
         self._spread_rebuild_timer.setSingleShot(True)
@@ -248,6 +250,13 @@ class SpreadEngine(QObject):
         """真实费用优先；没有交易所费用明细时回退本地估算。"""
         if leg is not None and getattr(leg, "fee_known", False):
             return round(float(getattr(leg, "fee", 0.0) or 0.0), 4)
+        return estimated
+
+    @staticmethod
+    def _leg_pnl_or_estimate(leg, estimated: float) -> float:
+        """官方已实现盈亏优先；取不到时回退平仓前浮盈比例折算。"""
+        if leg is not None and getattr(leg, "pnl_known", False):
+            return round(float(getattr(leg, "realized_pnl", 0.0) or 0.0), 2)
         return estimated
 
     def _order_quantities(self, preset_id: str) -> tuple[float, float]:
@@ -446,7 +455,7 @@ class SpreadEngine(QObject):
                     self._log(LogLevel.TRADE, f"持仓入场点差指数 {entry_spread:+.3f}")
             self.trade_finished.emit(result)
             finished = True
-            self.refresh_positions()
+            self.refresh_positions(force_full=True)
         except Exception as exc:  # noqa: BLE001 — 兜底：异常也要让 UI 解锁
             self._log(LogLevel.ERROR, f"开仓异常：{exc}")
         finally:
@@ -517,6 +526,8 @@ class SpreadEngine(QObject):
 
                 ba_pnl, ba_fee = _scaled(ba_pos, close_ba_qty)
                 mt5_pnl, mt5_fee = _scaled(mt5_pos, close_mt5_qty)
+                ba_pnl = self._leg_pnl_or_estimate(ba_leg, ba_pnl)
+                mt5_pnl = self._leg_pnl_or_estimate(mt5_leg, mt5_pnl)
                 ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
                 mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
                 ba_funding_fee = 0.0
@@ -569,7 +580,7 @@ class SpreadEngine(QObject):
                 self._log_remaining_positions(preset_id)
             self.trade_finished.emit(result)
             finished = True
-            self.refresh_positions()
+            self.refresh_positions(force_full=True)
         except Exception as exc:  # noqa: BLE001 — 兜底：异常也要让 UI 解锁
             self._log(LogLevel.ERROR, f"平仓异常：{exc}")
         finally:
@@ -735,8 +746,34 @@ class SpreadEngine(QObject):
         if was_running:
             self.start()
 
-    def refresh_positions(self) -> None:
-        """触发一次后台持仓刷新；用 _refresh_inflight 去重，避免并发重入。"""
+    def _carry_position_risk_fields(self, positions: list[Position]) -> list[Position]:
+        """快刷只拿官方盈亏时，沿用上一轮完整刷新里的强平/杠杆字段。"""
+        previous = {
+            (p.platform, p.symbol, p.side): p
+            for p in self._positions
+        }
+        for pos in positions:
+            old = previous.get((pos.platform, pos.symbol, pos.side))
+            if old is None:
+                continue
+            same_position = (
+                abs(pos.quantity - old.quantity) <= 1e-9
+                and abs(pos.entry_price - old.entry_price) <= 1e-6
+            )
+            if not same_position:
+                continue
+            if pos.liquidation_price <= 0 and old.liquidation_price > 0:
+                pos.liquidation_price = old.liquidation_price
+            if pos.exchange_liq_buffer is None and old.exchange_liq_buffer is not None:
+                pos.exchange_liq_buffer = old.exchange_liq_buffer
+            if pos.leverage <= 0 and old.leverage > 0:
+                pos.leverage = old.leverage
+            if not pos.margin_type and old.margin_type:
+                pos.margin_type = old.margin_type
+        return positions
+
+    def refresh_positions(self, *, force_full: bool = False) -> None:
+        """触发一次后台持仓刷新；定时快刷盈亏，周期性完整刷新委托与风险。"""
         if not self._running or self._refresh_inflight:
             return
         self._refresh_inflight = True
@@ -744,19 +781,32 @@ class SpreadEngine(QObject):
         mt5_quotes = dict(self._mt5_quotes)
         primary = self._spreads.get("xau")
         config = self.config
+        now = time.monotonic()
+        full_refresh = (
+            force_full
+            or not self._positions
+            or now - self._last_full_refresh_at >= self._full_refresh_interval_sec
+        )
+        cached_open_orders = list(self._open_orders)
 
         def _work() -> None:
             try:
                 positions: list[Position] = []
                 positions.extend(self.binance.get_positions(force=True))
-                positions.extend(self.mt5.get_positions())
-                open_orders: list[OpenOrder] = []
-                open_orders.extend(self.binance.get_open_orders())
-                open_orders.extend(self.mt5.get_open_orders())
+                positions.extend(self.mt5.get_positions(include_risk=full_refresh))
+                if not full_refresh:
+                    positions = self._carry_position_risk_fields(positions)
+                open_orders: list[OpenOrder] = cached_open_orders
+                if full_refresh:
+                    open_orders = []
+                    open_orders.extend(self.binance.get_open_orders())
+                    open_orders.extend(self.mt5.get_open_orders())
                 updated, summary = calculate_pnl(
                     positions, ba_quotes, mt5_quotes, config, primary
                 )
                 risk = build_risk_snapshot(updated, ba_quotes, mt5_quotes, config)
+                if full_refresh:
+                    self._last_full_refresh_at = time.monotonic()
                 self._positions_refresh_ready.emit(updated, summary, risk, open_orders)
             except Exception as exc:
                 self._log(LogLevel.ERROR, f"刷新持仓失败: {exc}")
@@ -780,7 +830,7 @@ class SpreadEngine(QObject):
             except Exception as exc:
                 self._log(LogLevel.ERROR, f"手动撤单失败: {exc}")
             finally:
-                self.refresh_positions()
+                self.refresh_positions(force_full=True)
 
         threading.Thread(target=_work, daemon=True, name="cancel-all-orders").start()
 

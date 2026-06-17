@@ -505,28 +505,41 @@ class BinanceConnector(QObject):
                     takers.append(taker)
         return max(takers) if takers else None
 
-    def _fetch_order_commission(self, symbol: str, order_id: str) -> tuple[float, bool]:
-        """按订单读取 BA 实际成交 commission；返回(正数成本, 是否取到成交明细)。"""
+    def _fetch_order_trade_summary(self, symbol: str, order_id: str) -> tuple[float, float, bool]:
+        """按订单读取 BA 实际 realizedPnl 与 commission。
+
+        返回 (官方已实现盈亏, 正数手续费成本, 是否取到成交明细)。
+        """
         if not self._client or not order_id:
-            return 0.0, False
+            return 0.0, 0.0, False
         try:
             rows = self._client.futures_account_trades(
                 symbol=symbol,
                 orderId=int(order_id),
             ) or []
         except Exception:
-            return 0.0, False
+            return 0.0, 0.0, False
         if not isinstance(rows, list):
-            return 0.0, False
+            return 0.0, 0.0, False
         if not rows:
-            return 0.0, False
-        total = 0.0
+            return 0.0, 0.0, False
+        fee_total = 0.0
+        pnl_total = 0.0
         for row in rows:
             try:
-                total += abs(float(row.get("commission", 0) or 0))
+                fee_total += abs(float(row.get("commission", 0) or 0))
             except (TypeError, ValueError):
-                continue
-        return round(total, 4), True
+                pass
+            try:
+                pnl_total += float(row.get("realizedPnl", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return round(pnl_total, 2), round(fee_total, 4), True
+
+    def _fetch_order_commission(self, symbol: str, order_id: str) -> tuple[float, bool]:
+        """按订单读取 BA 实际成交 commission；返回(正数成本, 是否取到成交明细)。"""
+        _pnl, fee, known = self._fetch_order_trade_summary(symbol, order_id)
+        return fee, known
 
     @staticmethod
     def _maker_price_from_book(
@@ -1506,7 +1519,7 @@ class BinanceConnector(QObject):
                         fallback=float(price or 0),
                         order=final_order,
                     )
-                    fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
+                    realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                     if final_delta > 1e-9:
                         if on_fill_delta is not None and not on_fill_delta(final_delta):
                             return LegResult(
@@ -1521,6 +1534,8 @@ class BinanceConnector(QObject):
                                 filled_price=filled_price,
                                 fee=fee,
                                 fee_known=fee_known,
+                                realized_pnl=realized_pnl,
+                                pnl_known=fee_known,
                                 needs_reconciliation=True,
                             )
                         filled_qty = executed_after_cancel
@@ -1554,6 +1569,8 @@ class BinanceConnector(QObject):
                             filled_price=filled_price,
                             fee=fee,
                             fee_known=fee_known,
+                            realized_pnl=realized_pnl,
+                            pnl_known=fee_known,
                         )
                     if guard_cancelled:
                         return LegResult(
@@ -1614,7 +1631,7 @@ class BinanceConnector(QObject):
                 )
             if filled_price > 0:
                 price_str = f"{filled_price:.3f}"
-            fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
+            realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
             self._log(
                 LogLevel.TRADE,
                 trade_leg_success_msg(
@@ -1637,6 +1654,8 @@ class BinanceConnector(QObject):
                 filled_price=filled_price,
                 fee=fee,
                 fee_known=fee_known,
+                realized_pnl=realized_pnl,
+                pnl_known=fee_known,
             )
 
         try:
@@ -1798,7 +1817,7 @@ class BinanceConnector(QObject):
                             fallback=float(price or 0),
                             order=final_order,
                         )
-                        fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
+                        realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                         if final_delta > 1e-9:
                             if on_fill_delta is not None and not on_fill_delta(final_delta):
                                 return LegResult(
@@ -1813,6 +1832,8 @@ class BinanceConnector(QObject):
                                     filled_price=filled_price,
                                     fee=fee,
                                     fee_known=fee_known,
+                                    realized_pnl=realized_pnl,
+                                    pnl_known=fee_known,
                                     needs_reconciliation=True,
                                 )
                             filled_qty = executed_after_cancel
@@ -1844,6 +1865,8 @@ class BinanceConnector(QObject):
                                 filled_price=filled_price,
                                 fee=fee,
                                 fee_known=fee_known,
+                                realized_pnl=realized_pnl,
+                                pnl_known=fee_known,
                             )
                         return LegResult(
                             platform="BA",
@@ -1859,7 +1882,7 @@ class BinanceConnector(QObject):
                         oid,
                         fallback=float(price or 0),
                     )
-                    fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
+                    realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                     self._log(
                         LogLevel.TRADE,
                         trade_leg_success_msg(
@@ -1880,6 +1903,8 @@ class BinanceConnector(QObject):
                         filled_price=filled_price,
                         fee=fee,
                         fee_known=fee_known,
+                        realized_pnl=realized_pnl,
+                        pnl_known=fee_known,
                     )
                 # 市价平仓（并发模式）：直接市价 reduceOnly 平掉本手并确认减仓
                 order = self._client.futures_create_order(
@@ -1905,7 +1930,7 @@ class BinanceConnector(QObject):
                         quote, Side.BUY if close_side == "BUY" else Side.SELL
                     ),
                 )
-                fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
+                realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                 self._log(
                     LogLevel.TRADE,
                     trade_leg_success_msg(
@@ -1926,6 +1951,8 @@ class BinanceConnector(QObject):
                     filled_price=filled_price,
                     fee=fee,
                     fee_known=fee_known,
+                    realized_pnl=realized_pnl,
+                    pnl_known=fee_known,
                 )
             return LegResult(platform="BA", success=False, message="未找到可平仓位")
 

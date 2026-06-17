@@ -123,6 +123,22 @@ class TradeReportingTests(unittest.TestCase):
             1.23,
         )
 
+    def test_leg_pnl_prefers_known_exchange_realized_pnl(self):
+        self.assertEqual(
+            SpreadEngine._leg_pnl_or_estimate(
+                LegResult("BA", True, realized_pnl=-2.35, pnl_known=True),
+                9.99,
+            ),
+            -2.35,
+        )
+        self.assertEqual(
+            SpreadEngine._leg_pnl_or_estimate(
+                LegResult("MT5", True),
+                9.99,
+            ),
+            9.99,
+        )
+
     def test_close_payload_includes_ba_funding_fee(self):
         rec = TradeRecord(
             settled_at="2026-06-10T18:00:00",

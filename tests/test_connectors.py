@@ -122,6 +122,41 @@ def test_mt5_thread_safe_get_positions():
     print("  ✓ MT5 持仓经工作线程队列")
 
 
+def test_mt5_light_positions_skip_account_risk_calc():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_MT5.value)
+    conn = MT5Connector(cfg)
+    conn._connected = True
+    conn._poll_thread = MagicMock()
+
+    import app.connectors.mt5_connector as mt5_mod
+
+    fake_pos = MagicMock()
+    fake_pos.type = 0
+    fake_pos.symbol = "XAUUSD"
+    fake_pos.volume = 0.01
+    fake_pos.price_open = 2649.0
+    fake_pos.price_current = 2650.0
+    fake_pos.profit = 1.5
+
+    mt5_mock = MagicMock()
+    mt5_mock.ORDER_TYPE_BUY = 0
+    mt5_mock.account_info.side_effect = AssertionError("light refresh must skip account_info")
+    mt5_mock.positions_get.side_effect = lambda symbol=None: [fake_pos] if symbol == "XAUUSD" else []
+
+    def fake_call(fn, timeout=30.0):
+        return fn()
+
+    with patch.object(mt5_mod, "HAS_MT5", True):
+        with patch.object(mt5_mod, "mt5", mt5_mock, create=True):
+            with patch.object(conn, "_call_on_mt5_thread", side_effect=fake_call):
+                positions = conn.get_positions(include_risk=False)
+
+    assert len(positions) == 1
+    assert positions[0].unrealized_pnl == 1.5
+    mt5_mock.account_info.assert_not_called()
+    print("  ✓ MT5 盈亏快刷跳过账户风险计算")
+
+
 def test_mt5_live_positions_merge_tickets_and_sum_profit():
     cfg = AppConfig(connection_mode=ConnectionMode.LIVE_MT5.value)
     conn = MT5Connector(cfg)
@@ -270,16 +305,20 @@ def test_binance_reads_account_commission_rate_and_order_fee():
         "takerCommissionRate": "0.00035",
     }
     client.futures_account_trades.return_value = [
-        {"orderId": 123, "commission": "0.12", "commissionAsset": "USDT"},
-        {"orderId": 123, "commission": "0.03", "commissionAsset": "USDT"},
+        {"orderId": 123, "commission": "0.12", "commissionAsset": "USDT", "realizedPnl": "1.25"},
+        {"orderId": 123, "commission": "0.03", "commissionAsset": "USDT", "realizedPnl": "-0.25"},
     ]
     conn._client = client
 
     rate = conn.fetch_user_commission_rate("XAUUSDT")
+    pnl, summary_fee, summary_known = conn._fetch_order_trade_summary("XAUUSDT", "123")
     fee, known = conn._fetch_order_commission("XAUUSDT", "123")
 
     assert rate == (0.0002, 0.00035)
     assert conn.sync_user_commission_rates(["XAUUSDT"]) == 0.00035
+    assert summary_known is True
+    assert pnl == 1.0
+    assert summary_fee == 0.15
     assert known is True
     assert fee == 0.15
     print("  ✓ BA 读取账户费率与订单真实 commission")
@@ -624,6 +663,7 @@ if __name__ == "__main__":
     test_binance_uses_futures_ping()
     test_binance_open_close_demo()
     test_mt5_thread_safe_get_positions()
+    test_mt5_light_positions_skip_account_risk_calc()
     test_mt5_live_positions_merge_tickets_and_sum_profit()
     test_mt5_open_close_demo()
     test_hedge_open_both_demo()

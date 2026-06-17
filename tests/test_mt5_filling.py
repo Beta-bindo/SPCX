@@ -69,18 +69,26 @@ def test_mt5_deal_charges_sum_commission_fee_swap():
     from app.core.models import AppConfig
 
     deals = [
-        SimpleNamespace(symbol="XAUUSD", order=11, commission=-0.50, fee=-0.10, swap=0.20),
-        SimpleNamespace(symbol="XAUUSD", order=12, commission=-0.30, fee=0.0, swap=-0.05),
-        SimpleNamespace(symbol="XAGUSD", order=11, commission=-99.0, fee=0.0, swap=0.0),
+        SimpleNamespace(symbol="XAUUSD", order=11, profit=1.20, commission=-0.50, fee=-0.10, swap=0.20),
+        SimpleNamespace(symbol="XAUUSD", order=12, profit=-0.10, commission=-0.30, fee=0.0, swap=-0.05),
+        SimpleNamespace(symbol="XAGUSD", order=11, profit=99.0, commission=-99.0, fee=0.0, swap=0.0),
     ]
     mt5_mod.mt5 = SimpleNamespace(history_deals_get=lambda _start, _end: deals)
 
+    pnl, summary_fee, summary_known = MT5Connector(AppConfig())._fetch_deal_summary(
+        "XAUUSD",
+        ["11", "12"],
+        time.time() - 10,
+    )
     fee, known = MT5Connector(AppConfig())._fetch_deal_charges(
         "XAUUSD",
         ["11", "12"],
         time.time() - 10,
     )
 
+    assert summary_known is True
+    assert pnl == 1.1
+    assert summary_fee == 0.75
     assert known is True
     assert fee == 0.75
 

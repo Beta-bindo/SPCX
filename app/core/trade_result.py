@@ -20,6 +20,8 @@ class LegResult:
     filled_price: float = 0.0           # 实际成交均价；拿不到时保持 0，由调用方回退快照价
     fee: float = 0.0                    # 实际交易费用成本；负数表示返还/正向库存费
     fee_known: bool = False             # fee 是否来自交易所/MT5 历史，而非本地估算
+    realized_pnl: float = 0.0           # 平仓成交的官方已实现盈亏；开仓通常为 0
+    pnl_known: bool = False             # realized_pnl 是否来自平台成交/历史明细
 
 
 @dataclass

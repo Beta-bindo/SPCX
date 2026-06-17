@@ -335,20 +335,25 @@ class MT5Connector(QObject):
             time.sleep(0.25)
         return False
 
-    def get_positions(self) -> list[Position]:
-        """查询全部受监控品种的 MT5 持仓，并据账户权益反推每笔的爆仓价与缓冲。"""
+    def get_positions(self, *, include_risk: bool = True) -> list[Position]:
+        """查询全部受监控品种的 MT5 持仓。
+
+        include_risk=False 时只读取官方持仓/浮盈，跳过账户强平模型计算，供 1 秒
+        盈亏快刷使用，避免 order_calc_profit 拖慢界面。
+        """
         if not self.config.use_live_mt5:
             return list(self._demo_positions.values())
         if not self._connected or not HAS_MT5:
             return []
 
         def _fetch() -> list[Position]:
-            from app.core.liquidation import (
-                calc_liquidation_price_from_profit,
-                mt5_account_liq_buffer,
-            )
+            if include_risk:
+                from app.core.liquidation import (
+                    calc_liquidation_price_from_profit,
+                    mt5_account_liq_buffer,
+                )
 
-            account = mt5.account_info()
+            account = mt5.account_info() if include_risk else None
             account_buffer: float | None = None
             if account is not None:
                 account_buffer = mt5_account_liq_buffer(
@@ -392,7 +397,7 @@ class MT5Connector(QObject):
                     avg_entry = g["notional"] / total_vol if total_vol else 0.0
                     total_pnl = g["pnl"]
                     liq_price = 0.0
-                    if account is not None:
+                    if include_risk and account is not None:
                         try:
                             equity_without = float(account.equity) - total_pnl
                             otype = (
@@ -561,6 +566,44 @@ class MT5Connector(QObject):
                 continue
         return -total
 
+    def _fetch_deal_summary(
+        self,
+        symbol: str,
+        order_ids: list[str],
+        start_ts: float,
+        end_ts: float | None = None,
+    ) -> tuple[float, float, bool]:
+        """从 MT5 历史成交读取官方 profit 与 commission/fee/swap。
+
+        返回 (官方已实现盈亏, 正数费用成本, 是否匹配到成交)。
+        """
+        if not order_ids:
+            return 0.0, 0.0, False
+        ids = {str(oid) for oid in order_ids if oid}
+        if not ids:
+            return 0.0, 0.0, False
+        start = datetime.fromtimestamp(max(0.0, start_ts - 5.0))
+        end = datetime.fromtimestamp((end_ts or time.time()) + 5.0)
+        try:
+            deals = mt5.history_deals_get(start, end) or []
+        except Exception:
+            return 0.0, 0.0, False
+        profit_total = 0.0
+        charge_total = 0.0
+        matched = False
+        for deal in deals:
+            if symbol and str(getattr(deal, "symbol", "") or "") != symbol:
+                continue
+            if str(getattr(deal, "order", "") or "") not in ids:
+                continue
+            matched = True
+            charge_total += self._deal_charge(deal)
+            try:
+                profit_total += float(getattr(deal, "profit", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return round(profit_total, 2), round(charge_total, 4), matched
+
     def _fetch_deal_charges(
         self,
         symbol: str,
@@ -569,27 +612,8 @@ class MT5Connector(QObject):
         end_ts: float | None = None,
     ) -> tuple[float, bool]:
         """从 MT5 历史成交读取真实 commission/fee/swap。"""
-        if not order_ids:
-            return 0.0, False
-        ids = {str(oid) for oid in order_ids if oid}
-        if not ids:
-            return 0.0, False
-        start = datetime.fromtimestamp(max(0.0, start_ts - 5.0))
-        end = datetime.fromtimestamp((end_ts or time.time()) + 5.0)
-        try:
-            deals = mt5.history_deals_get(start, end) or []
-        except Exception:
-            return 0.0, False
-        total = 0.0
-        matched = False
-        for deal in deals:
-            if symbol and str(getattr(deal, "symbol", "") or "") != symbol:
-                continue
-            if str(getattr(deal, "order", "") or "") not in ids:
-                continue
-            matched = True
-            total += self._deal_charge(deal)
-        return round(total, 4), matched
+        _profit, fee, known = self._fetch_deal_summary(symbol, order_ids, start_ts, end_ts)
+        return fee, known
 
     def _normalize_mt5_volume(self, volume: float, info, *, cap: float | None = None) -> float:
         """把按 BA 成交量换算出来的 MT5 手数对齐到品种 volume_step。
@@ -790,7 +814,7 @@ class MT5Connector(QObject):
                     needs_reconciliation=True,
                 )
             filled_price = self._result_filled_price(result, fallback=float(price or 0))
-            fee, fee_known = self._fetch_deal_charges(
+            realized_pnl, fee, fee_known = self._fetch_deal_summary(
                 symbol_mt5,
                 [oid],
                 history_start,
@@ -816,6 +840,8 @@ class MT5Connector(QObject):
                 filled_price=filled_price,
                 fee=fee,
                 fee_known=fee_known,
+                realized_pnl=realized_pnl,
+                pnl_known=fee_known,
             )
 
         try:
@@ -971,7 +997,7 @@ class MT5Connector(QObject):
             if closed_total <= 0:
                 return LegResult(platform="MT5", success=False, message="未找到可平仓位")
             avg_filled_price = filled_notional / closed_total if filled_notional > 0 else 0.0
-            fee, fee_known = self._fetch_deal_charges(
+            realized_pnl, fee, fee_known = self._fetch_deal_summary(
                 symbol_mt5,
                 order_ids,
                 history_start if order_ids else time.time(),
@@ -1006,6 +1032,8 @@ class MT5Connector(QObject):
                 filled_price=avg_filled_price,
                 fee=fee,
                 fee_known=fee_known,
+                realized_pnl=realized_pnl,
+                pnl_known=fee_known,
             )
 
         try:

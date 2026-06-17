@@ -1273,7 +1273,7 @@ class MainWindow(QMainWindow):
         self.engine.reevaluate_alerts()
 
     def _on_refresh_positions(self) -> None:
-        self.engine.refresh_positions()
+        self.engine.refresh_positions(force_full=True)
         self._append_log(LogLevel.INFO, "已刷新持仓、委托与盈亏")
 
     def _on_open_orders(self, orders) -> None:
@@ -1407,7 +1407,7 @@ class MainWindow(QMainWindow):
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:
-            self.engine.refresh_positions()
+            self.engine.refresh_positions(force_full=True)
             self.status_bar.showMessage(result.message, 10000)
             if is_auto:
                 # 自动下单不弹模态窗口，仅日志+状态栏，防止阻塞 UI / 连环弹窗
@@ -1417,7 +1417,7 @@ class MainWindow(QMainWindow):
                 box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
                 box.exec()
         elif not result.success:
-            self.engine.refresh_positions()
+            self.engine.refresh_positions(force_full=True)
             self.status_bar.showMessage(result.message, 10000)
             if is_auto:
                 self._append_log(LogLevel.ERROR, f"交易失败：{result.message}（自动下单已取消勾选）")
@@ -1427,7 +1427,7 @@ class MainWindow(QMainWindow):
                 box.exec()
         else:
             self._pending_status_preset = preset_id
-            self.engine.refresh_positions()
+            self.engine.refresh_positions(force_full=True)
             self.status_bar.showMessage(result.message, 5000)
             if is_auto:
                 # 自动开仓/平仓成功后均已自动取消勾选，语音提醒用户需人工重新授权
