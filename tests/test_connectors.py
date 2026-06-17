@@ -498,6 +498,46 @@ def test_binance_live_maker_open_uses_inside_tick_and_fill_price():
     print("  ✓ BA Maker 开仓优先用订单簿一跳内侧价并返回成交均价")
 
 
+def test_binance_blocks_second_limit_order_when_symbol_has_pending():
+    cfg = AppConfig(
+        connection_mode=ConnectionMode.LIVE_BA.value,
+        ba_api_key="k",
+        ba_api_secret="s",
+        xau_ba_qty_map=1.0,
+    )
+    conn = BinanceConnector(cfg)
+    conn._client = MagicMock()
+    conn._open_orders_cache = [
+        OpenOrder(
+            platform="BA",
+            symbol="XAUUSDT",
+            order_id="old",
+            side=Side.SELL,
+            order_type="LIMIT",
+            total_quantity=1.0,
+            remaining_quantity=1.0,
+        )
+    ]
+
+    open_result = conn.open_hedge_leg(
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    close_result = conn.close_hedge_leg(
+        "xau",
+        GoldOrderMode.MAKER.value,
+        HedgeMode.CONTRACTION.value,
+    )
+
+    assert not open_result.success
+    assert not close_result.success
+    assert "已有 BA 委托未完成" in open_result.message
+    assert "已有 BA 委托未完成" in close_result.message
+    conn._client.futures_create_order.assert_not_called()
+    print("  ✓ 同品种已有 BA 委托时拦截新的限价/Maker 委托")
+
+
 def test_binance_live_maker_close_uses_order_book_inside_tick():
     cfg = AppConfig(
         connection_mode=ConnectionMode.LIVE_BA.value,
@@ -671,6 +711,7 @@ if __name__ == "__main__":
     test_binance_get_positions_uses_lock()
     test_gold_maker_vs_market_demo()
     test_binance_live_maker_open_uses_inside_tick_and_fill_price()
+    test_binance_blocks_second_limit_order_when_symbol_has_pending()
     test_binance_live_maker_close_uses_order_book_inside_tick()
     test_binance_maker_price_handles_one_tick_spread()
     test_binance_price_format_tolerates_float_tick_noise()

@@ -374,6 +374,38 @@ class BinanceConnector(QObject):
                 by_key[key] = order
             return list(by_key.values())
 
+    def _local_pending_orders_for_symbol(self, symbol: str) -> list[OpenOrder]:
+        """返回某交易对本地已知的 BA 存活委托（按 orderId 去重）。"""
+        return [o for o in self._local_pending_open_orders() if o.symbol == symbol]
+
+    def _pending_order_block_message(
+        self, preset_id: str, action: str, order_mode: str
+    ) -> str:
+        label = "黄金" if preset_id == "xau" else "白银"
+        mode_label = "Maker" if order_mode == GoldOrderMode.MAKER.value else "限价"
+        action_label = "开仓" if action == "open" else "平仓"
+        return f"{label}已有 BA 委托未完成，已拦截新的 {mode_label}{action_label}"
+
+    def _pending_order_block_error(
+        self,
+        preset_id: str,
+        symbol: str,
+        action: str,
+        order_mode: str,
+        *,
+        refresh: bool = False,
+    ) -> str | None:
+        """同一品种同一时间只允许一张 BA 未成交委托。"""
+        pending = self._local_pending_orders_for_symbol(symbol)
+        if not pending and refresh:
+            try:
+                pending = [o for o in self.get_open_orders() if o.symbol == symbol]
+            except Exception:
+                pending = []
+        if pending:
+            return self._pending_order_block_message(preset_id, action, order_mode)
+        return None
+
     def _clear_local_open_orders(self) -> None:
         """立即清空本地 BA 委托快照并通知 UI，真实状态由后续撤单/刷新校正。"""
         with self._open_orders_emit_lock:
@@ -732,6 +764,28 @@ class BinanceConnector(QObject):
             self._open_orders_cache = [
                 o for o in self._open_orders_cache if str(o.order_id) != order.order_id
             ] + [order]
+            active = frozenset(
+                sym for sym, ids in self._stream_active_orders.items() if ids
+            )
+            detail = self._collect_stream_orders_locked()
+        self._emit_open_orders(active, detail)
+
+    def _remove_local_pending_order(self, symbol: str, order_id: str) -> None:
+        """委托已成交/撤销后立即移除本地快照，避免委托灯保留旧数量。"""
+        if not symbol or not order_id:
+            return
+        oid = str(order_id)
+        with self._open_orders_emit_lock:
+            bag = self._stream_active_orders.get(symbol)
+            if bag is not None:
+                bag.pop(oid, None)
+                if not bag:
+                    self._stream_active_orders.pop(symbol, None)
+            self._open_orders_cache = [
+                o
+                for o in self._open_orders_cache
+                if not (o.symbol == symbol and str(o.order_id) == oid)
+            ]
             active = frozenset(
                 sym for sym, ids in self._stream_active_orders.items() if ids
             )
@@ -1428,6 +1482,13 @@ class BinanceConnector(QObject):
 
         if not self._client:
             return LegResult(platform="BA", success=False, message="BA 未连接")
+        if use_limit:
+            block = self._pending_order_block_error(
+                preset_id, symbol_ba, "open", order_mode, refresh=True
+            )
+            if block:
+                self._log(LogLevel.ERROR, block)
+                return LegResult(platform="BA", success=False, message=block)
 
         order_side = "SELL" if ba_side == Side.SELL else "BUY"
         try:
@@ -1446,6 +1507,11 @@ class BinanceConnector(QObject):
             before = self._position_from_cache(symbol_ba, ba_side)
             target_qty = (before.quantity if before else 0.0) + float(quantity)
             if use_limit:
+                block = self._pending_order_block_error(
+                    preset_id, symbol_ba, "open", order_mode
+                )
+                if block:
+                    return LegResult(platform="BA", success=False, message=block)
                 tick = get_binance_price_tick(self._client, symbol_ba)
                 if maker_only:
                     price = self._maker_order_price(symbol_ba, quote, ba_side, tick)
@@ -1522,6 +1588,7 @@ class BinanceConnector(QObject):
                     realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                     if final_delta > 1e-9:
                         if on_fill_delta is not None and not on_fill_delta(final_delta):
+                            self._remove_local_pending_order(symbol_ba, oid)
                             return LegResult(
                                 platform="BA",
                                 success=False,
@@ -1543,6 +1610,7 @@ class BinanceConnector(QObject):
                         self.get_positions(force=True)
                     except Exception:
                         pass
+                    self._remove_local_pending_order(symbol_ba, oid)
                     if filled_qty > 1e-9:
                         self._log(
                             LogLevel.TRADE,
@@ -1623,6 +1691,7 @@ class BinanceConnector(QObject):
                     oid,
                     fallback=float(price or 0),
                 )
+                self._remove_local_pending_order(symbol_ba, oid)
             else:
                 mode_label = "市价"
                 filled_price = self._order_filled_price(
@@ -1739,6 +1808,14 @@ class BinanceConnector(QObject):
                 filled_price=float(close_price or 0),
             )
 
+        if use_limit:
+            block = self._pending_order_block_error(
+                preset_id, symbol_ba, "close", order_mode, refresh=True
+            )
+            if block:
+                self._log(LogLevel.ERROR, block)
+                return LegResult(platform="BA", success=False, message=block)
+
         positions = [p for p in self.get_positions(force=False) if p.symbol == symbol_ba]
         if not positions:
             try:
@@ -1761,6 +1838,11 @@ class BinanceConnector(QObject):
                 quantity = format_binance_qty(qty_to_close, step)
                 remaining = max(0.0, pos.quantity - float(quantity))
                 if use_limit:
+                    block = self._pending_order_block_error(
+                        preset_id, symbol_ba, "close", order_mode
+                    )
+                    if block:
+                        return LegResult(platform="BA", success=False, message=block)
                     order_side_enum = Side.BUY if close_side == "BUY" else Side.SELL
                     if maker_only:
                         price = self._maker_order_price(symbol_ba, quote, order_side_enum, tick)
@@ -1820,6 +1902,7 @@ class BinanceConnector(QObject):
                         realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                         if final_delta > 1e-9:
                             if on_fill_delta is not None and not on_fill_delta(final_delta):
+                                self._remove_local_pending_order(symbol_ba, oid)
                                 return LegResult(
                                     platform="BA",
                                     success=False,
@@ -1841,6 +1924,7 @@ class BinanceConnector(QObject):
                             self.get_positions(force=True)
                         except Exception:
                             pass
+                        self._remove_local_pending_order(symbol_ba, oid)
                         if filled_qty > 1e-9:
                             self._log(
                                 LogLevel.TRADE,
@@ -1882,6 +1966,7 @@ class BinanceConnector(QObject):
                         oid,
                         fallback=float(price or 0),
                     )
+                    self._remove_local_pending_order(symbol_ba, oid)
                     realized_pnl, fee, fee_known = self._fetch_order_trade_summary(symbol_ba, oid)
                     self._log(
                         LogLevel.TRADE,

@@ -272,7 +272,10 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
                 f"{detail.liquidation_price:.3f}" if detail.liquidation_price else "--",
             )
         if "buf" in cells:
-            self._set_cell(cells["buf"], f"{detail.liq_buffer:.3f}" if detail.liq_buffer else "--")
+            self._set_cell(
+                cells["buf"],
+                f"{detail.liq_buffer:.3f}" if detail.liq_buffer is not None else "--",
+            )
         self._set_cell(cells["lev"], f"{detail.leverage}x")
 
     def _emit_repair_requested(self) -> None:
@@ -347,7 +350,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
             else None
         )
         self.update_hedge_health(health, repair)
-        net = summary.net_pnl if summary is not None else round(ba.net_pnl + mt5.net_pnl, 2)
+        net = round(ba.pnl + mt5.pnl, 2)
         sign = "+" if net >= 0 else "-"
         total_text = f"实时净盈亏：${sign}{abs(net):.2f}"
         if total_text != self._last_total_text:

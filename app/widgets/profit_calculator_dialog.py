@@ -111,7 +111,7 @@ class ProfitCalculatorDialog(QDialog):
             "点差",
             "BA盈亏",
             "EX盈亏",
-            "手续费",
+            "手续费(开+平)",
             "BA资费",
             "净利润",
         ]
@@ -170,7 +170,7 @@ class ProfitCalculatorDialog(QDialog):
         self.count_lbl.setText(f"笔数 {count}")
         self.ba_pnl_lbl.setText(f"BA利润 ${report.ba_pnl:+.2f}")
         self.mt5_pnl_lbl.setText(f"Exness利润 ${report.mt5_pnl:+.2f}")
-        self.fee_lbl.setText(f"总手续费 ${report.ba_fee + report.mt5_fee:.4f}")
+        self.fee_lbl.setText(f"总手续费(开+平) ${report.ba_fee + report.mt5_fee:.4f}")
         self.ba_charges_lbl.setText(
             f"BA资费 ${report.ba_charges:+.4f}"
             f"（资金费 {report.ba_funding_fee:+.4f} · 返佣 {report.ba_rebate:+.4f}）"

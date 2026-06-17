@@ -332,22 +332,55 @@ def test_pending_light_states():
 
     # 有委托并带数量：点亮，数字明确表示剩余委托量
     gold.set_pending_order(True, 500.0)
-    assert light.text() == "● 有委托 · 剩余 500"
+    assert light.text() == "● 有委托 · 剩余量 500"
     assert light.property("pendingActive") == "true"
 
     # 数量变化时实时刷新
     gold.set_pending_order(True, 1234.0)
-    assert light.text() == "● 有委托 · 剩余 1234"
+    assert light.text() == "● 有委托 · 剩余量 1234"
 
     # 仅集合更新（不带数量）时沿用上次数量
     gold.set_pending_order(True)
-    assert light.text() == "● 有委托 · 剩余 1234"
+    assert light.text() == "● 有委托 · 剩余量 1234"
 
     # 撤销后恢复无委托
     gold.set_pending_order(False)
     assert light.text() == "○ 无委托"
     assert light.property("pendingActive") == "false"
     print("  ✓ 委托指示灯：无委托/有委托+数量/清空 状态正确")
+
+
+def test_pending_order_locks_all_maker_auto_checkboxes():
+    app = QApplication.instance() or QApplication(sys.argv)
+    from app.widgets.symbol_auto_trade_settings import SymbolAutoTradeSettings
+
+    gold = SymbolAutoTradeSettings("xau")
+    for cb in (
+        gold.contraction_enabled,
+        gold.expansion_enabled,
+        gold.close_contraction_enabled,
+        gold.close_expansion_enabled,
+    ):
+        cb.setChecked(True)
+
+    gold.set_pending_order(True, 1.0)
+
+    for cb in (
+        gold.contraction_enabled,
+        gold.expansion_enabled,
+        gold.close_contraction_enabled,
+        gold.close_expansion_enabled,
+    ):
+        assert not cb.isChecked()
+        assert not cb.isEnabled()
+    for spin in (
+        gold.contraction_threshold,
+        gold.expansion_threshold,
+        gold.close_contraction_threshold,
+        gold.close_expansion_threshold,
+    ):
+        assert not spin.isEnabled()
+    print("  ✓ 有 BA Maker 委托时锁定 Maker 自动开仓和平仓")
 
 
 def test_open_orders_dedupes_same_ba_order_for_pending_light():
@@ -377,7 +410,7 @@ def test_open_orders_dedupes_same_ba_order_for_pending_light():
     window._on_open_orders(orders)
 
     light = window.gold_actions.auto_trade_settings.maker_pending_light
-    assert light.text() == "● 有委托 · 剩余 2"
+    assert light.text() == "● 有委托 · 剩余量 2"
     assert "总量2" in window.gold_actions.pending_label.text()
     assert "总量4" not in window.gold_actions.pending_label.text()
     window.close()
@@ -405,6 +438,7 @@ def main() -> int:
         test_config_roundtrip,
         test_manual_cancel_button_emits_signal,
         test_pending_light_states,
+        test_pending_order_locks_all_maker_auto_checkboxes,
         test_open_orders_dedupes_same_ba_order_for_pending_light,
     ]
     for fn in tests:

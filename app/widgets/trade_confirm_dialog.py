@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QMoveEvent, QShowEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -35,6 +35,7 @@ class TradeConfirmDialog(QWidget):
 
     trade_requested = Signal(str, str)  # (动作: 开仓/平仓, 模式: 收缩/扩张)
     closed = Signal(int)
+    ratio_changed = Signal()
 
     def __init__(
         self,
@@ -71,6 +72,7 @@ class TradeConfirmDialog(QWidget):
         root.setSpacing(8)
 
         self._ratio_fields = SymbolRatioFields(preset_id, config)
+        self._ratio_fields.ratio_changed.connect(self._on_ratio_changed)
         root.addWidget(self._ratio_fields)
 
         root.addWidget(QLabel("收缩：BA空+Ex多 · 扩张：BA多+Ex空", objectName="fieldHint"))
@@ -102,11 +104,14 @@ class TradeConfirmDialog(QWidget):
         self._actions_host_layout.setSpacing(0)
         root.addWidget(self._actions_host)
         self._rebuild_actions()
+        self._install_ratio_commit_filters()
 
     def set_position_callback(self, callback: Callable[[], None] | None) -> None:
         self._position_callback = callback
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._ratio_fields.apply_to(self._config)
+        self.ratio_changed.emit()
         self.closed.emit(0)
         super().closeEvent(event)
 
@@ -137,6 +142,22 @@ class TradeConfirmDialog(QWidget):
         else:
             self._ratio_fields.lock_all_spins()
         super().mousePressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress and self._ratio_fields.has_active_editor():
+            target = watched if isinstance(watched, QWidget) else None
+            while target is not None and target is not self:
+                if isinstance(target, ClickToEditDoubleSpinBox):
+                    break
+                target = target.parentWidget()
+            else:
+                self._ratio_fields.commit_current()
+        return super().eventFilter(watched, event)
+
+    def _install_ratio_commit_filters(self) -> None:
+        self.installEventFilter(self)
+        for child in self.findChildren(QWidget):
+            child.installEventFilter(self)
 
     def _actions_block_height(self) -> int:
         """估算动作按钮区高度（竖排时含按钮间距），用于自适应窗口尺寸。"""
@@ -265,6 +286,7 @@ class TradeConfirmDialog(QWidget):
         self, text: str, style: str, action: str, mode: str
     ) -> QPushButton:
         btn = QPushButton(text)
+        btn.installEventFilter(self)
         btn.setObjectName(style)
         btn.setMinimumHeight(_ACTION_BUTTON_HEIGHT)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -293,6 +315,7 @@ class TradeConfirmDialog(QWidget):
         self._action = action
         self._mode = mode
         self._ratio_fields.apply_to(self._config)
+        self.ratio_changed.emit()
         self.set_actions_enabled(False)
         self.trade_requested.emit(action, mode)
 
@@ -321,3 +344,7 @@ class TradeConfirmDialog(QWidget):
 
     def apply_ratio_to(self, config: AppConfig) -> None:
         self._ratio_fields.apply_to(config)
+
+    def _on_ratio_changed(self) -> None:
+        self._ratio_fields.apply_to(self._config)
+        self.ratio_changed.emit()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -18,6 +18,8 @@ from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox
 
 class SymbolRatioFields(QFrame):
     """单品种数量配比：BA / Exness / 开仓手数，并实时预览换算结果。"""
+
+    ratio_changed = Signal()
 
     def __init__(
         self,
@@ -117,7 +119,8 @@ class SymbolRatioFields(QFrame):
         root.addLayout(info_row)
 
         for spin in (self.ba_map, self.mt5_map, self.trade_lots):
-            spin.valueChanged.connect(self._update_preview)
+            spin.valueChanged.connect(self._on_value_changed)
+            spin.editingFinished.connect(self._on_editing_finished)
         self._update_preview()
         self.setMouseTracking(True)
 
@@ -125,6 +128,18 @@ class SymbolRatioFields(QFrame):
         """把所有数字框恢复为只读态（点击外部/移出时收起编辑）。"""
         for spin in (self.ba_map, self.mt5_map, self.trade_lots):
             spin.lock()
+
+    def has_active_editor(self) -> bool:
+        """是否有数字框处于编辑态。"""
+        return any(
+            not spin.is_locked() for spin in (self.ba_map, self.mt5_map, self.trade_lots)
+        )
+
+    def commit_current(self) -> None:
+        """提交当前文本、刷新预览并通知外层保存。"""
+        self.lock_all_spins()
+        self._update_preview()
+        self.ratio_changed.emit()
 
     def mousePressEvent(self, event) -> None:
         # 点击非数字框区域时收起所有编辑态
@@ -149,8 +164,18 @@ class SymbolRatioFields(QFrame):
         mt5_l = cfg.mt5_lot_for(self.preset_id)
         self.preview.setText(f"本次：BA 数量 {ba_q:.4g} · Exness 手数 {mt5_l:.2f}")
 
+    def _on_value_changed(self) -> None:
+        self._update_preview()
+        self.ratio_changed.emit()
+
+    def _on_editing_finished(self) -> None:
+        self._update_preview()
+        self.ratio_changed.emit()
+
     def apply_to(self, config: AppConfig) -> None:
         """把配比写回配置，并刷新派生的 BA 数量/手数字段。"""
+        for spin in (self.ba_map, self.mt5_map, self.trade_lots):
+            spin.interpretText()
         if self.preset_id == "xau":
             config.xau_ba_qty_map = self.ba_map.value()
             config.xau_mt5_lot_map = self.mt5_map.value()

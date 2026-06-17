@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self._manual_trade_notify = False
         self._pending_status_preset: str | None = None
         self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
+        self._profit_calculator_dialog: ProfitCalculatorDialog | None = None
         self._monitor_buttons_on_header = True
         self._pending_demo_start = False
         self._demo_start_scheduled = False
@@ -824,10 +825,21 @@ class MainWindow(QMainWindow):
             dlg.set_order_mode(order_mode)
         self._trade_dialogs[preset_id] = dlg
 
+        def persist_dialog_ratio(ref=dlg, *, sync: bool = False) -> None:
+            self.config = self._merge_config()
+            ref.apply_ratio_to(self.config)
+            self.engine.sync_config(self.config)
+            if sync:
+                save_config(self.config)
+            else:
+                save_config_async(self.config)
+
         def _drop_dialog(_=None, pid: str = preset_id, ref=dlg) -> None:
             if self._trade_dialogs.get(pid) is ref:
                 self._trade_dialogs.pop(pid, None)
 
+        dlg.ratio_changed.connect(persist_dialog_ratio)
+        dlg.closed.connect(lambda _=None: persist_dialog_ratio(sync=True))
         dlg.closed.connect(_drop_dialog)
 
         def on_trade_requested(action: str, mode: str) -> None:
@@ -1333,11 +1345,19 @@ class MainWindow(QMainWindow):
         self.license_expires_lbl.setVisible(bool(text))
 
     def _open_profit_calculator(self) -> None:
-        dlg = ProfitCalculatorDialog(
-            self,
-            trade_recorded_signal=self.engine.trade_recorded,
-        )
-        dlg.exec()
+        dlg = self._profit_calculator_dialog
+        if dlg is None:
+            dlg = ProfitCalculatorDialog(
+                self,
+                trade_recorded_signal=self.engine.trade_recorded,
+            )
+            dlg.setWindowModality(Qt.WindowModality.NonModal)
+            self._profit_calculator_dialog = dlg
+        else:
+            dlg._calculate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _on_positions(self, positions, summary) -> None:
         self.gold_actions.update_positions(positions, summary, self.config)

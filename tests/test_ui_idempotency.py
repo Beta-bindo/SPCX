@@ -122,9 +122,54 @@ def test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net() -> None:
 
     assert panel._rows["BA"]["pnl"].text() == "$-19.15"
     assert panel._rows["MT5"]["pnl"].text() == "$+16.99"
-    assert panel.total_label.text() == "实时净盈亏：$-4.08"
+    assert panel.total_label.text() == "实时净盈亏：$-2.16"
     panel.deleteLater()
-    print("  ✓ 盈亏明细：平台行显示官方盈亏，总计按平台盈亏扣往返费用")
+    print("  ✓ 盈亏明细：平台行显示官方盈亏，总计为 BA+Ex 盈亏")
+
+
+def test_profit_calculator_opens_non_modal() -> None:
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+
+    window._open_profit_calculator()
+    app.processEvents()
+    dlg = window._profit_calculator_dialog
+
+    assert dlg is not None
+    assert dlg.isVisible()
+    assert not dlg.isModal()
+    assert window.start_btn.isEnabled()
+    first = dlg
+    window._open_profit_calculator()
+    assert window._profit_calculator_dialog is first
+    dlg.close()
+    window.close()
+    print("  ✓ 利润计算器非模态打开且复用窗口")
+
+
+def test_pnl_detail_zero_liq_buffer_displays_zero() -> None:
+    app = QApplication.instance() or QApplication(sys.argv)
+    panel = PnlDetailPanel("xau")
+    cfg = AppConfig()
+    mt5_quote = Quote("XAUUSD", bid=100.0, ask=100.2)
+    positions = [
+        Position(
+            platform="MT5",
+            symbol="XAUUSD",
+            side=Side.BUY,
+            quantity=0.01,
+            entry_price=101.0,
+            unrealized_pnl=-1.0,
+            liquidation_price=100.0,
+        )
+    ]
+
+    panel.update(positions, {}, {"XAUUSD": mt5_quote}, cfg)
+
+    assert panel._rows["MT5"]["liq"].text() == "100.000"
+    assert panel._rows["MT5"]["buf"].text() == "0.000"
+    panel.deleteLater()
+    print("  ✓ 盈亏明细：爆仓距离为 0 时显示 0.000")
 
 
 def main() -> int:
@@ -134,6 +179,8 @@ def main() -> int:
         test_trading_guard_prevents_duplicate_orders,
         test_close_compensation_log_uses_restore_word,
         test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net,
+        test_profit_calculator_opens_non_modal,
+        test_pnl_detail_zero_liq_buffer_displays_zero,
     ):
         try:
             fn()

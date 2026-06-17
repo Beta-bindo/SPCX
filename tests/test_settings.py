@@ -20,6 +20,7 @@ from app.main_window import MainWindow
 from app.core.spread_engine import SpreadEngine
 from app.widgets.config_panel import ConfigPanel
 from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
+from app.widgets.symbol_auto_trade_settings import SymbolAutoTradeSettings
 from app.widgets.symbol_ratio_fields import SymbolRatioFields
 from app.widgets.trade_confirm_dialog import TradeConfirmDialog
 
@@ -181,6 +182,97 @@ def test_ratio_save_via_trade_dialog():
     save_config(AppConfig(connection_mode=ConnectionMode.DEMO.value))
     window.close()
     print("  ✓ 数量配比在对冲弹窗保存")
+
+
+def test_trade_dialog_ratio_close_persists_and_syncs_engine(tmp_path, monkeypatch):
+    from app.core import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", tmp_path / "config.json")
+    save_config(
+        AppConfig(
+            connection_mode=ConnectionMode.DEMO.value,
+            xau_ba_qty_map=100,
+            xau_mt5_lot_map=1,
+            xau_trade_lots=0.01,
+        )
+    )
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+
+    window._open_trade_dialog("xau")
+    dlg = window._trade_dialogs["xau"]
+    dlg._ratio_fields.trade_lots.setValue(0.1)
+    app.processEvents()
+
+    assert window.config.xau_trade_lots == 0.1
+    assert window.engine.config.xau_trade_lots == 0.1
+    assert window.engine._order_quantities("xau") == (10.0, 0.1)
+
+    dlg.close()
+    for _ in range(20):
+        app.processEvents()
+        QTest.qWait(20)
+        if load_config().xau_trade_lots == 0.1:
+            break
+
+    loaded = load_config()
+    assert loaded.xau_trade_lots == 0.1
+    assert loaded.ba_quantity_for("xau") == 10.0
+
+    window._open_trade_dialog("xau")
+    reopened = window._trade_dialogs["xau"]
+    assert reopened._ratio_fields.trade_lots.value() == 0.1
+    assert reopened._ratio_fields.ba_map.value() == 100
+
+    reopened.close()
+    window.close()
+    print("  ✓ 对冲弹窗数量关闭后保留，并同步手动/自动下单数量")
+
+
+def test_trade_dialog_ratio_click_elsewhere_persists_without_close(tmp_path, monkeypatch):
+    from app.core import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", tmp_path / "config.json")
+    save_config(
+        AppConfig(
+            connection_mode=ConnectionMode.DEMO.value,
+            xau_ba_qty_map=100,
+            xau_mt5_lot_map=1,
+            xau_trade_lots=0.01,
+        )
+    )
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+
+    window._open_trade_dialog("xau")
+    dlg = window._trade_dialogs["xau"]
+    spin = dlg._ratio_fields.trade_lots
+    editor = spin.lineEdit()
+    QTest.mouseDClick(editor, Qt.MouseButton.LeftButton, pos=editor.rect().center())
+    app.processEvents()
+    QTest.keyClicks(editor, "0.1")
+    app.processEvents()
+
+    QTest.mouseClick(
+        dlg._order_mode_market,
+        Qt.MouseButton.LeftButton,
+        pos=dlg._order_mode_market.rect().center(),
+    )
+    for _ in range(20):
+        app.processEvents()
+        QTest.qWait(20)
+        if load_config().xau_trade_lots == 0.1:
+            break
+
+    assert dlg.isVisible()
+    assert spin.is_locked()
+    assert window.config.xau_trade_lots == 0.1
+    assert window.engine._order_quantities("xau") == (10.0, 0.1)
+    assert load_config().xau_trade_lots == 0.1
+
+    dlg.close()
+    window.close()
+    print("  ✓ 对冲弹窗输入后点击其它控件立即保存数量")
 
 
 def test_spread_alert_between_edges_is_silent():
@@ -594,6 +686,27 @@ def test_ui_flat_sections_exist():
     print("  ✓ 平铺设置区与设置按钮")
 
 
+def test_auto_close_opposite_mode_locked_by_position_direction():
+    app = QApplication.instance() or QApplication(sys.argv)
+    panel = SymbolAutoTradeSettings("xau")
+
+    panel.close_expansion_enabled.setChecked(True)
+    panel.market_close_expansion_enabled.setChecked(True)
+    panel.apply_position_lock("contraction")
+
+    assert panel.close_contraction_enabled.isEnabled()
+    assert panel.market_close_contraction_enabled.isEnabled()
+    assert not panel.close_expansion_enabled.isChecked()
+    assert not panel.market_close_expansion_enabled.isChecked()
+    assert not panel.close_expansion_enabled.isEnabled()
+    assert not panel.market_close_expansion_enabled.isEnabled()
+    assert not panel.close_expansion_threshold.isEnabled()
+    assert not panel.market_close_expansion_threshold.isEnabled()
+
+    panel.deleteLater()
+    print("  ✓ 持仓方向锁定反向自动平仓")
+
+
 def main() -> int:
     errors: list[str] = []
     tests = [
@@ -624,6 +737,7 @@ def main() -> int:
         test_connection_dialog_buttons_are_chinese,
         test_connection_dialog_demo_mode_allows_credentials,
         test_ui_flat_sections_exist,
+        test_auto_close_opposite_mode_locked_by_position_direction,
     ]
     for fn in tests:
         try:

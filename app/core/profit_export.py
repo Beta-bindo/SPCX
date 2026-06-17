@@ -4,7 +4,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app.core.paths import exports_dir
-from app.core.profit_calculator import ProfitReport, record_label
+from app.core.profit_calculator import ProfitReport
 from app.core.xlsx_writer import CellSpec, write_styled_xlsx
 
 EXPORT_DIR = exports_dir()
@@ -43,7 +43,7 @@ def export_profit_xlsx(
                 "点差",
                 "BA盈亏",
                 "EX盈亏",
-                "手续费",
+                "手续费(开+平)",
                 "BA资费",
                 "净利润",
             ],
@@ -51,22 +51,21 @@ def export_profit_xlsx(
         ),
     ]
 
-    for rec in report.records or []:
-        ba_charges = round(rec.ba_funding_fee + rec.ba_rebate, 4)
+    for row in report.rows:
         grid.append(
             _border_row(
                 [
-                    rec.settled_at.replace("T", " "),
-                    record_label(rec),
-                    rec.direction,
-                    rec.ba_quantity,
-                    rec.mt5_quantity,
-                    rec.spread,
-                    rec.ba_pnl,
-                    rec.mt5_pnl,
-                    rec.total_fees,
-                    ba_charges,
-                    rec.net_pnl,
+                    row.settled_at,
+                    row.product,
+                    row.direction,
+                    row.ba_qty,
+                    row.mt5_qty,
+                    row.spread,
+                    row.ba_pnl,
+                    row.ex_pnl,
+                    row.fee,
+                    row.ba_charges,
+                    row.profit,
                 ]
             )
         )
@@ -81,7 +80,7 @@ def export_profit_xlsx(
     grid.append(_border_row(["BA资费合计", report.ba_charges]))
     grid.append(_border_row(["Exness利润", report.mt5_pnl]))
     grid.append(_border_row(["Exness手续费", report.mt5_fee]))
-    grid.append(_border_row(["总手续费", round(report.ba_fee + report.mt5_fee, 4)]))
+    grid.append(_border_row(["总手续费(开+平)", round(report.ba_fee + report.mt5_fee, 4)]))
     grid.append(_border_row(["总利润", report.total_pnl]))
 
     write_styled_xlsx(

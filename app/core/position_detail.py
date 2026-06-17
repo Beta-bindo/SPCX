@@ -30,7 +30,7 @@ class PlatformDetail:
     quantity: float = 0.0
     side: Side = Side.NONE
     liquidation_price: float = 0.0
-    liq_buffer: float = 0.0       # 距强平价的价格距离（盈利情况「爆」，取最危险持仓）
+    liq_buffer: float | None = None  # 距强平价的价格距离；None 表示未知，0 表示已到/越过强平价
     leverage: int = 0
     has_position: bool = False
 
@@ -90,10 +90,12 @@ def _aggregate_platform(
         if point_diff is not None:
             point_diffs.append((point_diff, pos.quantity))
         if platform == "BA":
-            buffers.append(_resolve_price_distance(platform, pos, quote, config.ba_leverage))
+            buffers.append(
+                _resolve_price_distance(platform, pos, quote, config.ba_leverage, preset_id)
+            )
         else:
             mt5_lev = pos.leverage if pos.leverage > 0 else config.mt5_leverage
-            buffers.append(_resolve_price_distance(platform, pos, quote, mt5_lev))
+            buffers.append(_resolve_price_distance(platform, pos, quote, mt5_lev, preset_id))
 
     if point_diffs:
         total_qty = sum(qty for _diff, qty in point_diffs)
@@ -135,13 +137,27 @@ def _resolve_point_diff(pos: Position, quote: Quote | None) -> float | None:
 
 
 def _resolve_price_distance(
-    platform: str, pos: Position, quote: Quote | None, leverage: int
+    platform: str, pos: Position, quote: Quote | None, leverage: int, preset_id: str
 ) -> float:
     """求单个持仓距强平价的价格距离。"""
     liq_price = _display_liquidation_price(platform, pos, leverage)
-    if liq_price <= 0:
+    if liq_price > 0:
+        dist = resolve_position_liq_price_distance(pos, quote, liq_price)
+        if dist != float("inf"):
+            return dist
+    return _account_buffer_price_distance(platform, pos, preset_id)
+
+
+def _account_buffer_price_distance(platform: str, pos: Position, preset_id: str) -> float:
+    """无可靠当前价时，用账户/交易所缓冲折算还能抗多少价格点。"""
+    if pos.exchange_liq_buffer is None or pos.quantity <= 0:
         return float("inf")
-    return resolve_position_liq_price_distance(pos, quote, liq_price)
+    preset = find_preset(preset_id)
+    unit = preset.ba_qty_unit if platform == "BA" else preset.mt5_oz_per_lot
+    exposure = abs(pos.quantity) * unit
+    if exposure <= 0:
+        return float("inf")
+    return max(0.0, pos.exchange_liq_buffer) / exposure
 
 
 def _detail_for_position(
@@ -175,7 +191,7 @@ def _detail_for_position(
     liq_price = _display_liquidation_price(platform, pos, pos_lev)
     detail.liquidation_price = round(liq_price, 3) if liq_price > 0 else 0.0
     quote = ba_quotes.get(pos.symbol) if platform == "BA" else mt5_quotes.get(pos.symbol)
-    buf = _resolve_price_distance(platform, pos, quote, pos_lev)
+    buf = _resolve_price_distance(platform, pos, quote, pos_lev, preset_id)
     if buf != float("inf"):
         detail.liq_buffer = round(buf, 2)
     return detail

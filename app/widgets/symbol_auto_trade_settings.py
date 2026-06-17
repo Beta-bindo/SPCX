@@ -224,7 +224,7 @@ class SymbolAutoTradeSettings(QFrame):
         if self._maker_pending:
             qty = self._maker_pending_qty
             if qty > 0:
-                self.maker_pending_light.setText(f"● 有委托 · 剩余 {qty:.4g}")
+                self.maker_pending_light.setText(f"● 有委托 · 剩余量 {qty:.4g}")
             else:
                 self.maker_pending_light.setText("● 有委托")
             self.maker_pending_light.setProperty("pendingActive", "true")
@@ -525,13 +525,18 @@ class SymbolAutoTradeSettings(QFrame):
                 threshold.setEnabled(True)
 
             if self._active_mode is not None:
-                # 持仓方向锁：只锁「反向开仓」，防止开成方向矛盾的双向仓。
-                # 不再锁/取消任何「平仓」勾选——自动平仓评估以真实持仓方向(detect_hedge_mode)
-                # 为准，反向平仓勾选根本不会被评估/触发，锁它只会无谓清掉用户的平仓策略勾选。
+                # 持仓方向锁：锁住反向开仓与反向平仓，避免用户误以为反向
+                # 平仓会作用于当前持仓，也防止配置里残留不会触发的反向策略。
                 lock_pairs = (
-                    ((widgets[1], widgets[3]),)  # 持收缩仓：仅锁开扩张
+                    (
+                        (widgets[1], widgets[3]),  # 持收缩仓：锁开扩张
+                        (widgets[5], widgets[7]),  # 持收缩仓：锁平扩张
+                    )
                     if self._active_mode == "contraction"
-                    else ((widgets[0], widgets[2]),)  # 持扩张仓：仅锁开收缩
+                    else (
+                        (widgets[0], widgets[2]),  # 持扩张仓：锁开收缩
+                        (widgets[4], widgets[6]),  # 持扩张仓：锁平收缩
+                    )
                 )
                 for enabled, threshold in lock_pairs:
                     enabled.blockSignals(True)
@@ -540,10 +545,17 @@ class SymbolAutoTradeSettings(QFrame):
                     enabled.setEnabled(False)
                     threshold.setEnabled(False)
 
-            # Maker 委托存在时，禁止勾选该通道的自动开仓（收缩/扩张）
+            # Maker 委托存在时，同品种不允许再挂第二张 BA 委托：
+            # 禁止该通道的自动开仓与自动平仓（收缩/扩张）。
             if lane == "maker" and self._maker_pending:
-                for enabled in (widgets[0], widgets[1]):
+                for enabled, threshold in (
+                    (widgets[0], widgets[2]),
+                    (widgets[1], widgets[3]),
+                    (widgets[4], widgets[6]),
+                    (widgets[5], widgets[7]),
+                ):
                     enabled.blockSignals(True)
                     enabled.setChecked(False)
                     enabled.blockSignals(False)
                     enabled.setEnabled(False)
+                    threshold.setEnabled(False)
