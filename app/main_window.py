@@ -949,8 +949,6 @@ class MainWindow(QMainWindow):
         # 控件改动即时下发给引擎/连接器（热路径已不再每 tick sync），确保新参数立即生效
         self.engine.sync_config(self.config)
         # 人工调整勾选/阈值视为显式意图：清掉冷却与计时，满足条件即可立即触发
-        self._auto_trade_state.last_fire.clear()
-        self._auto_trade_state.last_close_fire.clear()
         self._auto_trade_state.since.clear()
         self._auto_trade_state.close_since.clear()
         if not self.engine.is_running and self._any_auto_trade_enabled():
@@ -1015,7 +1013,6 @@ class MainWindow(QMainWindow):
         self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
     ) -> None:
         from app.core.auto_trade import _reset_lane_open_timers
-        from app.core.order_mode import auto_trade_lane
 
         strip = self.gold_actions if preset_id == "xau" else self.silver_actions
         auto = strip.auto_trade_settings
@@ -1048,7 +1045,6 @@ class MainWindow(QMainWindow):
         self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
     ) -> None:
         from app.core.auto_trade import _reset_lane_close_timers
-        from app.core.order_mode import auto_trade_lane
 
         strip = self.gold_actions if preset_id == "xau" else self.silver_actions
         auto = strip.auto_trade_settings
@@ -1437,13 +1433,13 @@ class MainWindow(QMainWindow):
                 self._announce_auto_cancel(auto_action)
 
     def _announce_auto_cancel(self, action: str = "open") -> None:
-        """语音播报「(开仓/平仓)成功，自动下单已取消」。
+        """语音播报「开仓成功 / 平仓成功」。
 
         优先级：爆仓告警 > 语音播报 > 点差预警。
         - 正在响爆仓告警时让位，不播报；
         - 正在响点差预警时语音优先，播报期间静音点差，播完恢复。
         """
-        text = "平仓成功，自动下单已取消" if action == "close" else "开仓成功，自动下单已取消"
+        text = "平仓成功" if action == "close" else "开仓成功"
         alerts = getattr(self.engine, "alerts", None)
         if alerts is not None and alerts.is_liq_ringing():
             return
@@ -1607,8 +1603,6 @@ class MainWindow(QMainWindow):
         if total <= 0:
             return
         # 与人工取消一致：清掉计时/冷却，持久化并同步引擎
-        self._auto_trade_state.last_fire.clear()
-        self._auto_trade_state.last_close_fire.clear()
         self._auto_trade_state.since.clear()
         self._auto_trade_state.close_since.clear()
         self.config = self._merge_config()

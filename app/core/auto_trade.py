@@ -31,9 +31,7 @@ class AutoTradeState:
     """自动交易的跨周期状态（计时与冷却），键为 (品种, 模式, lane) 或 (品种, lane)。"""
 
     since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)         # 开仓条件满足的起始时刻
-    last_fire: dict[tuple[str, str], float] = field(default_factory=dict)                 # 上次开仓触发时刻
     close_since: dict[tuple[str, str, str], float | None] = field(default_factory=dict)   # 平仓条件满足的起始时刻
-    last_close_fire: dict[tuple[str, str], float] = field(default_factory=dict)           # 上次平仓触发时刻
 
 
 @dataclass
