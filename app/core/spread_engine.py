@@ -443,13 +443,14 @@ class SpreadEngine(QObject):
                 )
                 ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
                 mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
-                ba_fee = self._opening_fee_from_balance_delta(
-                    self._balance_delta(account_before, account_after, "BA"),
-                    ba_fee,
-                )
-                mt5_fee = self._opening_fee_from_balance_delta(
-                    self._balance_delta(account_before, account_after, "MT5"),
-                    mt5_fee,
+                ba_delta = self._balance_delta(account_before, account_after, "BA")
+                mt5_delta = self._balance_delta(account_before, account_after, "MT5")
+                ba_fee = self._opening_fee_from_balance_delta(ba_delta, ba_fee)
+                mt5_fee = self._opening_fee_from_balance_delta(mt5_delta, mt5_fee)
+                # 仅在拿到官方真实成交费或账户余额差时才视为真实手续费；纯本地估算（演示/取不到）
+                # 一律上报 None → 后台与计算器统一显示 --，避免误把估算值当成真实费用。
+                ba_fee_known = ba_delta is not None or bool(
+                    ba_leg is not None and getattr(ba_leg, "fee_known", False)
                 )
                 row = build_row_from_settlement(
                     preset_id=preset_id,
@@ -466,7 +467,7 @@ class SpreadEngine(QObject):
                     ba_pnl=None,
                     ex_pnl=None,
                     ba_charges=None,
-                    ba_commission=ba_fee if ba_fee else None,
+                    ba_commission=ba_fee if ba_fee_known else None,
                 )
                 record_trade_anchor(preset_id, mode, "open", row.order_time)
                 label = "黄金" if preset_id == "xau" else "白银"
@@ -610,6 +611,13 @@ class SpreadEngine(QObject):
                     ba_pnl + mt5_pnl + ba_charges - ba_commission - ex_commission,
                     2,
                 )
+                # 上报展示用手续费：仅取官方真实成交费；演示/取不到则 None → 显示 --。
+                # （余额差路径下手续费已并入 BA 盈亏，不再单列估算值。）
+                ba_commission_report = (
+                    round(float(getattr(ba_leg, "fee", 0.0) or 0.0), 4)
+                    if ba_leg is not None and getattr(ba_leg, "fee_known", False)
+                    else None
+                )
                 row = build_row_from_settlement(
                     preset_id=preset_id,
                     mode=mode,
@@ -625,7 +633,7 @@ class SpreadEngine(QObject):
                     ba_pnl=ba_pnl,
                     ex_pnl=mt5_pnl,
                     ba_charges=ba_charges if ba_charges else None,
-                    ba_commission=ba_commission if ba_commission else None,
+                    ba_commission=ba_commission_report,
                 )
                 row.net_profit = f"{net_pnl:+.2f}"
                 record_trade_anchor(preset_id, mode, "close", row.order_time)

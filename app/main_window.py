@@ -56,6 +56,9 @@ from app.widgets.symbol_trade_panel import BOOK_PANEL_WIDTH, SymbolActionStrip, 
 from app.widgets.trade_confirm_dialog import TradeConfirmDialog
 
 
+AUTO_MAKER_RETRY_COOLDOWN_SEC = 2.0  # Maker 自动委托未成交撤单后的重试冷却（秒）
+
+
 class MainWindow(QMainWindow):
     """应用主窗口：装配三栏 UI、引擎与各类信号，并承载交易/告警/配置交互。"""
 
@@ -96,6 +99,9 @@ class MainWindow(QMainWindow):
         self._current_ba_open_order_keys: set[tuple[str, str]] = set()
         self._auto_maker_timeout_tokens: dict[tuple[str, str], int] = {}
         self._auto_maker_timeout_seq = 0
+        # Maker 自动委托未成交被撤单后的重试冷却：避免每个行情 tick 立即重挂，
+        # 导致交易按钮长期置灰、UI 卡顿。键=品种，值=可再次触发的最早时刻。
+        self._auto_maker_retry_cooldown_until: dict[str, float] = {}
         self._manual_trade_notify = False
         self._pending_status_preset: str | None = None
         self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
@@ -1186,7 +1192,8 @@ class MainWindow(QMainWindow):
         auto.apply_position_lock(mode)
         _reset_lane_open_timers(self._auto_trade_state, preset_id, lane)
         self.config = self._merge_config()
-        save_config(self.config)
+        # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
+        save_config_async(self.config)
         sym = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
@@ -1225,7 +1232,8 @@ class MainWindow(QMainWindow):
             checkbox.blockSignals(False)
         _reset_lane_close_timers(self._auto_trade_state, preset_id, lane)
         self.config = self._merge_config()
-        save_config(self.config)
+        # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
+        save_config_async(self.config)
         sym = "黄金" if preset_id == "xau" else "白银"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
@@ -1357,6 +1365,16 @@ class MainWindow(QMainWindow):
         # 上一笔自动交易尚未收尾时，本 tick 不再评估/触发，避免「已满足→已跳过」每秒刷屏。
         if self.engine.is_trading or self._pending_auto_trade is not None:
             return
+
+        # 跳过仍处于「Maker 未成交撤单」重试冷却中的品种，给 UI 留出可操作窗口。
+        if self._auto_maker_retry_cooldown_until:
+            preset_ids = tuple(
+                pid
+                for pid in preset_ids
+                if now >= self._auto_maker_retry_cooldown_until.get(pid, 0.0)
+            )
+            if not preset_ids:
+                return
 
         progress = collect_auto_close_progress(
             cfg,
@@ -1699,8 +1717,11 @@ class MainWindow(QMainWindow):
                         LogLevel.INFO,
                         f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",
                     )
-                    # 勾选已恢复：立即用最近行情补评估一次，符合条件则继续挂 Maker。
-                    self._request_auto_trade_reevaluate()
+                    # 进入重试冷却：避免每个行情 tick 立即重挂，按钮长期置灰、UI 卡顿。
+                    # 冷却结束后由后续行情 tick 自然重评估再挂 Maker。
+                    self._auto_maker_retry_cooldown_until[preset_id_p] = (
+                        time.time() + AUTO_MAKER_RETRY_COOLDOWN_SEC
+                    )
             self._clear_pending_auto_trade_state()
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")

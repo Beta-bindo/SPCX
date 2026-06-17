@@ -630,11 +630,18 @@ def test_auto_maker_restore_reevaluates_latest_market():
     window._on_trade_finished(_maker_cancel_result("open"))
     app.processEvents()
 
+    # 恢复勾选后进入重试冷却：本轮不应立即重挂，给 UI 留出可操作窗口。
     assert auto.contraction_enabled.isChecked()
+    assert captured == []
+    assert "xau" in window._auto_maker_retry_cooldown_until
+
+    # 冷却到期后由后续行情重评估再挂 Maker。
+    window._auto_maker_retry_cooldown_until["xau"] = 0.0
+    window._maybe_auto_trade(window.engine.last_market_update)
     assert captured == [("xau", HedgeMode.CONTRACTION.value, GoldOrderMode.MAKER.value)]
     save_config(AppConfig(connection_mode=ConnectionMode.DEMO.value))
     window.close()
-    print("  ✓ 自动 Maker 恢复勾选后立即按最近行情重评估")
+    print("  ✓ 自动 Maker 恢复勾选后进入冷却，冷却到期再重评估")
 
 
 def test_manual_cancel_does_not_restore_auto_maker_checkbox():
