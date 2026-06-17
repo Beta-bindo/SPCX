@@ -17,6 +17,7 @@ from app.core.alerts import AlertService, AlertSoundKind
 from app.core.config import load_config, save_config
 from app.core.models import AppConfig, ConnectionMode, normalize_ba_refresh_interval, RiskSnapshot, SpreadSnapshot
 from app.main_window import MainWindow
+from app.core.spread_engine import SpreadEngine
 from app.widgets.config_panel import ConfigPanel
 from app.widgets.connection_settings_dialog import ConnectionSettingsDialog
 from app.widgets.symbol_ratio_fields import SymbolRatioFields
@@ -48,6 +49,12 @@ def test_ba_refresh_interval_settings_roundtrip(tmp_path, monkeypatch):
     out = panel.to_config()
     assert out.ba_refresh_interval_sec == 0.3
     print("  ✓ BA 刷新间隔设置面板往返")
+
+
+def test_position_poll_interval_minimum_is_one_second():
+    assert SpreadEngine(AppConfig(ba_refresh_interval_sec=0.3))._position_poll_ms() == 1000
+    assert SpreadEngine(AppConfig(ba_refresh_interval_sec=1.0))._position_poll_ms() == 1000
+    print("  ✓ 持仓盈亏轮询最低 1 秒")
 
 
 def test_ratio_apply_and_preview():

@@ -607,8 +607,8 @@ class SpreadEngine(QObject):
         )
 
     def _position_poll_ms(self) -> int:
-        """持仓轮询间隔（毫秒），随报价刷新间隔联动，但不低于 4 秒。"""
-        return max(4000, int(round(self.config.ba_refresh_interval_sec * 4000)))
+        """持仓轮询间隔（毫秒），随报价刷新间隔联动，但不低于 1 秒。"""
+        return max(1000, int(round(self.config.ba_refresh_interval_sec * 1000)))
 
     def start(self) -> None:
         """启动两端连接、持仓轮询与网络监控，并延迟同步平台杠杆。"""
