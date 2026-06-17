@@ -1108,6 +1108,14 @@ class MT5Connector(QObject):
             timestamp=time.time(),
         )
 
+    def fetch_account_snapshot(self) -> AccountSnapshot | None:
+        """同步读取 MT5 账户资金快照，并推送给 UI。"""
+        snap = self._read_account_snapshot()
+        if snap is not None:
+            self._account_snapshot_at = time.monotonic()
+            self.account_received.emit(snap)
+        return snap
+
     def _poll_loop(self) -> None:
         """MT5 专用工作线程主循环：初始化登录后，循环处理任务队列并推送行情。"""
         try:

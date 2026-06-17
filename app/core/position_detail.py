@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.liquidation import (
+    resolve_position_liq_abs_price_distance,
     resolve_position_liq_price_distance,
     resolve_position_liquidation_price,
 )
@@ -142,7 +143,11 @@ def _resolve_price_distance(
     """求单个持仓距强平价的价格距离。"""
     liq_price = _display_liquidation_price(platform, pos, leverage)
     if liq_price > 0:
-        dist = resolve_position_liq_price_distance(pos, quote, liq_price)
+        dist = (
+            resolve_position_liq_abs_price_distance(pos, quote, liq_price)
+            if platform == "MT5"
+            else resolve_position_liq_price_distance(pos, quote, liq_price)
+        )
         if dist != float("inf"):
             return dist
     return _account_buffer_price_distance(platform, pos, preset_id)

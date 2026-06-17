@@ -123,6 +123,44 @@ def test_calculate_profit_allocates_opening_fee_after_prior_partial_close():
     print("  ✓ 跨日期部分平仓正确分摊开仓手续费")
 
 
+def test_calculate_profit_does_not_double_deduct_balance_delta_close_fee():
+    ledger = TradeLedger(
+        records=[
+            TradeRecord(
+                settled_at="2026-06-18T10:00:00",
+                preset_id="xau",
+                mode="contraction",
+                action="open",
+                ba_quantity=1.0,
+                mt5_quantity=0.01,
+                ba_fee=1.2,
+                mt5_fee=0.1,
+            ),
+            TradeRecord(
+                settled_at="2026-06-18T10:30:00",
+                preset_id="xau",
+                mode="contraction",
+                action="close",
+                ba_quantity=1.0,
+                mt5_quantity=0.01,
+                ba_pnl=3.0,
+                mt5_pnl=-0.5,
+                ba_fee=1.1,
+                mt5_fee=0.1,
+                ba_pnl_includes_fee=True,
+                mt5_pnl_includes_fee=True,
+            ),
+        ]
+    )
+
+    report = calculate_profit(ledger, date(2026, 6, 18), date(2026, 6, 18), "all")
+
+    assert report.rows[0].fee == 2.5
+    assert report.rows[0].opening_fee == 1.3
+    assert report.total_pnl == round(3.0 - 0.5 - 1.3, 2)
+    print("  ✓ 余额差结算不重复扣平仓手续费")
+
+
 def test_xlsx_export():
     import zipfile
 
@@ -166,5 +204,6 @@ if __name__ == "__main__":
     test_calculate_profit_includes_ba_funding_and_rebate()
     test_calculate_profit_allocates_opening_fee_to_close()
     test_calculate_profit_allocates_opening_fee_after_prior_partial_close()
+    test_calculate_profit_does_not_double_deduct_balance_delta_close_fee()
     test_xlsx_export()
     print("ALL PROFIT EXPORT TESTS PASSED")

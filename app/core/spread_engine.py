@@ -271,6 +271,43 @@ class SpreadEngine(QObject):
             return round(float(getattr(leg, "realized_pnl", 0.0) or 0.0), 2)
         return estimated
 
+    def _trade_account_balances(self) -> dict[str, float | None]:
+        """读取两个平台当前余额；用于交易结算时按官方余额差校准净盈亏。"""
+        balances: dict[str, float | None] = {"BA": None, "MT5": None}
+        if self.config.use_live_ba:
+            try:
+                snap = self.binance.fetch_account_snapshot()
+                if snap is not None and snap.is_live:
+                    balances["BA"] = float(snap.balance)
+            except Exception as exc:
+                self._log(LogLevel.DEBUG, f"BA 交易余额快照读取失败: {exc}")
+        if self.config.use_live_mt5:
+            try:
+                snap = self.mt5.fetch_account_snapshot()
+                if snap is not None and snap.is_live:
+                    balances["MT5"] = float(snap.balance)
+            except Exception as exc:
+                self._log(LogLevel.DEBUG, f"Exness 交易余额快照读取失败: {exc}")
+        return balances
+
+    @staticmethod
+    def _balance_delta(
+        before: dict[str, float | None], after: dict[str, float | None], platform: str
+    ) -> float | None:
+        """账户余额差；任一端缺失时返回 None。"""
+        b = before.get(platform)
+        a = after.get(platform)
+        if b is None or a is None:
+            return None
+        return round(float(a) - float(b), 4)
+
+    @staticmethod
+    def _opening_fee_from_balance_delta(delta: float | None, fallback: float) -> float:
+        """开仓通常只产生手续费；余额减少转为正数成本，余额增加转为负成本/返还。"""
+        if delta is None:
+            return fallback
+        return round(-delta, 4)
+
     def _order_quantities(self, preset_id: str) -> tuple[float, float]:
         return (
             self.config.ba_quantity_for(preset_id),
@@ -379,6 +416,7 @@ class SpreadEngine(QObject):
                 )
                 for p in self._positions
             )
+            account_before = self._trade_account_balances()
             result = open_hedge(
                 self.binance,
                 self.mt5,
@@ -392,6 +430,7 @@ class SpreadEngine(QObject):
             if not result.success:
                 self._log_trade_leg_details(result)
             if result.success:
+                account_after = self._trade_account_balances()
                 self._spread_log(preset_id, "成交后", action="open")
                 ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
                 mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
@@ -413,6 +452,14 @@ class SpreadEngine(QObject):
                 )
                 ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
                 mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
+                ba_fee = self._opening_fee_from_balance_delta(
+                    self._balance_delta(account_before, account_after, "BA"),
+                    ba_fee,
+                )
+                mt5_fee = self._opening_fee_from_balance_delta(
+                    self._balance_delta(account_before, account_after, "MT5"),
+                    mt5_fee,
+                )
                 rec = record_trade(
                     preset_id,
                     mode,
@@ -481,6 +528,7 @@ class SpreadEngine(QObject):
             ba_qty_cfg, mt5_qty_cfg = self._order_quantities(preset_id)
             ba_side, mt5_side = hedge_sides(mode)
             ba_pos, mt5_pos = self._settlement_positions(preset_id)
+            account_before = self._trade_account_balances()
             result = close_hedge(self.binance, self.mt5, preset_id, mode, order_mode)
             self._log(LogLevel.TRADE, result.message)
             if not result.success:
@@ -488,6 +536,7 @@ class SpreadEngine(QObject):
             if result.success:
                 self._spread_log(preset_id, "平仓后", action="close")
             if result.success and (ba_pos or mt5_pos):
+                account_after = self._trade_account_balances()
                 ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
                 mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
                 close_ba_qty_snapshot = (
@@ -532,6 +581,16 @@ class SpreadEngine(QObject):
                 mt5_pnl = self._leg_pnl_or_estimate(mt5_leg, mt5_pnl)
                 ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
                 mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
+                ba_pnl_includes_fee = False
+                mt5_pnl_includes_fee = False
+                ba_delta = self._balance_delta(account_before, account_after, "BA")
+                mt5_delta = self._balance_delta(account_before, account_after, "MT5")
+                if ba_delta is not None:
+                    ba_pnl = round(ba_delta, 2)
+                    ba_pnl_includes_fee = True
+                if mt5_delta is not None:
+                    mt5_pnl = round(mt5_delta, 2)
+                    mt5_pnl_includes_fee = True
                 ba_funding_fee = 0.0
                 ba_rebate = 0.0
                 if ba_pos and close_ba_qty > 0 and self.config.use_live_ba:
@@ -569,6 +628,8 @@ class SpreadEngine(QObject):
                     mt5_quantity=close_mt5_qty or mt5_qty_cfg,
                     ba_side=ba_side,
                     mt5_side=mt5_side,
+                    ba_pnl_includes_fee=ba_pnl_includes_fee,
+                    mt5_pnl_includes_fee=mt5_pnl_includes_fee,
                 )
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
@@ -817,20 +878,21 @@ class SpreadEngine(QObject):
 
         threading.Thread(target=_work, daemon=True, name="refresh-positions").start()
 
-    def cancel_all_open_orders(self) -> None:
+    def cancel_all_open_orders(self, *, manual: bool = True) -> None:
         """后台撤销 BA 全部未成交委托，完成后刷新一次持仓与委托。"""
         if not self._running:
             return
 
         def _work() -> None:
+            label = "手动撤单" if manual else "自动撤单"
             try:
                 count = self.binance.cancel_all_open_orders()
                 if count > 0:
-                    self._log(LogLevel.TRADE, f"手动撤单 · 撤单请求已发送（本地记录 {count} 笔）")
+                    self._log(LogLevel.TRADE, f"{label} · 撤单请求已发送（本地记录 {count} 笔）")
                 else:
-                    self._log(LogLevel.INFO, "手动撤单 · 撤单请求已发送")
+                    self._log(LogLevel.INFO, f"{label} · 撤单请求已发送")
             except Exception as exc:
-                self._log(LogLevel.ERROR, f"手动撤单失败: {exc}")
+                self._log(LogLevel.ERROR, f"{label}失败: {exc}")
             finally:
                 self.refresh_positions(force_full=True)
 

@@ -197,6 +197,32 @@ def test_order_update_drives_open_orders_indicator():
     print("  ✓ 推送维护委托指示灯")
 
 
+def test_terminal_order_update_clears_local_open_order_cache():
+    conn = _live_ba_conn()
+    conn._client = MagicMock()
+    stale = conn._parse_open_order(
+        {
+            "symbol": "XAUUSDT",
+            "orderId": 888,
+            "side": "SELL",
+            "type": "LIMIT",
+            "origQty": "1",
+            "executedQty": "0",
+            "price": "4365.65",
+            "reduceOnly": False,
+        }
+    )
+    conn._open_orders_cache = [stale]
+    conn._stream_active_orders = {"XAUUSDT": {"888": stale}}
+
+    conn._on_user_order_update(_order_event("XAUUSDT", 888, "CANCELED", 0.0, q=1.0, side="SELL"))
+
+    assert conn._open_orders_cache == []
+    assert conn._local_pending_open_orders() == []
+    assert conn._open_order_symbols == frozenset()
+    print("  ✓ 终态推送同步清理本地委托缓存")
+
+
 def test_stream_open_orders_carry_quantity():
     """WS 委托推送带出总量/已成交/剩余量，供 UI 即时显示真实数量。"""
     from app.core.models import Side
@@ -336,6 +362,7 @@ if __name__ == "__main__":
     test_wait_for_limit_order_dispatch_stream()
     test_wait_fills_falls_back_to_rest_when_no_stream()
     test_order_update_drives_open_orders_indicator()
+    test_terminal_order_update_clears_local_open_order_cache()
     test_stream_open_orders_carry_quantity()
     test_account_update_invalidates_cache()
     test_listen_key_lifecycle()

@@ -235,6 +235,24 @@ def resolve_position_liq_price_distance(
     return liq_price_distance_from_prices(pos.side, mark, liq_price)
 
 
+def resolve_position_liq_abs_price_distance(
+    pos: Position,
+    quote: Quote | None,
+    liquidation_price: float | None = None,
+) -> float:
+    """求当前价到强平价的绝对价格距离。
+
+    EX/MT5 的强平价是按账户权益模型本地反推的，并非平台直接返回字段；
+    当模型价落在持仓方向的另一侧时，方向公式会把距离压成 0。盈利情况里的
+    「爆」是给用户看的“当前价离强平价还有多少点”，这里用绝对距离展示。
+    """
+    liq_price = pos.liquidation_price if liquidation_price is None else liquidation_price
+    mark = _live_mark_price(pos, quote)
+    if liq_price <= 0 or mark <= 0:
+        return float("inf")
+    return abs(mark - liq_price)
+
+
 def resolve_position_liquidation_price(
     pos: Position,
     leverage: int,

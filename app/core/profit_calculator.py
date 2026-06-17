@@ -96,8 +96,9 @@ class ProfitReport:
                 4,
             )
             total_fee = round(rec.total_fees + open_fee, 4)
+            deducted_fee = round(_close_fee_to_deduct(rec) + open_fee, 4)
             profit = round(
-                rec.gross_pnl - total_fee + rec.ba_funding_fee + rec.ba_rebate,
+                rec.gross_pnl - deducted_fee + rec.ba_funding_fee + rec.ba_rebate,
                 2,
             )
             rows.append(
@@ -137,6 +138,13 @@ def _record_day(rec: TradeRecord) -> date | None:
 
 def _queue_key(rec: TradeRecord) -> tuple[str, str]:
     return rec.preset_id, rec.mode
+
+
+def _close_fee_to_deduct(rec: TradeRecord) -> float:
+    """平仓盈亏若来自余额差，该端平仓手续费已在盈亏里，不能重复扣。"""
+    ba_fee = 0.0 if getattr(rec, "ba_pnl_includes_fee", False) else rec.ba_fee
+    mt5_fee = 0.0 if getattr(rec, "mt5_pnl_includes_fee", False) else rec.mt5_fee
+    return round(ba_fee + mt5_fee, 4)
 
 
 def _append_fee_lot(queue: list[_FeeLot], quantity: float, fee: float) -> None:
@@ -256,7 +264,7 @@ def calculate_profit(
         )
         total_pnl += (
             rec.gross_pnl
-            - rec.total_fees
+            - _close_fee_to_deduct(rec)
             - open_fee
             + rec.ba_funding_fee
             + rec.ba_rebate

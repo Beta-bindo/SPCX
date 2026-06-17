@@ -171,6 +171,24 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(payload["ba_rebate"], 0.8)
         self.assertEqual(payload["net_pnl"], 4.3)
 
+    def test_balance_delta_payload_does_not_double_deduct_fees(self):
+        rec = TradeRecord(
+            settled_at="2026-06-10T18:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=3.0,
+            mt5_pnl=-0.5,
+            ba_fee=1.1,
+            mt5_fee=0.1,
+            ba_pnl_includes_fee=True,
+            mt5_pnl_includes_fee=True,
+        )
+        payload = trade_record_to_payload(rec)
+        self.assertTrue(payload["ba_pnl_includes_fee"])
+        self.assertTrue(payload["mt5_pnl_includes_fee"])
+        self.assertEqual(payload["net_pnl"], 2.5)
+
     def test_demo_mode_skips_platform_account_check(self):
         from app.core.license.client import LicenseClient
         from app.core.license.store import LicenseState, save_license

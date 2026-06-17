@@ -176,6 +176,32 @@ def test_mt5_liq_buffer_falls_back_to_account_buffer_points():
     assert mt5_detail.liq_buffer == 14.0
 
 
+def test_mt5_liq_buffer_uses_abs_distance_to_model_liq_price():
+    cfg = AppConfig(mt5_leverage=2000)
+    mt5_quote = Quote(symbol="XAUUSD", bid=4358.533, ask=4358.700, is_simulated=False)
+
+    _ba_detail, mt5_detail = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="MT5",
+                symbol="XAUUSD",
+                side=Side.BUY,
+                quantity=0.04,
+                entry_price=4358.40,
+                liquidation_price=4373.674,
+                mark_price=4358.533,
+            )
+        ],
+        {},
+        {"XAUUSD": mt5_quote},
+        cfg,
+    )
+
+    assert mt5_detail.liquidation_price == 4373.674
+    assert mt5_detail.liq_buffer == 15.14
+
+
 if __name__ == "__main__":
     test_spread_snapshot_exec_vs_mid()
     test_pnl_with_fees()
@@ -183,3 +209,4 @@ if __name__ == "__main__":
     test_ba_detail_liquidation_price_uses_exchange_value_only()
     test_platform_detail_liq_buffer_displays_price_distance()
     test_mt5_liq_buffer_falls_back_to_account_buffer_points()
+    test_mt5_liq_buffer_uses_abs_distance_to_model_liq_price()

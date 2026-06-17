@@ -91,6 +91,11 @@ class MainWindow(QMainWindow):
         self._pending_auto_trade: tuple[str, str, str, str] | None = None
         self._pending_auto_maker_restore: list[tuple[str, str]] = []
         self._pending_auto_maker_manual_cancel = False
+        self._auto_trade_reevaluate_pending = False
+        self._announced_auto_maker_orders: set[tuple[str, str]] = set()
+        self._current_ba_open_order_keys: set[tuple[str, str]] = set()
+        self._auto_maker_timeout_tokens: dict[tuple[str, str], int] = {}
+        self._auto_maker_timeout_seq = 0
         self._manual_trade_notify = False
         self._pending_status_preset: str | None = None
         self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
@@ -417,6 +422,20 @@ class MainWindow(QMainWindow):
         self.gold_actions.apply_settings_to(self.config)
         self.silver_actions.apply_settings_to(self.config)
         return self.config
+
+    def _commit_auto_trade_inputs(self, preset_id: str | None = None) -> None:
+        """把正在编辑的自动交易数字框文本提交为 value，避免刚输入未失焦时读到旧值。"""
+        strips = (
+            (self.gold_actions,)
+            if preset_id == "xau"
+            else (self.silver_actions,)
+            if preset_id == "xag"
+            else (self.gold_actions, self.silver_actions)
+        )
+        for strip in strips:
+            for spin in strip.auto_trade_settings.iter_spin_widgets():
+                if hasattr(spin, "interpretText"):
+                    spin.interpretText()
 
     def _relocate_monitor_buttons(self) -> None:
         single = self.config.layout_mode == LayoutMode.SINGLE.value
@@ -974,9 +993,32 @@ class MainWindow(QMainWindow):
         if update is not None:
             self._maybe_auto_trade(update)
 
+    def _sync_programmatic_auto_trade_change(self) -> None:
+        """同步由程序改动的自动交易勾选/锁定状态。"""
+        self.config = self._merge_config()
+        save_config_async(self.config)
+        self.engine.sync_config(self.config)
+
+    def _request_auto_trade_reevaluate(self) -> None:
+        """状态变化后用最近行情补评估一次，避免等下一次报价 tick。"""
+        if self._auto_trade_reevaluate_pending:
+            return
+        if self.engine.last_market_update is None:
+            return
+        self._auto_trade_reevaluate_pending = True
+        QTimer.singleShot(0, self._run_auto_trade_reevaluate)
+
+    def _run_auto_trade_reevaluate(self) -> None:
+        self._auto_trade_reevaluate_pending = False
+        update = self.engine.last_market_update
+        if update is None:
+            return
+        self._maybe_auto_trade(update)
+
     def _execute_auto_open(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动下单", fast=True):
             return
+        self._commit_auto_trade_inputs(preset_id)
         self.config = self._merge_config()
         self.engine.sync_config(self.config)
         # 互斥：engine.is_trading 由后台线程同步重置，会先于 trade_finished 回主线程取消勾选，
@@ -1015,6 +1057,7 @@ class MainWindow(QMainWindow):
     def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动平仓", fast=True):
             return
+        self._commit_auto_trade_inputs(preset_id)
         self.config = self._merge_config()
         self.engine.sync_config(self.config)
         # 互斥：同 _execute_auto_open，用 _pending_auto_trade 兜住 is_trading 重置与取消勾选之间的窗口，
@@ -1073,9 +1116,7 @@ class MainWindow(QMainWindow):
             checkbox.blockSignals(False)
             restored += 1
         if restored:
-            self.config = self._merge_config()
-            save_config(self.config)
-            self.engine.sync_config(self.config)
+            self._sync_programmatic_auto_trade_change()
         return restored
 
     @staticmethod
@@ -1086,7 +1127,24 @@ class MainWindow(QMainWindow):
             if getattr(leg, "platform", "") != "BA":
                 continue
             msg = str(getattr(leg, "message", "") or "")
-            if "已撤单" in msg and "未成交" in msg and getattr(leg, "filled_quantity", 0.0) <= 0:
+            filled = float(getattr(leg, "filled_quantity", 0.0) or 0.0)
+            if filled > 1e-9:
+                continue
+            cancel_words = (
+                "已撤单",
+                "撤单",
+                "已取消",
+                "取消",
+                "CANCELED",
+                "CANCELLED",
+                "EXPIRED",
+                "timeout",
+                "Timeout",
+            )
+            no_fill_words = ("未成交", "无成交", "0成交", "未完全成交")
+            if any(word in msg for word in cancel_words) and (
+                any(word in msg for word in no_fill_words) or "Maker" in msg
+            ):
                 return True
         return False
 
@@ -1180,13 +1238,72 @@ class MainWindow(QMainWindow):
         self._append_log(LogLevel.INFO, "手动撤单 · 正在撤销全部委托…")
         self.engine.cancel_all_open_orders()
 
+    def _schedule_auto_maker_timeout(self, preset_id: str, orders: list) -> None:
+        pending = self._pending_auto_trade
+        if pending is None:
+            return
+        if pending[1] != preset_id or auto_trade_lane(pending[1], pending[3]) != "maker":
+            return
+        self._commit_auto_trade_inputs(preset_id)
+        self.config = self._merge_config()
+        self.engine.sync_config(self.config)
+        timeout_sec = max(1.0, float(self.config.ba_maker_timeout_sec))
+        for order in orders:
+            order_id = str(getattr(order, "order_id", "") or "")
+            if not order_id:
+                continue
+            key = (preset_id, order_id)
+            if key in self._auto_maker_timeout_tokens:
+                continue
+            self._auto_maker_timeout_seq += 1
+            token = self._auto_maker_timeout_seq
+            self._auto_maker_timeout_tokens[key] = token
+            QTimer.singleShot(
+                int(round(timeout_sec * 1000)),
+                lambda p=preset_id, oid=order_id, t=token: self._auto_cancel_maker_order_if_still_pending(
+                    p, oid, t
+                ),
+            )
+
+    def _auto_cancel_maker_order_if_still_pending(
+        self, preset_id: str, order_id: str, token: int
+    ) -> None:
+        key = (preset_id, order_id)
+        if self._auto_maker_timeout_tokens.get(key) != token:
+            return
+        if key not in self._current_ba_open_order_keys:
+            self._auto_maker_timeout_tokens.pop(key, None)
+            return
+        pending = self._pending_auto_trade
+        if (
+            pending is None
+            or pending[1] != preset_id
+            or auto_trade_lane(pending[1], pending[3]) != "maker"
+            or self._pending_auto_maker_manual_cancel
+        ):
+            return
+        timeout_sec = max(1.0, float(self.config.ba_maker_timeout_sec))
+        sym = "黄金" if preset_id == "xau" else "白银"
+        self._append_log(
+            LogLevel.INFO,
+            f"{sym}自动 Maker 委托等待 {timeout_sec:.0f}s 未成交，已自动撤单",
+        )
+        self.engine.cancel_all_open_orders(manual=False)
+
     def _on_open_orders_changed(self, symbols) -> None:
         """委托单集合变化：点亮/熄灭各品种委托灯，并联动禁用 Maker 自动开仓。"""
         from app.core.symbols import preset_for_ba_symbol
 
         pending = {preset_for_ba_symbol(s) for s in symbols}
+        changed = False
         for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
-            strip.auto_trade_settings.set_pending_order(preset_id in pending)
+            auto = strip.auto_trade_settings
+            before = auto.snapshot_lock_state()
+            auto.set_pending_order(preset_id in pending)
+            changed = changed or auto.snapshot_lock_state() != before
+        if changed:
+            self._sync_programmatic_auto_trade_change()
+            self._request_auto_trade_reevaluate()
 
     def _sync_auto_trade_locks(self, positions) -> None:
         changed = False
@@ -1198,8 +1315,8 @@ class MainWindow(QMainWindow):
             if auto.snapshot_lock_state() != before:
                 changed = True
         if changed:
-            self.config = self._merge_config()
-            save_config(self.config)
+            self._sync_programmatic_auto_trade_change()
+            self._request_auto_trade_reevaluate()
 
     def _maybe_auto_trade(self, update) -> None:
         # 自动下单未经运营后台开通时，禁止任何自动开/平仓评估（防止隐藏后仍按旧配置触发）
@@ -1397,6 +1514,8 @@ class MainWindow(QMainWindow):
 
         self.gold_actions.update_open_orders(orders)
         self.silver_actions.update_open_orders(orders)
+        changed = False
+        current_ba_keys: set[tuple[str, str]] = set()
         for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
             preset = find_preset(preset_id)
             ba_pending_by_id = {}
@@ -1408,8 +1527,22 @@ class MainWindow(QMainWindow):
                 ):
                     ba_pending_by_id[str(o.order_id)] = o
             ba_pending = list(ba_pending_by_id.values())
+            for order_id in ba_pending_by_id:
+                current_ba_keys.add((preset_id, order_id))
             pending_qty = sum(o.remaining_quantity for o in ba_pending)
-            strip.auto_trade_settings.set_pending_order(bool(ba_pending), pending_qty)
+            auto = strip.auto_trade_settings
+            before = auto.snapshot_lock_state()
+            auto.set_pending_order(bool(ba_pending), pending_qty)
+            changed = changed or auto.snapshot_lock_state() != before
+            self._announce_auto_maker_order_accepted(preset_id, ba_pending)
+            self._schedule_auto_maker_timeout(preset_id, ba_pending)
+        self._current_ba_open_order_keys = current_ba_keys
+        for key in list(self._auto_maker_timeout_tokens):
+            if key not in current_ba_keys:
+                self._auto_maker_timeout_tokens.pop(key, None)
+        if changed:
+            self._sync_programmatic_auto_trade_change()
+            self._request_auto_trade_reevaluate()
 
         summary = build_open_orders_summary(orders)
         if summary != self._last_open_orders_log:
@@ -1497,6 +1630,7 @@ class MainWindow(QMainWindow):
         self._pending_auto_trade = None
         self._pending_auto_maker_restore = []
         self._pending_auto_maker_manual_cancel = False
+        self._auto_maker_timeout_tokens.clear()
         is_auto = pending is not None
         restored_auto_checkbox = False
         if is_auto and pending:
@@ -1545,6 +1679,7 @@ class MainWindow(QMainWindow):
                         LogLevel.INFO,
                         f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",
                     )
+                    self._request_auto_trade_reevaluate()
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:
@@ -1578,6 +1713,23 @@ class MainWindow(QMainWindow):
                 auto_action = pending[0] if pending else "open"
                 self._announce_auto_cancel(auto_action)
 
+    def _announce_auto_maker_order_accepted(self, preset_id: str, orders: list) -> None:
+        pending = self._pending_auto_trade
+        if pending is None:
+            return
+        if pending[1] != preset_id or auto_trade_lane(pending[1], pending[3]) != "maker":
+            return
+        for order in orders:
+            order_id = str(getattr(order, "order_id", "") or "")
+            if not order_id:
+                continue
+            key = (preset_id, order_id)
+            if key in self._announced_auto_maker_orders:
+                continue
+            self._announced_auto_maker_orders.add(key)
+            self._say_trade_voice("委托成功", timeout_ms=4000)
+            return
+
     def _announce_auto_cancel(self, action: str = "open") -> None:
         """语音播报「开仓成功 / 平仓成功」。
 
@@ -1586,6 +1738,9 @@ class MainWindow(QMainWindow):
         - 正在响点差预警时语音优先，播报期间静音点差，播完恢复。
         """
         text = "平仓成功" if action == "close" else "开仓成功"
+        self._say_trade_voice(text)
+
+    def _say_trade_voice(self, text: str, *, timeout_ms: int = 8000) -> None:
         alerts = getattr(self.engine, "alerts", None)
         if alerts is not None and alerts.is_liq_ringing():
             return
@@ -1593,7 +1748,7 @@ class MainWindow(QMainWindow):
             alerts.begin_voice()
             self._voice.say(text, on_finished=alerts.end_voice)
             # 兜底：万一播放完成回调丢失，超时后强制解除占用，避免点差被永久静音
-            QTimer.singleShot(8000, alerts.end_voice)
+            QTimer.singleShot(timeout_ms, alerts.end_voice)
         else:
             self._voice.say(text)
 

@@ -14,7 +14,17 @@ from PySide6.QtWidgets import QApplication
 
 from app.core.auto_trade import AutoTradeState, evaluate_auto_closes, evaluate_auto_trades
 from app.core.config import load_config, save_config
-from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, OpenOrder, Position, Side, SpreadSnapshot
+from app.core.models import (
+    AppConfig,
+    ConnectionMode,
+    GoldOrderMode,
+    HedgeMode,
+    MarketUpdate,
+    OpenOrder,
+    Position,
+    Side,
+    SpreadSnapshot,
+)
 from app.core.spread_engine import SpreadEngine
 from app.core.trade_result import HedgeTradeResult, LegResult
 
@@ -445,7 +455,9 @@ def _set_checked_no_signal(checkbox, checked: bool) -> None:
     checkbox.blockSignals(False)
 
 
-def _maker_cancel_result(action: str = "open") -> HedgeTradeResult:
+def _maker_cancel_result(
+    action: str = "open", ba_message: str = "BA Maker 100s 未成交已撤单"
+) -> HedgeTradeResult:
     return HedgeTradeResult(
         action=action,
         success=False,
@@ -453,7 +465,7 @@ def _maker_cancel_result(action: str = "open") -> HedgeTradeResult:
             LegResult(
                 platform="BA",
                 success=False,
-                message="BA Maker 100s 未成交已撤单",
+                message=ba_message,
             ),
             LegResult(
                 platform="MT5",
@@ -493,6 +505,81 @@ def test_auto_maker_timeout_restore_previous_checkbox():
     assert auto.expansion_enabled.isChecked()
     window.close()
     print("  ✓ 自动 Maker 未成交自动撤单后恢复原勾选")
+
+
+def test_auto_maker_timeout_restore_accepts_cancel_variants():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+
+    auto.set_pending_order(True, 1.0)
+    auto.set_pending_order(False)
+    window._on_trade_finished(
+        _maker_cancel_result("open", "BA Maker 已取消，0成交")
+    )
+
+    assert auto.contraction_enabled.isChecked()
+    window.close()
+    print("  ✓ 自动 Maker 自动撤单文案变化时仍恢复勾选")
+
+
+def test_auto_maker_restore_reevaluates_latest_market():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    auto.contraction_threshold.setValue(2.0)
+    window.config = window._merge_config()
+    window.engine._running = True
+    window.engine.refresh_positions = lambda **_kwargs: None  # type: ignore[method-assign]
+    window.engine._last_market_update = MarketUpdate(
+        spreads={
+            "xau": SpreadSnapshot(
+                preset_id="xau",
+                ba_bid=4365.65,
+                ba_ask=4365.66,
+                mt5_bid=4363.20,
+                mt5_ask=4363.60,
+                mid_spread=2.45,
+            )
+        }
+    )
+    captured: list[tuple[str, str, str]] = []
+    window._execute_auto_open = lambda *args: captured.append(args)  # type: ignore[method-assign]
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+
+    auto.set_pending_order(True, 1.0)
+    auto.set_pending_order(False)
+    window._on_trade_finished(_maker_cancel_result("open"))
+    app.processEvents()
+
+    assert auto.contraction_enabled.isChecked()
+    assert captured == [("xau", HedgeMode.CONTRACTION.value, GoldOrderMode.MAKER.value)]
+    save_config(AppConfig(connection_mode=ConnectionMode.DEMO.value))
+    window.close()
+    print("  ✓ 自动 Maker 恢复勾选后立即按最近行情重评估")
 
 
 def test_manual_cancel_does_not_restore_auto_maker_checkbox():
@@ -547,6 +634,92 @@ def test_market_auto_failure_does_not_restore_checkbox():
     assert not auto.market_contraction_enabled.isChecked()
     window.close()
     print("  ✓ 市价自动失败不使用 Maker 恢复勾选逻辑")
+
+
+def test_auto_maker_pending_order_announces_accepted():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    spoken: list[str] = []
+    window._voice.say = lambda text, on_finished=None: spoken.append(text)  # type: ignore[method-assign]
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+
+    window._on_open_orders(
+        [
+            OpenOrder(
+                platform="BA",
+                symbol="XAUUSDT",
+                order_id="42",
+                side=Side.SELL,
+                total_quantity=1.0,
+                remaining_quantity=1.0,
+            )
+        ]
+    )
+    window._on_open_orders(
+        [
+            OpenOrder(
+                platform="BA",
+                symbol="XAUUSDT",
+                order_id="42",
+                side=Side.SELL,
+                total_quantity=1.0,
+                remaining_quantity=1.0,
+            )
+        ]
+    )
+
+    assert spoken == ["委托成功"]
+    window.close()
+    print("  ✓ 自动 Maker 委托挂上 BA 后语音播报委托成功")
+
+
+def test_auto_maker_pending_order_schedules_configured_timeout_cancel():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    auto.maker_timeout_sec.setValue(7)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window.engine.sync_config = lambda _config: None  # type: ignore[method-assign]
+    cancel_calls: list[dict] = []
+    window.engine.cancel_all_open_orders = (  # type: ignore[method-assign]
+        lambda **kwargs: cancel_calls.append(kwargs)
+    )
+    timers: list[tuple[int, object]] = []
+
+    with patch("app.main_window.QTimer.singleShot", side_effect=lambda ms, cb: timers.append((ms, cb))):
+        window._on_open_orders(
+            [
+                OpenOrder(
+                    platform="BA",
+                    symbol="XAUUSDT",
+                    order_id="42",
+                    side=Side.SELL,
+                    total_quantity=1.0,
+                    remaining_quantity=1.0,
+                )
+            ]
+        )
+
+    timeout_timers = [(ms, cb) for ms, cb in timers if ms == 7000]
+    assert len(timeout_timers) == 1
+    timeout_timers[0][1]()
+    assert cancel_calls == [{"manual": False}]
+    window.close()
+    print("  ✓ 自动 Maker 委托挂上后按设置秒数自动撤单")
 
 
 def test_open_orders_dedupes_same_ba_order_for_pending_light():
@@ -644,8 +817,12 @@ def main() -> int:
         test_pending_light_states,
         test_pending_order_locks_all_maker_auto_checkboxes,
         test_auto_maker_timeout_restore_previous_checkbox,
+        test_auto_maker_timeout_restore_accepts_cancel_variants,
+        test_auto_maker_restore_reevaluates_latest_market,
         test_manual_cancel_does_not_restore_auto_maker_checkbox,
         test_market_auto_failure_does_not_restore_checkbox,
+        test_auto_maker_pending_order_announces_accepted,
+        test_auto_maker_pending_order_schedules_configured_timeout_cancel,
         test_open_orders_dedupes_same_ba_order_for_pending_light,
         test_pending_ba_order_displays_order_price_index,
     ]

@@ -2504,8 +2504,18 @@ class BinanceConnector(QObject):
             bag = self._stream_active_orders.setdefault(symbol, {})
             if status in ("NEW", "PARTIALLY_FILLED"):
                 bag[order.order_id] = order
+                self._open_orders_cache = [
+                    o
+                    for o in self._open_orders_cache
+                    if not (o.symbol == symbol and str(o.order_id) == str(order.order_id))
+                ] + [order]
             else:  # FILLED / CANCELED / EXPIRED / REJECTED 等终态
                 bag.pop(order.order_id, None)
+                self._open_orders_cache = [
+                    o
+                    for o in self._open_orders_cache
+                    if not (o.symbol == symbol and str(o.order_id) == str(order.order_id))
+                ]
             active = frozenset(
                 sym for sym, ids in self._stream_active_orders.items() if ids
             )

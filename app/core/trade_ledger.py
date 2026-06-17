@@ -40,6 +40,8 @@ class TradeRecord:
     mt5_fee: float = 0.0
     ba_funding_fee: float = 0.0  # BA 资金费（币安 FUNDING_FEE，负=支出，正=收入）
     ba_rebate: float = 0.0       # BA 返佣（币安 COMMISSION_REBATE 等，正=收入）
+    ba_pnl_includes_fee: bool = False   # BA 盈亏若来自余额差，则已含该端平仓手续费
+    mt5_pnl_includes_fee: bool = False  # MT5 盈亏若来自余额差，则已含该端平仓手续费
 
     @property
     def gross_pnl(self) -> float:
@@ -54,8 +56,10 @@ class TradeRecord:
     @property
     def net_pnl(self) -> float:
         """净利 = 毛利 − 手续费 + 资金费 + 返佣。"""
+        ba_fee = 0.0 if self.ba_pnl_includes_fee else self.ba_fee
+        mt5_fee = 0.0 if self.mt5_pnl_includes_fee else self.mt5_fee
         return round(
-            self.gross_pnl - self.total_fees + self.ba_funding_fee + self.ba_rebate,
+            self.gross_pnl - ba_fee - mt5_fee + self.ba_funding_fee + self.ba_rebate,
             2,
         )
 
@@ -154,6 +158,8 @@ def record_trade(
     mt5_fee: float = 0.0,
     ba_funding_fee: float = 0.0,
     ba_rebate: float = 0.0,
+    ba_pnl_includes_fee: bool = False,
+    mt5_pnl_includes_fee: bool = False,
 ) -> TradeRecord:
     """构造一条成交记录、加锁追加落盘并返回（统一四舍五入）。"""
     if not ba_side or not mt5_side:
@@ -176,6 +182,8 @@ def record_trade(
         mt5_fee=round(mt5_fee, 4),
         ba_funding_fee=round(ba_funding_fee, 4),
         ba_rebate=round(ba_rebate, 4),
+        ba_pnl_includes_fee=ba_pnl_includes_fee,
+        mt5_pnl_includes_fee=mt5_pnl_includes_fee,
     )
     with _ledger_lock:
         ledger = load_ledger()
@@ -201,6 +209,8 @@ def record_close_settlement(
     mt5_quantity: float = 0.0,
     ba_side: str = "",
     mt5_side: str = "",
+    ba_pnl_includes_fee: bool = False,
+    mt5_pnl_includes_fee: bool = False,
 ) -> TradeRecord:
     """记录一次平仓结算（record_trade 的 action="close" 便捷封装）。"""
     return record_trade(
@@ -220,6 +230,8 @@ def record_close_settlement(
         mt5_fee=mt5_fee,
         ba_funding_fee=ba_funding_fee,
         ba_rebate=ba_rebate,
+        ba_pnl_includes_fee=ba_pnl_includes_fee,
+        mt5_pnl_includes_fee=mt5_pnl_includes_fee,
     )
 
 
@@ -244,5 +256,7 @@ def trade_record_to_payload(record: TradeRecord) -> dict:
         "mt5_fee": record.mt5_fee,
         "ba_funding_fee": record.ba_funding_fee,
         "ba_rebate": record.ba_rebate,
+        "ba_pnl_includes_fee": record.ba_pnl_includes_fee,
+        "mt5_pnl_includes_fee": record.mt5_pnl_includes_fee,
         "net_pnl": record.net_pnl,
     }
