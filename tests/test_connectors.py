@@ -122,6 +122,59 @@ def test_mt5_thread_safe_get_positions():
     print("  ✓ MT5 持仓经工作线程队列")
 
 
+def test_mt5_live_positions_merge_tickets_and_sum_profit():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_MT5.value)
+    conn = MT5Connector(cfg)
+    conn._connected = True
+    conn._poll_thread = MagicMock()
+
+    import app.connectors.mt5_connector as mt5_mod
+
+    def _pos(price: float, profit: float):
+        fake = MagicMock()
+        fake.type = 0
+        fake.symbol = "XAUUSD"
+        fake.volume = 0.01
+        fake.price_open = price
+        fake.price_current = 4329.0
+        fake.profit = profit
+        return fake
+
+    mt5_mock = MagicMock()
+    mt5_mock.ORDER_TYPE_BUY = 0
+    mt5_mock.ORDER_TYPE_SELL = 1
+    mt5_mock.account_info.return_value = None
+
+    def _positions_get(symbol=None):
+        if symbol == "XAUUSD":
+            return [
+                _pos(4330.0, -1.17),
+                _pos(4329.5, -0.28),
+                _pos(4330.2, -1.00),
+                _pos(4329.4, -0.52),
+            ]
+        return []
+
+    mt5_mock.positions_get.side_effect = _positions_get
+
+    def fake_call(fn, timeout=30.0):
+        return fn()
+
+    with patch.object(mt5_mod, "HAS_MT5", True):
+        with patch.object(mt5_mod, "mt5", mt5_mock, create=True):
+            with patch.object(conn, "_call_on_mt5_thread", side_effect=fake_call):
+                positions = conn.get_positions()
+
+    assert len(positions) == 1
+    pos = positions[0]
+    assert pos.platform == "MT5"
+    assert pos.symbol == "XAUUSD"
+    assert pos.quantity == 0.04
+    assert round(pos.entry_price, 3) == round((4330.0 + 4329.5 + 4330.2 + 4329.4) / 4, 3)
+    assert pos.unrealized_pnl == round(-1.17 - 0.28 - 1.00 - 0.52, 2)
+    print("  ✓ MT5 多票据按方向合并并累加官方盈亏")
+
+
 def test_mt5_open_close_demo():
     cfg = AppConfig(connection_mode=ConnectionMode.DEMO.value, xau_trade_lots=0.05)
     conn = MT5Connector(cfg)
@@ -571,6 +624,7 @@ if __name__ == "__main__":
     test_binance_uses_futures_ping()
     test_binance_open_close_demo()
     test_mt5_thread_safe_get_positions()
+    test_mt5_live_positions_merge_tickets_and_sum_profit()
     test_mt5_open_close_demo()
     test_hedge_open_both_demo()
     test_hedge_expansion_demo()

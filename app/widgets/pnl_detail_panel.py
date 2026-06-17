@@ -130,7 +130,7 @@ class PnlDetailPanel(QFrame):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(2)
         grid.setVerticalSpacing(0)
-        col_titles = ["", "点数", "持仓", "方向"]
+        col_titles = ["", "盈亏", "持仓", "方向"]
         if show_liq_buf:
             # 爆=距强平价的价格距离，强=强平价位（liq）
             col_titles.extend(["爆", "强"])
@@ -260,7 +260,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
                     continue
                 self._set_cell(cells[key], "--")
             return
-        self._paint_points(cells["pnl"], detail.point_diff)
+        self._paint_pnl(cells["pnl"], detail.pnl)
         self._set_cell(cells["qty"], f"{detail.quantity:.2f}")
         self._set_cell(
             cells["side"],

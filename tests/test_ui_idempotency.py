@@ -81,7 +81,7 @@ def test_close_compensation_log_uses_restore_word() -> None:
     print("  ✓ 平仓补偿日志使用恢复文案")
 
 
-def test_pnl_detail_rows_show_points_total_shows_round_trip_net() -> None:
+def test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     panel = PnlDetailPanel("xau")
     cfg = AppConfig(
@@ -105,11 +105,11 @@ def test_pnl_detail_rows_show_points_total_shows_round_trip_net() -> None:
     )
     panel.update(updated, {"XAUUSDT": ba}, {"XAUUSD": mt5}, cfg, summary)
 
-    assert panel._rows["BA"]["pnl"].text() == "-10.000"
-    assert panel._rows["MT5"]["pnl"].text() == "+1.000"
+    assert panel._rows["BA"]["pnl"].text() == "$+10.00"
+    assert panel._rows["MT5"]["pnl"].text() == "$+1.00"
     assert panel.total_label.text() == "实时净盈亏：$+9.08"
     panel.deleteLater()
-    print("  ✓ 盈亏明细：平台行显示点数，总计扣往返费用")
+    print("  ✓ 盈亏明细：平台行显示平台盈亏，总计扣往返费用")
 
 
 def main() -> int:
@@ -118,7 +118,7 @@ def main() -> int:
         test_header_buttons_are_idempotent,
         test_trading_guard_prevents_duplicate_orders,
         test_close_compensation_log_uses_restore_word,
-        test_pnl_detail_rows_show_points_total_shows_round_trip_net,
+        test_pnl_detail_rows_show_platform_pnl_total_shows_round_trip_net,
     ):
         try:
             fn()
