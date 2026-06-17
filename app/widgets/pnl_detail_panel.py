@@ -131,7 +131,7 @@ class PnlDetailPanel(QFrame):
         grid.setVerticalSpacing(0)
         col_titles = ["", "净盈亏", "持仓", "方向"]
         if show_liq_buf:
-            # 爆=距爆仓的资金缓冲（buf，账户还能亏多少钱），强=爆仓价位（liq）
+            # 爆=距强平价的价格距离，强=强平价位（liq）
             col_titles.extend(["爆", "强"])
         col_titles.append("杠")
         for col, text in enumerate(col_titles):
@@ -256,7 +256,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
                 f"{detail.liquidation_price:.3f}" if detail.liquidation_price else "--",
             )
         if "buf" in cells:
-            self._set_cell(cells["buf"], f"{detail.liq_buffer:.1f}" if detail.liq_buffer else "--")
+            self._set_cell(cells["buf"], f"{detail.liq_buffer:.3f}" if detail.liq_buffer else "--")
         self._set_cell(cells["lev"], f"{detail.leverage}x")
 
     def _emit_repair_requested(self) -> None:

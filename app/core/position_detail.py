@@ -4,9 +4,19 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-from app.core.liquidation import resolve_position_liq_buffer, resolve_position_liquidation_price
+from app.core.liquidation import (
+    resolve_position_liq_price_distance,
+    resolve_position_liquidation_price,
+)
 from app.core.models import AppConfig, Position, Quote, Side
 from app.core.symbols import WATCHED_PRESETS, find_preset
+
+
+def _display_liquidation_price(platform: str, pos: Position, leverage: int) -> float:
+    """盈利情况的强平价显示口径：BA 只展示交易所返回值，MT5 可按账户模型估算。"""
+    if platform == "BA":
+        return pos.liquidation_price if pos.liquidation_price > 0 else 0.0
+    return resolve_position_liquidation_price(pos, leverage)
 
 
 @dataclass
@@ -19,7 +29,7 @@ class PlatformDetail:
     quantity: float = 0.0
     side: Side = Side.NONE
     liquidation_price: float = 0.0
-    liq_buffer: float = 0.0       # 距爆仓的资金缓冲（取最危险持仓）
+    liq_buffer: float = 0.0       # 距强平价的价格距离（盈利情况「爆」，取最危险持仓）
     leverage: int = 0
     has_position: bool = False
 
@@ -36,7 +46,7 @@ def _aggregate_platform(
     mt5_quotes: dict[str, Quote],
     config: AppConfig,
 ) -> PlatformDetail:
-    """跨所有受监控品种聚合某平台的持仓（盈亏求和、缓冲取最小、爆仓价取均值）。"""
+    """跨所有受监控品种聚合某平台的持仓（盈亏求和、强平距离取最小、爆仓价取均值）。"""
     detail = PlatformDetail(platform=platform)
     matched: list[tuple[Position, str]] = []
     for preset_id in WATCHED_PRESETS:
@@ -66,18 +76,19 @@ def _aggregate_platform(
         lev = pos.leverage if pos.leverage > 0 else (
             config.ba_leverage if platform == "BA" else config.mt5_leverage
         )
-        liq_prices.append(resolve_position_liquidation_price(pos, lev))
+        liq_price = _display_liquidation_price(platform, pos, lev)
+        if liq_price > 0:
+            liq_prices.append(liq_price)
         quote = (
             ba_quotes.get(pos.symbol)
             if platform == "BA"
             else mt5_quotes.get(pos.symbol)
         )
-        if quote or pos.exchange_liq_buffer is not None or pos.liquidation_price > 0:
-            if platform == "BA":
-                buffers.append(_resolve_buffer(pos, quote, preset_id, config.ba_leverage))
-            else:
-                mt5_lev = pos.leverage if pos.leverage > 0 else config.mt5_leverage
-                buffers.append(_resolve_buffer(pos, quote, preset_id, mt5_lev))
+        if platform == "BA":
+            buffers.append(_resolve_price_distance(platform, pos, quote, config.ba_leverage))
+        else:
+            mt5_lev = pos.leverage if pos.leverage > 0 else config.mt5_leverage
+            buffers.append(_resolve_price_distance(platform, pos, quote, mt5_lev))
 
     if liq_prices:
         detail.liquidation_price = round(sum(liq_prices) / len(liq_prices), 3)
@@ -92,11 +103,14 @@ def _aggregate_platform(
     return detail
 
 
-def _resolve_buffer(
-    pos: Position, quote: Quote | None, preset_id: str, leverage: int
+def _resolve_price_distance(
+    platform: str, pos: Position, quote: Quote | None, leverage: int
 ) -> float:
-    """薄封装：求单个持仓的爆仓缓冲。"""
-    return resolve_position_liq_buffer(pos, quote, preset_id, leverage)
+    """求单个持仓距强平价的价格距离。"""
+    liq_price = _display_liquidation_price(platform, pos, leverage)
+    if liq_price <= 0:
+        return float("inf")
+    return resolve_position_liq_price_distance(pos, quote, liq_price)
 
 
 def _detail_for_position(
@@ -121,12 +135,12 @@ def _detail_for_position(
     detail.side = pos.side
     pos_lev = pos.leverage if pos.leverage > 0 else lev
     detail.leverage = pos_lev
-    detail.liquidation_price = round(resolve_position_liquidation_price(pos, pos_lev), 3)
+    liq_price = _display_liquidation_price(platform, pos, pos_lev)
+    detail.liquidation_price = round(liq_price, 3) if liq_price > 0 else 0.0
     quote = ba_quotes.get(pos.symbol) if platform == "BA" else mt5_quotes.get(pos.symbol)
-    if quote or pos.exchange_liq_buffer is not None or pos.liquidation_price > 0:
-        buf = _resolve_buffer(pos, quote, preset_id, pos_lev)
-        if buf != float("inf"):
-            detail.liq_buffer = round(buf, 2)
+    buf = _resolve_price_distance(platform, pos, quote, pos_lev)
+    if buf != float("inf"):
+        detail.liq_buffer = round(buf, 2)
     return detail
 
 

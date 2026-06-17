@@ -14,7 +14,9 @@ from app.core.liquidation import (
     calc_liquidation_price_from_profit,
     estimate_liquidation_price,
     liq_buffer_from_prices,
+    liq_price_distance_from_prices,
     mt5_account_liq_buffer,
+    resolve_position_liq_price_distance,
     resolve_position_liq_buffer,
 )
 from app.core.models import Position, Quote, Side
@@ -32,6 +34,12 @@ def test_ba_cross_account_buffer():
 def test_liq_buffer_from_exchange_prices_long():
     buf = liq_buffer_from_prices(Side.BUY, mark=2650, liquidation_price=2600, quantity=500)
     assert buf == 25000.0
+
+
+def test_liq_price_distance_from_exchange_prices():
+    assert liq_price_distance_from_prices(Side.BUY, mark=2650, liquidation_price=2600) == 50.0
+    dist = liq_price_distance_from_prices(Side.SELL, mark=2650.2, liquidation_price=2800)
+    assert abs(dist - 149.8) < 0.0001
 
 
 def test_mt5_account_buffer_with_zero_stop_out():
@@ -80,6 +88,20 @@ def test_resolve_position_reprices_from_live_quote():
     assert buf == 20000.0
 
 
+def test_resolve_position_price_distance_uses_live_quote():
+    pos = Position(
+        platform="BA",
+        symbol="XAUUSDT",
+        side=Side.SELL,
+        quantity=500,
+        entry_price=2650,
+        liquidation_price=2800,
+        mark_price=2640,
+    )
+    dist = resolve_position_liq_price_distance(pos, Quote("XAUUSDT", 2640, 2640.2))
+    assert abs(dist - 159.8) < 0.0001
+
+
 def test_resolve_position_falls_back_to_exchange_buffer():
     # 无爆仓价 / 无实时价时，退回交易所返回的轮询缓冲。
     pos = Position(
@@ -105,9 +127,11 @@ if __name__ == "__main__":
     test_ba_isolated_buffer_matches_exchange_formula()
     test_ba_cross_account_buffer()
     test_liq_buffer_from_exchange_prices_long()
+    test_liq_price_distance_from_exchange_prices()
     test_mt5_account_buffer_with_zero_stop_out()
     test_mt5_liquidation_price_matches_account_equity_model()
     test_resolve_position_reprices_from_live_quote()
+    test_resolve_position_price_distance_uses_live_quote()
     test_resolve_position_falls_back_to_exchange_buffer()
     test_estimate_fallback_for_demo()
     print("ALL LIQUIDATION TESTS PASSED")

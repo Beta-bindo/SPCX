@@ -1,4 +1,4 @@
-"""爆仓价与"距爆仓资金缓冲"的计算工具，尽量对齐交易所真实口径。
+"""爆仓价、距爆仓价格距离与资金缓冲的计算工具，尽量对齐交易所真实口径。
 
 提供多种估算来源：交易所直接返回的缓冲 > 由爆仓价与盯市价反推 > 退化的保证金估算。
 MT5 侧以"权益跌到强平线（stop-out）"为爆仓条件，用二分法反推爆仓价。
@@ -43,6 +43,21 @@ def liq_buffer_from_prices(
         return max(0.0, (mark - liquidation_price) * qty)
     if side == Side.SELL:
         return max(0.0, (liquidation_price - mark) * qty)
+    return float("inf")
+
+
+def liq_price_distance_from_prices(
+    side: Side,
+    mark: float,
+    liquidation_price: float,
+) -> float:
+    """由当前价与强平价计算还差多少价格点触发强平。"""
+    if liquidation_price <= 0 or mark <= 0:
+        return float("inf")
+    if side == Side.BUY:
+        return max(0.0, mark - liquidation_price)
+    if side == Side.SELL:
+        return max(0.0, liquidation_price - mark)
     return float("inf")
 
 
@@ -207,6 +222,17 @@ def resolve_position_liq_buffer(
     else:
         unrealized = 0.0
     return max(0.0, margin + unrealized)
+
+
+def resolve_position_liq_price_distance(
+    pos: Position,
+    quote: Quote | None,
+    liquidation_price: float | None = None,
+) -> float:
+    """求持仓距强平价的价格距离，供盈利情况里的「爆」显示。"""
+    liq_price = pos.liquidation_price if liquidation_price is None else liquidation_price
+    mark = _live_mark_price(pos, quote)
+    return liq_price_distance_from_prices(pos.side, mark, liq_price)
 
 
 def resolve_position_liquidation_price(

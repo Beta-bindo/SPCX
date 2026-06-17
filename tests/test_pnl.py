@@ -71,7 +71,84 @@ def test_platform_detail_net_pnl_matches_summary_net():
     assert ba_detail.net_pnl != ba_detail.pnl or mt5_detail.net_pnl != mt5_detail.pnl
 
 
+def test_ba_detail_liquidation_price_uses_exchange_value_only():
+    ba = Quote(symbol="XAUUSDT", bid=2650.0, ask=2650.2, is_simulated=True)
+    cfg = AppConfig(ba_leverage=20)
+
+    ba_detail, _ = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="BA",
+                symbol="XAUUSDT",
+                side=Side.SELL,
+                quantity=0.01,
+                entry_price=2651.0,
+                liquidation_price=2800.1234,
+            )
+        ],
+        {"XAUUSDT": ba},
+        {},
+        cfg,
+    )
+    assert ba_detail.liquidation_price == 2800.123
+
+    ba_detail, _ = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="BA",
+                symbol="XAUUSDT",
+                side=Side.SELL,
+                quantity=0.01,
+                entry_price=2651.0,
+                liquidation_price=0.0,
+            )
+        ],
+        {"XAUUSDT": ba},
+        {},
+        cfg,
+    )
+    assert ba_detail.liquidation_price == 0.0
+
+
+def test_platform_detail_liq_buffer_displays_price_distance():
+    cfg = AppConfig(ba_leverage=20, mt5_leverage=100)
+    ba_quote = Quote(symbol="XAUUSDT", bid=2640.0, ask=2640.2, is_simulated=True)
+    mt5_quote = Quote(symbol="XAUUSD", bid=2640.0, ask=2640.2, is_simulated=True)
+
+    ba_detail, mt5_detail = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="BA",
+                symbol="XAUUSDT",
+                side=Side.SELL,
+                quantity=500,
+                entry_price=2650.0,
+                liquidation_price=2800.0,
+            ),
+            Position(
+                platform="MT5",
+                symbol="XAUUSD",
+                side=Side.BUY,
+                quantity=1.0,
+                entry_price=2650.0,
+                liquidation_price=2600.0,
+            ),
+        ],
+        {"XAUUSDT": ba_quote},
+        {"XAUUSD": mt5_quote},
+        cfg,
+    )
+
+    assert ba_detail.liq_buffer == 159.8
+    assert mt5_detail.liq_buffer == 40.0
+
+
 if __name__ == "__main__":
     test_spread_snapshot_exec_vs_mid()
     test_pnl_with_fees()
     test_platform_detail_net_pnl_matches_summary_net()
+    test_ba_detail_liquidation_price_uses_exchange_value_only()
+    test_platform_detail_liq_buffer_displays_price_distance()
