@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import QApplication
 from app.core.auto_trade import AutoTradeState, evaluate_auto_closes, evaluate_auto_trades
 from app.core.config import load_config, save_config
 from app.core.models import AppConfig, ConnectionMode, HedgeMode, OpenOrder, Position, Side, SpreadSnapshot
+from app.core.spread_engine import SpreadEngine
+from app.core.trade_result import HedgeTradeResult
 
 
 def _cfg_contraction_only(threshold: float = 3.0) -> AppConfig:
@@ -64,6 +67,34 @@ def test_expansion_fires_when_spread_below_threshold():
     assert orders[0][1] == HedgeMode.EXPANSION.value
     assert "扩张" in orders[0][3]
     print("  ✓ 扩张：点差 ≤ 阈值即触发")
+
+
+def test_auto_open_maker_waits_timeout_not_spread_guard():
+    engine = SpreadEngine(AppConfig(connection_mode=ConnectionMode.DEMO.value))
+    engine._spreads["xau"] = SpreadSnapshot(
+        preset_id="xau",
+        ba_bid=100.0,
+        ba_ask=100.1,
+        mt5_bid=99.3,
+        mt5_ask=99.4,
+        mid_spread=0.806,
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_open_hedge(*_args, **kwargs):
+        captured["spread_guard"] = kwargs.get("spread_guard")
+        return HedgeTradeResult(action="open", success=False, message="fake")
+
+    with patch("app.core.spread_engine.open_hedge", side_effect=_fake_open_hedge):
+        engine._run_open(
+            "xau",
+            HedgeMode.EXPANSION.value,
+            "maker",
+            max_open_spread=0.9,
+        )
+
+    assert captured["spread_guard"] is None
+    print("  ✓ 自动 Maker 开仓挂单后不因点差回落提前撤单")
 
 
 def test_disabled_strategy_never_fires():
@@ -423,6 +454,7 @@ def main() -> int:
         test_contraction_fires_immediately,
         test_contraction_resets_when_spread_drops,
         test_expansion_fires_when_spread_below_threshold,
+        test_auto_open_maker_waits_timeout_not_spread_guard,
         test_disabled_strategy_never_fires,
         test_fires_immediately_without_cooldown,
         test_hysteresis_keeps_timer_near_threshold,

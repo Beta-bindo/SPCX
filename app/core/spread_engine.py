@@ -355,12 +355,6 @@ class SpreadEngine(QObject):
                 finished = True
                 return
 
-            def spread_guard() -> bool:
-                ok_now, _ = self._auto_open_spread_check(
-                    preset_id, mode, min_open_spread, max_open_spread
-                )
-                return ok_now
-
             spread, ba_price, ex_price = self._order_snapshot(preset_id)
             ba_qty, mt5_qty = self._order_quantities(preset_id)
             ba_side, mt5_side = hedge_sides(mode)
@@ -380,11 +374,7 @@ class SpreadEngine(QObject):
                 mode,
                 order_mode,
                 had_position=had_position,
-                spread_guard=(
-                    spread_guard
-                    if min_open_spread is not None or max_open_spread is not None
-                    else None
-                ),
+                spread_guard=None,
             )
             self._log(LogLevel.TRADE, result.message)
             if not result.success:
