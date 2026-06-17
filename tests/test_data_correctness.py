@@ -182,7 +182,15 @@ def run_hedge_scenario_tests(r: Report) -> None:
 def run_profit_ledger_tests(r: Report) -> None:
     ledger = TradeLedger(
         records=[
-            TradeRecord("2026-06-08T10:00:00", "xau", "contraction", 100, -20, 1, 0.5),
+            TradeRecord(
+                settled_at="2026-06-08T10:00:00",
+                preset_id="xau",
+                mode="contraction",
+                ba_pnl=100,
+                mt5_pnl=-20,
+                ba_fee=1,
+                mt5_fee=0.5,
+            ),
         ]
     )
     rep = calculate_profit(ledger, __import__("datetime").date(2026, 6, 8), __import__("datetime").date(2026, 6, 8), "all")

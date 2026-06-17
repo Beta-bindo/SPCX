@@ -535,7 +535,8 @@ def test_auto_maker_timeout_restore_accepts_cancel_variants():
     print("  ✓ 自动 Maker 自动撤单文案变化时仍恢复勾选")
 
 
-def test_auto_maker_timeout_restore_on_open_orders_cleared_before_trade_finished():
+def test_auto_maker_timeout_restore_after_pending_lock_unchecked():
+    """挂单时勾选框被锁定取消勾选，超时自动撤单后 trade_finished 应重新勾选。"""
     from app.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -551,21 +552,19 @@ def test_auto_maker_timeout_restore_on_open_orders_cleared_before_trade_finished
     window._pending_auto_maker_restore = window._capture_auto_maker_restore(
         "xau", GoldOrderMode.MAKER.value
     )
-    window._pending_auto_maker_auto_cancel_restore = True
-    window._current_ba_open_order_keys = set()
+    # 模拟挂单时 _recompute_locks 取消了勾选
+    _set_checked_no_signal(auto.contraction_enabled, False)
 
-    window._on_open_orders([])
-    assert auto.contraction_enabled.isChecked()
-    assert window._pending_auto_trade is not None
-    assert window._pending_auto_maker_restored_after_cancel is True
     window._on_trade_finished(_maker_cancel_result("open"))
+
+    assert auto.contraction_enabled.isChecked()
     assert window._pending_auto_trade is None
-    assert auto.contraction_enabled.isChecked()
     window.close()
-    print("  ✓ 自动 Maker 委托清空后先恢复勾选，再等 trade_finished 收尾")
+    print("  ✓ 自动 Maker 超时撤单后在 trade_finished 重新勾选")
 
 
-def test_auto_maker_timeout_restore_does_not_reclear_restored_checkbox():
+def test_auto_maker_restore_survives_later_open_orders_clear():
+    """恢复勾选后，后续委托清空回调不会再次清掉勾选。"""
     from app.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -581,13 +580,14 @@ def test_auto_maker_timeout_restore_does_not_reclear_restored_checkbox():
     window._pending_auto_maker_restore = window._capture_auto_maker_restore(
         "xau", GoldOrderMode.MAKER.value
     )
-    window._pending_auto_maker_auto_cancel_restore = True
-    window._current_ba_open_order_keys = set()
-    window._on_open_orders([])
+    _set_checked_no_signal(auto.contraction_enabled, False)
     window._on_trade_finished(_maker_cancel_result("open"))
     assert auto.contraction_enabled.isChecked()
+
+    window._on_open_orders([])
+    assert auto.contraction_enabled.isChecked()
     window.close()
-    print("  ✓ 自动 Maker 恢复后不会被 trade_finished 再次取消")
+    print("  ✓ 恢复勾选后委托清空不会再次取消勾选")
 
 
 def test_auto_maker_restore_reevaluates_latest_market():
@@ -891,8 +891,8 @@ def main() -> int:
         test_pending_order_locks_all_maker_auto_checkboxes,
         test_auto_maker_timeout_restore_previous_checkbox,
         test_auto_maker_timeout_restore_accepts_cancel_variants,
-        test_auto_maker_timeout_restore_on_open_orders_cleared_before_trade_finished,
-        test_auto_maker_timeout_restore_does_not_reclear_restored_checkbox,
+        test_auto_maker_timeout_restore_after_pending_lock_unchecked,
+        test_auto_maker_restore_survives_later_open_orders_clear,
         test_auto_maker_restore_reevaluates_latest_market,
         test_manual_cancel_does_not_restore_auto_maker_checkbox,
         test_market_auto_failure_does_not_restore_checkbox,

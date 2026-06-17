@@ -41,11 +41,10 @@ from app.core.pnl_calculator import (
 )
 from app.core.risk import build_risk_snapshot
 from app.core.symbols import WATCHED_PRESETS, find_preset, watched_ba_symbols
-from app.core.app_log import LogLevel, hedge_mode_word, should_log
+from app.core.app_log import LogLevel, should_log
 from app.core.trade_ledger import funding_period_start, hedge_sides, record_close_settlement, record_trade
 from app.core.trade_result import HedgeTradeResult
 from app.core.trading_service import close_hedge, open_hedge, position_entry_spread
-from app.core.order_mode import order_mode_log_label
 from app.connectors.binance_connector import BinanceConnector
 from app.connectors.mt5_connector import MT5Connector
 
@@ -214,22 +213,11 @@ class SpreadEngine(QObject):
         snap = self._spreads.get(preset_id)
         if snap is None:
             return
-        detail = ""
-        if action == "open":
-            detail = (
-                f" · 开仓可执行 收缩 {snap.executable_spread('open', 'contraction'):+.3f}"
-                f" / 扩张 {snap.executable_spread('open', 'expansion'):+.3f}"
-            )
-        elif action == "close":
-            detail = (
-                f" · 平仓可执行 收缩 {snap.executable_spread('close', 'contraction'):+.3f}"
-                f" / 扩张 {snap.executable_spread('close', 'expansion'):+.3f}"
-            )
         self._log(
             LogLevel.TRADE,
-            f"{prefix} · 点差指数 {snap.mid_spread:+.3f} "
-            f"(BA {snap.ba_bid:.3f}/{snap.ba_ask:.3f} / Ex {snap.mt5_bid:.3f}/{snap.mt5_ask:.3f})"
-            f"{detail}",
+            f"{prefix}行情 · 点差 {snap.mid_spread:+.3f}"
+            f"｜BA {snap.ba_bid:.3f}/{snap.ba_ask:.3f}"
+            f"｜Ex {snap.mt5_bid:.3f}/{snap.mt5_ask:.3f}",
         )
 
     def _order_snapshot(self, preset_id: str) -> tuple[float, float, float]:
@@ -389,11 +377,6 @@ class SpreadEngine(QObject):
         """后台线程：执行开仓、记录成交、刷新持仓，并发出相应信号。"""
         finished = False
         try:
-            om = order_mode_log_label(preset_id, order_mode)
-            self._log(
-                LogLevel.TRADE,
-                f"正在{hedge_mode_word(mode)}开仓 · {om}",
-            )
             self._spread_log(preset_id, "下单前", action="open")
             ok, guard_msg = self._auto_open_spread_check(
                 preset_id, mode, min_open_spread, max_open_spread
@@ -520,11 +503,6 @@ class SpreadEngine(QObject):
         """后台线程：执行平仓、按平仓比例结算盈亏并记账，最后刷新持仓。"""
         finished = False
         try:
-            om = order_mode_log_label(preset_id, order_mode)
-            self._log(
-                LogLevel.TRADE,
-                f"正在{hedge_mode_word(mode)}平仓 · {om}",
-            )
             self._spread_log(preset_id, "平仓前", action="close")
             spread, ba_price, ex_price = self._order_snapshot(preset_id)
             ba_qty_cfg, mt5_qty_cfg = self._order_quantities(preset_id)

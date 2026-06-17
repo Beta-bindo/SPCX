@@ -356,16 +356,15 @@ def evaluate_auto_trades(
                     else config.auto_expansion_threshold_lane(preset_id, lane)
                 )
                 op = "≥" if mode == HedgeMode.CONTRACTION.value else "≤"
-                lane_text = _lane_label(lane)
-                mode_text = f" · {lane_text}" if lane_text else " · Maker"
+                lane_name = _lane_label(lane) or "Maker"
                 orders.append(
                     (
                         preset_id,
                         mode,
                         order_mode,
                         (
-                            f"[自动下单] {label} 点差 {eff_spread:+.3f} {op} {thresh:.3f}，"
-                            f"已满足 · {mlabel}开仓{mode_text}{add_note}"
+                            f"自动开仓 · {label} {mlabel}（{lane_name}）"
+                            f"：点差 {eff_spread:+.3f} {op} {thresh:.3f} 已满足{add_note}"
                         ),
                     )
                 )
@@ -487,16 +486,15 @@ def evaluate_auto_closes(
                 thresh = config.auto_close_expansion_threshold_lane(preset_id, lane)
                 op = "≥"
             order_mode = auto_trade_order_mode(preset_id, lane)
-            lane_text = _lane_label(lane)
-            mode_text = f" · {lane_text}" if lane_text else " · Maker"
+            lane_name = _lane_label(lane) or "Maker"
             orders.append(
                 (
                     preset_id,
                     mode,
                     order_mode,
                     (
-                        f"[自动平仓] {label} 点差 {eff_spread:+.3f} {op} {thresh:.3f}，"
-                        f"已满足 · {mlabel}平仓{mode_text}"
+                        f"自动平仓 · {label} {mlabel}（{lane_name}）"
+                        f"：点差 {eff_spread:+.3f} {op} {thresh:.3f} 已满足"
                     ),
                 )
             )

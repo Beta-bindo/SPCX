@@ -202,6 +202,61 @@ def test_mt5_liq_buffer_uses_abs_distance_to_model_liq_price():
     assert mt5_detail.liq_buffer == 15.14
 
 
+def test_mt5_liq_buffer_uses_current_price_when_mark_is_stale_liq_price():
+    cfg = AppConfig(mt5_leverage=2000)
+
+    _ba_detail, mt5_detail = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="MT5",
+                symbol="XAUUSD",
+                side=Side.SELL,
+                quantity=0.05,
+                entry_price=4206.118,
+                current_price=4223.396,
+                mark_price=4255.099,
+                liquidation_price=4255.099,
+                leverage=2000,
+                exchange_liq_buffer=722.04,
+            )
+        ],
+        {},
+        {},
+        cfg,
+    )
+
+    assert mt5_detail.liquidation_price == 4255.099
+    assert mt5_detail.liq_buffer == 31.7
+
+
+def test_mt5_liq_buffer_falls_back_to_account_points_when_distance_zero():
+    cfg = AppConfig(mt5_leverage=2000)
+
+    _ba_detail, mt5_detail = build_platform_details_for_preset(
+        "xau",
+        [
+            Position(
+                platform="MT5",
+                symbol="XAUUSD",
+                side=Side.SELL,
+                quantity=0.05,
+                entry_price=4206.118,
+                current_price=4255.099,
+                mark_price=4255.099,
+                liquidation_price=4255.099,
+                leverage=2000,
+                exchange_liq_buffer=158.5,
+            )
+        ],
+        {},
+        {},
+        cfg,
+    )
+
+    assert mt5_detail.liq_buffer == 31.7
+
+
 if __name__ == "__main__":
     test_spread_snapshot_exec_vs_mid()
     test_pnl_with_fees()
@@ -210,3 +265,5 @@ if __name__ == "__main__":
     test_platform_detail_liq_buffer_displays_price_distance()
     test_mt5_liq_buffer_falls_back_to_account_buffer_points()
     test_mt5_liq_buffer_uses_abs_distance_to_model_liq_price()
+    test_mt5_liq_buffer_uses_current_price_when_mark_is_stale_liq_price()
+    test_mt5_liq_buffer_falls_back_to_account_points_when_distance_zero()

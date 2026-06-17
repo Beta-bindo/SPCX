@@ -166,6 +166,8 @@ def _live_mark_price(pos: Position, quote: Quote | None) -> float:
             px = quote.mid
         if px > 0:
             return px
+    if pos.current_price > 0:
+        return pos.current_price
     return pos.mark_price
 
 

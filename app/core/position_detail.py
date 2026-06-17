@@ -148,6 +148,10 @@ def _resolve_price_distance(
             if platform == "MT5"
             else resolve_position_liq_price_distance(pos, quote, liq_price)
         )
+        if platform == "MT5" and dist <= 1e-9:
+            fallback = _account_buffer_price_distance(platform, pos, preset_id)
+            if fallback != float("inf") and fallback > 0:
+                return fallback
         if dist != float("inf"):
             return dist
     return _account_buffer_price_distance(platform, pos, preset_id)
