@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, Quote, Side
+from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, OpenOrder, Quote, Side
 from app.core.trading_service import close_hedge, open_hedge
 from app.connectors.binance_connector import BinanceConnector
 from app.connectors.mt5_connector import MT5Connector
@@ -224,26 +224,67 @@ def test_cancel_all_open_orders_cancels_pending():
     cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
     conn = BinanceConnector(cfg)
     client = MagicMock()
-
-    def _open_orders(symbol=None):
-        if symbol == "XAUUSDT":
-            return [{
-                "symbol": "XAUUSDT", "orderId": 123, "side": "BUY",
-                "type": "LIMIT", "origQty": "0.01", "executedQty": "0",
-                "price": "2650.0",
-            }]
-        return []
-
-    client.futures_get_open_orders.side_effect = _open_orders
     conn._client = client
+    conn._open_orders_cache = [
+        OpenOrder(
+            platform="BA",
+            symbol="XAUUSDT",
+            order_id="123",
+            side=Side.BUY,
+            order_type="LIMIT",
+            total_quantity=0.01,
+            remaining_quantity=0.01,
+            price=2650.0,
+        )
+    ]
 
     count = conn.cancel_all_open_orders()
 
     assert count == 1
+    client.futures_get_open_orders.assert_not_called()
     client.futures_cancel_all_open_orders.assert_any_call(symbol="XAUUSDT")
     client.futures_cancel_all_open_orders.assert_any_call(symbol="XAGUSDT")
     assert client.futures_cancel_all_open_orders.call_count == 2
     print("  ✓ 手动撤单：撤销委托中的挂单")
+
+
+def test_cancel_all_open_orders_clears_ui_before_rest_cancel_returns():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
+    conn = BinanceConnector(cfg)
+    client = MagicMock()
+    conn._client = client
+    conn._open_order_symbols = frozenset({"XAUUSDT"})
+    conn._stream_active_orders = {
+        "XAUUSDT": {
+            "123": OpenOrder(
+                platform="BA",
+                symbol="XAUUSDT",
+                order_id="123",
+                side=Side.BUY,
+                order_type="LIMIT",
+                total_quantity=0.01,
+                remaining_quantity=0.01,
+                price=2650.0,
+            )
+        }
+    }
+    events: list[tuple[str, object]] = []
+    conn.open_orders_detail.connect(lambda orders: events.append(("detail", list(orders))))
+
+    def _cancel(symbol=None):
+        events.append(("cancel", symbol))
+        return {}
+
+    client.futures_cancel_all_open_orders.side_effect = _cancel
+
+    count = conn.cancel_all_open_orders()
+
+    assert count == 1
+    assert events[0] == ("detail", [])
+    assert ("cancel", "XAUUSDT") in events
+    assert conn._open_orders_cache == []
+    assert conn._stream_active_orders == {}
+    print("  ✓ 手动撤单：先熄灭委托灯，再后台请求 BA 撤单")
 
 
 def test_cancel_all_open_orders_noop_without_pending():

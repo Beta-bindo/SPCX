@@ -363,6 +363,24 @@ class BinanceConnector(QObject):
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA 撤单 #{order_id}: {exc}")
 
+    def _local_pending_open_orders(self) -> list[OpenOrder]:
+        """返回本地已知的存活委托快照，用于手动撤单日志计数。"""
+        with self._open_orders_emit_lock:
+            by_key: dict[tuple[str, str], OpenOrder] = {}
+            for order in list(self._open_orders_cache) + self._collect_stream_orders_locked():
+                if order.remaining_quantity <= 0:
+                    continue
+                key = (order.symbol, str(order.order_id))
+                by_key[key] = order
+            return list(by_key.values())
+
+    def _clear_local_open_orders(self) -> None:
+        """立即清空本地 BA 委托快照并通知 UI，真实状态由后续撤单/刷新校正。"""
+        with self._open_orders_emit_lock:
+            self._stream_active_orders.clear()
+            self._open_orders_cache = []
+        self._emit_open_orders(frozenset(), [])
+
     def cancel_all_open_orders(self) -> int:
         """撤销所有受监控交易对的未成交委托，返回成功撤销的委托笔数。
 
@@ -374,11 +392,8 @@ class BinanceConnector(QObject):
             return 0
         self._manual_cancel_event.set()
         try:
-            # 尽力取一次现存挂单仅用于计数/日志（取不到也照常撤）
-            try:
-                pending = [o for o in self.get_open_orders() if o.remaining_quantity > 0]
-            except Exception:
-                pending = []
+            pending = self._local_pending_open_orders()
+            self._clear_local_open_orders()
             cancelled = 0
             for symbol in watched_ba_symbols():
                 def _cancel(s=symbol) -> None:
@@ -389,17 +404,16 @@ class BinanceConnector(QObject):
                     count = sum(1 for o in pending if o.symbol == symbol)
                     if count:
                         cancelled += count
-                        self._log(LogLevel.TRADE, f"BA 已撤销 {symbol} 全部委托（{count} 笔）")
+                        self._log(
+                            LogLevel.TRADE,
+                            f"BA 已发送撤销 {symbol} 全部委托（本地记录 {count} 笔）",
+                        )
                 except Exception as exc:
                     self._log(
                         LogLevel.ERROR,
                         f"BA 撤单失败 {symbol}: {translate_exchange_error(exc)}",
                     )
-            # 撤单后清空本地存活委托跟踪并推送空，立即熄灭委托灯/清空明细
-            with self._open_orders_emit_lock:
-                self._stream_active_orders.clear()
-                self._open_orders_cache = []
-            self._emit_open_orders(frozenset(), [])
+            self._clear_local_open_orders()
             return cancelled
         finally:
             self._manual_cancel_event.clear()
@@ -626,6 +640,8 @@ class BinanceConnector(QObject):
         """查询受监控交易对的全部未成交委托。"""
         if not self.config.use_live_ba or not self._client:
             return []
+        if self._manual_cancel_event.is_set():
+            return list(self._open_orders_cache)
         if self._api.priority_pending():
             return list(self._open_orders_cache)
         orders: list[OpenOrder] = []

@@ -774,9 +774,9 @@ class SpreadEngine(QObject):
             try:
                 count = self.binance.cancel_all_open_orders()
                 if count > 0:
-                    self._log(LogLevel.TRADE, f"手动撤单 · 已撤销 {count} 笔委托")
+                    self._log(LogLevel.TRADE, f"手动撤单 · 撤单请求已发送（本地记录 {count} 笔）")
                 else:
-                    self._log(LogLevel.INFO, "手动撤单 · 当前无可撤委托")
+                    self._log(LogLevel.INFO, "手动撤单 · 撤单请求已发送")
             except Exception as exc:
                 self._log(LogLevel.ERROR, f"手动撤单失败: {exc}")
             finally:
