@@ -35,6 +35,7 @@ from app.core.models import (
     OrderBook,
     Position,
     Quote,
+    Side,
     SpreadSnapshot,
     DEFAULT_PANEL_SECTIONS,
     PANEL_SECTION_LABELS,
@@ -528,7 +529,7 @@ class SymbolActionStrip(QFrame):
             self._last_risk_text = text
 
     def update_open_orders(self, orders: list[OpenOrder]) -> None:
-        """刷新本品种两端的委托明细（总量 / 已成交 / 剩余）。"""
+        """刷新本品种两端的委托明细（总量 / 已成交 / 剩余 / BA 委托指数）。"""
         preset = find_preset(self.preset_id)
         ba_orders = [
             o for o in orders if o.platform == "BA" and o.symbol == preset.symbol_ba
@@ -543,6 +544,29 @@ class SymbolActionStrip(QFrame):
             remaining = sum(o.remaining_quantity for o in platform_orders)
             return total, filled, remaining
 
+        def _ba_order_index(order: OpenOrder) -> float | None:
+            snap = self._last_spread
+            if snap is None or order.price <= 0:
+                return None
+            if order.reduce_only:
+                ex_ref = snap.mt5_bid if order.side == Side.BUY else snap.mt5_ask
+            else:
+                ex_ref = snap.mt5_ask if order.side == Side.SELL else snap.mt5_bid
+            if ex_ref <= 0:
+                return None
+            return order.price - ex_ref
+
+        def _order_price_index_text(platform_orders: list[OpenOrder]) -> str:
+            priced = [o for o in platform_orders if o.price > 0]
+            if not priced:
+                return ""
+            order = max(priced, key=lambda o: o.remaining_quantity)
+            text = f" @ {order.price:.3f}"
+            idx = _ba_order_index(order)
+            if idx is not None:
+                text += f" 指数{idx:+.3f}"
+            return text
+
         def _fmt_ba(platform_orders: list[OpenOrder]) -> str:
             if not platform_orders:
                 return "BA —"
@@ -553,11 +577,13 @@ class SymbolActionStrip(QFrame):
                 total, filled, remaining = _aggregate(open_orders)
                 parts.append(
                     f"开 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
+                    f"{_order_price_index_text(open_orders)}"
                 )
             if close_orders:
                 total, filled, remaining = _aggregate(close_orders)
                 parts.append(
                     f"平 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
+                    f"{_order_price_index_text(close_orders)}"
                 )
             return "BA " + " · ".join(parts)
 

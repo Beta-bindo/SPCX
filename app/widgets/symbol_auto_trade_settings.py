@@ -197,7 +197,7 @@ class SymbolAutoTradeSettings(QFrame):
         row.addWidget(self.maker_pending_light)
         row.addSpacing(8)
         self.cancel_orders_btn = QPushButton("撤销委托")
-        self.cancel_orders_btn.setObjectName("ghostButton")
+        self.cancel_orders_btn.setObjectName("primaryButton")
         self.cancel_orders_btn.setProperty("compact", "true")
         self.cancel_orders_btn.setToolTip("立即撤销所有未成交（委托中）的挂单")
         self.cancel_orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)

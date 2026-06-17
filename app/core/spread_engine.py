@@ -208,14 +208,26 @@ class SpreadEngine(QObject):
             return "交易已拦截：检测到模拟报价，禁止与实盘混合下单"
         return None
 
-    def _spread_log(self, preset_id: str, prefix: str) -> None:
+    def _spread_log(self, preset_id: str, prefix: str, action: str | None = None) -> None:
         snap = self._spreads.get(preset_id)
         if snap is None:
             return
+        detail = ""
+        if action == "open":
+            detail = (
+                f" · 开仓可执行 收缩 {snap.executable_spread('open', 'contraction'):+.3f}"
+                f" / 扩张 {snap.executable_spread('open', 'expansion'):+.3f}"
+            )
+        elif action == "close":
+            detail = (
+                f" · 平仓可执行 收缩 {snap.executable_spread('close', 'contraction'):+.3f}"
+                f" / 扩张 {snap.executable_spread('close', 'expansion'):+.3f}"
+            )
         self._log(
             LogLevel.TRADE,
             f"{prefix} · 点差指数 {snap.mid_spread:+.3f} "
-            f"(BA {snap.ba_bid:.3f} / Ex {snap.mt5_bid:.3f})",
+            f"(BA {snap.ba_bid:.3f}/{snap.ba_ask:.3f} / Ex {snap.mt5_bid:.3f}/{snap.mt5_ask:.3f})"
+            f"{detail}",
         )
 
     def _order_snapshot(self, preset_id: str) -> tuple[float, float, float]:
@@ -313,16 +325,16 @@ class SpreadEngine(QObject):
             return (
                 False,
                 (
-                    f"自动开仓{mlabel}取消：当前点差 {spread:+.3f} "
-                    f"低于阈值 {min_open_spread:.3f}"
+                    f"自动开仓{mlabel}取消：当前{mlabel}开仓可执行点差 {spread:+.3f} "
+                    f"低于阈值 {min_open_spread:.3f}（点差指数 {snap.mid_spread:+.3f}）"
                 ),
             )
         if max_open_spread is not None and spread > max_open_spread:
             return (
                 False,
                 (
-                    f"自动开仓{mlabel}取消：当前点差 {spread:+.3f} "
-                    f"高于阈值 {max_open_spread:.3f}"
+                    f"自动开仓{mlabel}取消：当前{mlabel}开仓可执行点差 {spread:+.3f} "
+                    f"高于阈值 {max_open_spread:.3f}（点差指数 {snap.mid_spread:+.3f}）"
                 ),
             )
         return True, ""
@@ -343,7 +355,7 @@ class SpreadEngine(QObject):
                 LogLevel.TRADE,
                 f"正在{hedge_mode_word(mode)}开仓 · {om}",
             )
-            self._spread_log(preset_id, "下单前")
+            self._spread_log(preset_id, "下单前", action="open")
             ok, guard_msg = self._auto_open_spread_check(
                 preset_id, mode, min_open_spread, max_open_spread
             )
@@ -380,7 +392,7 @@ class SpreadEngine(QObject):
             if not result.success:
                 self._log_trade_leg_details(result)
             if result.success:
-                self._spread_log(preset_id, "成交后")
+                self._spread_log(preset_id, "成交后", action="open")
                 ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
                 mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
                 actual_ba_qty = ba_leg.filled_quantity if ba_leg and ba_leg.filled_quantity > 0 else ba_qty
@@ -464,7 +476,7 @@ class SpreadEngine(QObject):
                 LogLevel.TRADE,
                 f"正在{hedge_mode_word(mode)}平仓 · {om}",
             )
-            self._spread_log(preset_id, "平仓前")
+            self._spread_log(preset_id, "平仓前", action="close")
             spread, ba_price, ex_price = self._order_snapshot(preset_id)
             ba_qty_cfg, mt5_qty_cfg = self._order_quantities(preset_id)
             ba_side, mt5_side = hedge_sides(mode)
@@ -474,7 +486,7 @@ class SpreadEngine(QObject):
             if not result.success:
                 self._log_trade_leg_details(result)
             if result.success:
-                self._spread_log(preset_id, "平仓后")
+                self._spread_log(preset_id, "平仓后", action="close")
             if result.success and (ba_pos or mt5_pos):
                 ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
                 mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)

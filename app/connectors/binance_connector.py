@@ -64,6 +64,9 @@ LISTEN_KEY_KEEPALIVE_SEC = 30 * 60
 # 订单簿多档（@depth20）WS 推送频率：500ms 一次快照，足够流畅且消息量适中
 BA_DEPTH_WS_MS = 500
 
+# User Data Stream 在线时仍周期性用 REST 校准挂单，避免终态事件丢失后 UI 卡旧委托
+OPEN_ORDERS_RECONCILE_SEC = 5.0
+
 
 @dataclass
 class _OrderStreamState:
@@ -198,6 +201,7 @@ class BinanceConnector(QObject):
         self._manual_cancel_event = threading.Event()       # 手动撤单：中断进行中的 Maker 等待
         # 指示灯是否已用 REST 现存挂单打底（断线重连后需重新打底，置 False）
         self._user_stream_seeded = False
+        self._open_orders_reconcile_at = 0.0
         # ACCOUNT_UPDATE 到达后置脏，poll 循环据此尽快强刷一次持仓
         self._account_dirty = threading.Event()
         # 账户资金快照节流：上次拉取时间（秒）
@@ -412,6 +416,35 @@ class BinanceConnector(QObject):
             self._stream_active_orders.clear()
             self._open_orders_cache = []
         self._emit_open_orders(frozenset(), [])
+
+    def _store_rest_open_orders(
+        self, orders: list[OpenOrder], watched: set[str] | None = None
+    ) -> tuple[frozenset[str], list[OpenOrder]]:
+        """用 REST 返回的当前未成交委托覆盖本地 BA 快照。
+
+        REST 查询是官网当前委托的权威快照；当 User Data Stream 丢失 CANCELED/
+        EXPIRED/FILLED 终态事件时，必须用它清掉 _stream_active_orders 里的旧委托。
+        """
+        watched_symbols = watched if watched is not None else set(watched_ba_symbols())
+        watched_orders = [
+            o
+            for o in orders
+            if o.symbol in watched_symbols and o.remaining_quantity > 0
+        ]
+        with self._open_orders_emit_lock:
+            self._open_orders_cache = list(orders)
+            self._stream_active_orders.clear()
+            for order in watched_orders:
+                if not order.order_id:
+                    continue
+                self._stream_active_orders.setdefault(order.symbol, {})[
+                    str(order.order_id)
+                ] = order
+            active = frozenset(
+                sym for sym, ids in self._stream_active_orders.items() if ids
+            )
+            detail = self._collect_stream_orders_locked()
+        return active, detail
 
     def cancel_all_open_orders(self) -> int:
         """撤销所有受监控交易对的未成交委托，返回成功撤销的委托笔数。
@@ -722,7 +755,7 @@ class BinanceConnector(QObject):
                 continue
             for raw in raw_orders:
                 orders.append(self._parse_open_order(raw))
-        self._open_orders_cache = orders
+        self._store_rest_open_orders(orders)
         return orders
 
     def _emit_open_orders(
@@ -797,9 +830,19 @@ class BinanceConnector(QObject):
         if not self._client:
             return
         orders = self.get_open_orders()
-        watched_orders = [o for o in orders if o.symbol in watched]
-        active = {o.symbol for o in watched_orders}
-        self._emit_open_orders(frozenset(active), watched_orders)
+        active, detail = self._store_rest_open_orders(orders, watched)
+        self._emit_open_orders(active, detail)
+
+    def _maybe_reconcile_stream_open_orders(self, watched: set[str]) -> None:
+        """User Stream 在线时也低频 REST 校准挂单，修正漏掉的终态事件。"""
+        now = time.monotonic()
+        if now - self._open_orders_reconcile_at < OPEN_ORDERS_RECONCILE_SEC:
+            return
+        self._open_orders_reconcile_at = now
+        try:
+            self._poll_open_orders(watched)
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"BA 委托 REST 校准失败: {exc}")
 
     def _wait_for_limit_order_fills(
         self,
@@ -2703,6 +2746,7 @@ class BinanceConnector(QObject):
                             except Exception:
                                 # 强刷失败则保留脏标记，下一轮继续重试，避免持仓长时间过期
                                 self._account_dirty.set()
+                        self._maybe_reconcile_stream_open_orders(watched)
                         self._maybe_keepalive_listen_key()
                     else:
                         # 推送不可用：回退 REST，每 ~2 秒刷新一次挂单状态（权重很低）

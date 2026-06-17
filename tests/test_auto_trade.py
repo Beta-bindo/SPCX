@@ -14,9 +14,9 @@ from PySide6.QtWidgets import QApplication
 
 from app.core.auto_trade import AutoTradeState, evaluate_auto_closes, evaluate_auto_trades
 from app.core.config import load_config, save_config
-from app.core.models import AppConfig, ConnectionMode, HedgeMode, OpenOrder, Position, Side, SpreadSnapshot
+from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, OpenOrder, Position, Side, SpreadSnapshot
 from app.core.spread_engine import SpreadEngine
-from app.core.trade_result import HedgeTradeResult
+from app.core.trade_result import HedgeTradeResult, LegResult
 
 
 def _cfg_contraction_only(threshold: float = 3.0) -> AppConfig:
@@ -95,6 +95,30 @@ def test_auto_open_maker_waits_timeout_not_spread_guard():
 
     assert captured["spread_guard"] is None
     print("  ✓ 自动 Maker 开仓挂单后不因点差回落提前撤单")
+
+
+def test_auto_open_spread_check_reports_executable_spread():
+    engine = SpreadEngine(AppConfig(connection_mode=ConnectionMode.DEMO.value))
+    engine._spreads["xau"] = SpreadSnapshot(
+        preset_id="xau",
+        ba_bid=4365.65,
+        ba_ask=4365.66,
+        mt5_bid=4363.465,
+        mt5_ask=4363.90,
+        mid_spread=2.185,
+    )
+
+    ok, message = engine._auto_open_spread_check(
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        min_open_spread=2.0,
+        max_open_spread=None,
+    )
+
+    assert not ok
+    assert "收缩开仓可执行点差 +1.750" in message
+    assert "点差指数 +2.185" in message
+    print("  ✓ 自动开仓拦截原因区分展示点差与可执行点差")
 
 
 def test_disabled_strategy_never_fires():
@@ -339,6 +363,7 @@ def test_manual_cancel_button_emits_signal():
     gold = SymbolAutoTradeSettings("xau")
     assert hasattr(gold, "cancel_orders_btn")
     assert gold.cancel_orders_btn.text() == "撤销委托"
+    assert gold.cancel_orders_btn.objectName() == "primaryButton"
 
     fired: list[bool] = []
     gold.manual_cancel_requested.connect(lambda: fired.append(True))
@@ -414,6 +439,116 @@ def test_pending_order_locks_all_maker_auto_checkboxes():
     print("  ✓ 有 BA Maker 委托时锁定 Maker 自动开仓和平仓")
 
 
+def _set_checked_no_signal(checkbox, checked: bool) -> None:
+    checkbox.blockSignals(True)
+    checkbox.setChecked(checked)
+    checkbox.blockSignals(False)
+
+
+def _maker_cancel_result(action: str = "open") -> HedgeTradeResult:
+    return HedgeTradeResult(
+        action=action,
+        success=False,
+        legs=[
+            LegResult(
+                platform="BA",
+                success=False,
+                message="BA Maker 100s 未成交已撤单",
+            ),
+            LegResult(
+                platform="MT5",
+                success=False,
+                message="BA 委托未成交，已跳过 Exness 对冲下单",
+            ),
+        ],
+        message="黄金开仓收缩(Maker)失败",
+    )
+
+
+def test_auto_maker_timeout_restore_previous_checkbox():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    _set_checked_no_signal(auto.expansion_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+
+    auto.set_pending_order(True, 1.0)
+    assert not auto.contraction_enabled.isChecked()
+    assert not auto.expansion_enabled.isChecked()
+    auto.set_pending_order(False)
+    window._on_trade_finished(_maker_cancel_result("open"))
+
+    assert auto.contraction_enabled.isChecked()
+    assert auto.expansion_enabled.isChecked()
+    window.close()
+    print("  ✓ 自动 Maker 未成交自动撤单后恢复原勾选")
+
+
+def test_manual_cancel_does_not_restore_auto_maker_checkbox():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.contraction_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MAKER.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MAKER.value
+    )
+    window.engine._running = True
+    window.engine.cancel_all_open_orders = lambda: None  # type: ignore[method-assign]
+
+    auto.set_pending_order(True, 1.0)
+    auto.set_pending_order(False)
+    window._on_manual_cancel_orders()
+    window._on_trade_finished(_maker_cancel_result("open"))
+
+    assert not auto.contraction_enabled.isChecked()
+    window.close()
+    print("  ✓ 手动撤销 Maker 委托后不自动恢复勾选")
+
+
+def test_market_auto_failure_does_not_restore_checkbox():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    auto = window.gold_actions.auto_trade_settings
+    _set_checked_no_signal(auto.market_contraction_enabled, True)
+    window._pending_auto_trade = (
+        "open",
+        "xau",
+        HedgeMode.CONTRACTION.value,
+        GoldOrderMode.MARKET.value,
+    )
+    window._pending_auto_maker_restore = window._capture_auto_maker_restore(
+        "xau", GoldOrderMode.MARKET.value
+    )
+    window._on_trade_finished(
+        HedgeTradeResult(action="open", success=False, message="市价开仓失败")
+    )
+
+    assert not auto.market_contraction_enabled.isChecked()
+    window.close()
+    print("  ✓ 市价自动失败不使用 Maker 恢复勾选逻辑")
+
+
 def test_open_orders_dedupes_same_ba_order_for_pending_light():
     from app.main_window import MainWindow
 
@@ -448,6 +583,42 @@ def test_open_orders_dedupes_same_ba_order_for_pending_light():
     print("  ✓ 委托同步：同一 BA order_id 去重后再统计数量")
 
 
+def test_pending_ba_order_displays_order_price_index():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    window.gold_actions.update_spread(
+        SpreadSnapshot(
+            preset_id="xau",
+            ba_bid=4365.64,
+            ba_ask=4365.66,
+            mt5_bid=4363.40,
+            mt5_ask=4363.65,
+            mid_spread=2.24,
+        )
+    )
+    window._on_open_orders(
+        [
+            OpenOrder(
+                platform="BA",
+                symbol="XAUUSDT",
+                order_id="42",
+                side=Side.SELL,
+                total_quantity=1.0,
+                remaining_quantity=1.0,
+                price=4365.65,
+            )
+        ]
+    )
+
+    text = window.gold_actions.pending_label.text()
+    assert "@ 4365.650" in text
+    assert "指数+2.000" in text
+    window.close()
+    print("  ✓ 委托同步：BA 委托显示委托价与对应指数")
+
+
 def main() -> int:
     errors: list[str] = []
     tests = [
@@ -455,6 +626,7 @@ def main() -> int:
         test_contraction_resets_when_spread_drops,
         test_expansion_fires_when_spread_below_threshold,
         test_auto_open_maker_waits_timeout_not_spread_guard,
+        test_auto_open_spread_check_reports_executable_spread,
         test_disabled_strategy_never_fires,
         test_fires_immediately_without_cooldown,
         test_hysteresis_keeps_timer_near_threshold,
@@ -471,7 +643,11 @@ def main() -> int:
         test_manual_cancel_button_emits_signal,
         test_pending_light_states,
         test_pending_order_locks_all_maker_auto_checkboxes,
+        test_auto_maker_timeout_restore_previous_checkbox,
+        test_manual_cancel_does_not_restore_auto_maker_checkbox,
+        test_market_auto_failure_does_not_restore_checkbox,
         test_open_orders_dedupes_same_ba_order_for_pending_light,
+        test_pending_ba_order_displays_order_price_index,
     ]
     for fn in tests:
         try:

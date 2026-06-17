@@ -407,6 +407,40 @@ def test_cancel_all_open_orders_noop_without_pending():
     print("  ✓ 手动撤单：无本地挂单时仍兜底调用撤单接口")
 
 
+def test_rest_open_orders_snapshot_clears_stale_stream_order():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
+    conn = BinanceConnector(cfg)
+    client = MagicMock()
+    client.futures_get_open_orders.return_value = []
+    conn._client = client
+    stale = OpenOrder(
+        platform="BA",
+        symbol="XAUUSDT",
+        order_id="123",
+        side=Side.SELL,
+        order_type="LIMIT",
+        total_quantity=1.0,
+        remaining_quantity=1.0,
+        price=4363.16,
+    )
+    conn._open_order_symbols = frozenset({"XAUUSDT"})
+    conn._open_orders_cache = [stale]
+    conn._stream_active_orders = {"XAUUSDT": {"123": stale}}
+    symbols_events: list[object] = []
+    detail_events: list[list[OpenOrder]] = []
+    conn.open_orders_changed.connect(symbols_events.append)
+    conn.open_orders_detail.connect(lambda orders: detail_events.append(list(orders)))
+
+    conn._poll_open_orders({"XAUUSDT", "XAGUSDT"})
+
+    assert conn._open_orders_cache == []
+    assert conn._stream_active_orders == {}
+    assert conn._open_order_symbols == frozenset()
+    assert symbols_events[-1] == frozenset()
+    assert detail_events[-1] == []
+    print("  ✓ REST 委托快照为空时清掉旧 WS 委托缓存")
+
+
 def test_cancel_all_open_orders_skips_when_not_live():
     cfg = AppConfig(connection_mode=ConnectionMode.DEMO.value)
     conn = BinanceConnector(cfg)
@@ -709,6 +743,10 @@ if __name__ == "__main__":
     test_hedge_open_both_demo()
     test_hedge_expansion_demo()
     test_binance_get_positions_uses_lock()
+    test_cancel_all_open_orders_clears_ui_before_rest_cancel_returns()
+    test_cancel_all_open_orders_noop_without_pending()
+    test_rest_open_orders_snapshot_clears_stale_stream_order()
+    test_cancel_all_open_orders_skips_when_not_live()
     test_gold_maker_vs_market_demo()
     test_binance_live_maker_open_uses_inside_tick_and_fill_price()
     test_binance_blocks_second_limit_order_when_symbol_has_pending()

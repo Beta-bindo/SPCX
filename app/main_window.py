@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
         self._auto_trade_state = AutoTradeState()
         self._auto_trade_hint_last: dict[str, float] = {}
         self._pending_auto_trade: tuple[str, str, str, str] | None = None
+        self._pending_auto_maker_restore: list[tuple[str, str]] = []
+        self._pending_auto_maker_manual_cancel = False
         self._manual_trade_notify = False
         self._pending_status_preset: str | None = None
         self._trade_dialogs: dict[str, TradeConfirmDialog] = {}
@@ -987,6 +989,8 @@ class MainWindow(QMainWindow):
         # 完成并 emit trade_finished，若等调用后再读 is_trading 会读到 False 而漏置位，
         # 导致 trade_finished 误判非自动交易、不取消勾选 → 下一拍重复委托(委托2单)。
         self._pending_auto_trade = ("open", preset_id, mode, order_mode)
+        self._pending_auto_maker_restore = self._capture_auto_maker_restore(preset_id, order_mode)
+        self._pending_auto_maker_manual_cancel = False
         lane = auto_trade_lane(preset_id, order_mode)
         min_open_spread = None
         max_open_spread = None
@@ -1005,6 +1009,8 @@ class MainWindow(QMainWindow):
         else:
             # 前置校验失败/未启动(不会发 trade_finished)：撤销置位，避免永久卡死
             self._pending_auto_trade = None
+            self._pending_auto_maker_restore = []
+            self._pending_auto_maker_manual_cancel = False
 
     def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动平仓", fast=True):
@@ -1018,11 +1024,80 @@ class MainWindow(QMainWindow):
             return
         # 必须在 close_hedge 之前乐观置位，理由同 _execute_auto_open（防秒成交漏置位重复委托）。
         self._pending_auto_trade = ("close", preset_id, mode, order_mode)
+        self._pending_auto_maker_restore = self._capture_auto_maker_restore(preset_id, order_mode)
+        self._pending_auto_maker_manual_cancel = False
         if not self.engine.close_hedge(preset_id, mode, order_mode):
             self._pending_auto_trade = None
+            self._pending_auto_maker_restore = []
+            self._pending_auto_maker_manual_cancel = False
+
+    def _capture_auto_maker_restore(
+        self, preset_id: str, order_mode: str
+    ) -> list[tuple[str, str]]:
+        """记录 Maker 自动委托前已勾选的自动项；市价/白银不参与恢复。"""
+        if auto_trade_lane(preset_id, order_mode) != "maker":
+            return []
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        auto = strip.auto_trade_settings
+        out: list[tuple[str, str]] = []
+        for action in ("open", "close"):
+            for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
+                checkbox = (
+                    auto.open_checkbox("maker", mode)
+                    if action == "open"
+                    else auto.close_checkbox("maker", mode)
+                )
+                if checkbox is not None and checkbox.isChecked():
+                    out.append((action, mode))
+        return out
+
+    def _restore_auto_maker_checkboxes(
+        self, preset_id: str, snapshot: list[tuple[str, str]]
+    ) -> int:
+        """按自动撤单前的快照恢复 Maker 自动勾选，并同步配置。"""
+        if not snapshot:
+            return 0
+        strip = self.gold_actions if preset_id == "xau" else self.silver_actions
+        auto = strip.auto_trade_settings
+        restored = 0
+        for action, mode in snapshot:
+            checkbox = (
+                auto.open_checkbox("maker", mode)
+                if action == "open"
+                else auto.close_checkbox("maker", mode)
+            )
+            if checkbox is None or checkbox.isChecked():
+                continue
+            checkbox.blockSignals(True)
+            checkbox.setChecked(True)
+            checkbox.blockSignals(False)
+            restored += 1
+        if restored:
+            self.config = self._merge_config()
+            save_config(self.config)
+            self.engine.sync_config(self.config)
+        return restored
+
+    @staticmethod
+    def _maker_auto_cancelled_without_fill(result) -> bool:
+        if result.success or result.partial:
+            return False
+        for leg in getattr(result, "legs", []) or []:
+            if getattr(leg, "platform", "") != "BA":
+                continue
+            msg = str(getattr(leg, "message", "") or "")
+            if "已撤单" in msg and "未成交" in msg and getattr(leg, "filled_quantity", 0.0) <= 0:
+                return True
+        return False
 
     def _disable_auto_open(
-        self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
+        self,
+        preset_id: str,
+        mode: str,
+        order_mode: str,
+        outcome: str = "success",
+        *,
+        log_cancel: bool = True,
     ) -> None:
         from app.core.auto_trade import _reset_lane_open_timers
 
@@ -1048,13 +1123,20 @@ class MainWindow(QMainWindow):
             status = "部分成功"
         else:
             status = "未成功"
-        self._append_log(
-            LogLevel.INFO,
-            f"自动开仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
-        )
+        if log_cancel:
+            self._append_log(
+                LogLevel.INFO,
+                f"自动开仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
+            )
 
     def _disable_auto_close(
-        self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
+        self,
+        preset_id: str,
+        mode: str,
+        order_mode: str,
+        outcome: str = "success",
+        *,
+        log_cancel: bool = True,
     ) -> None:
         from app.core.auto_trade import _reset_lane_close_timers
 
@@ -1079,16 +1161,22 @@ class MainWindow(QMainWindow):
             status = "部分成功"
         else:
             status = "未成功"
-        self._append_log(
-            LogLevel.INFO,
-            f"自动平仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
-        )
+        if log_cancel:
+            self._append_log(
+                LogLevel.INFO,
+                f"自动平仓{mlabel}({lane_label}){status}，已取消{sym}对应勾选，可手动重新开启",
+            )
 
     def _on_manual_cancel_orders(self) -> None:
         """手动撤销全部未成交委托：仅在监控运行时有效，后台执行避免阻塞 UI。"""
         if not self.engine.is_running:
             self._append_log(LogLevel.INFO, "未开始监控，无法撤单")
             return
+        if (
+            self._pending_auto_trade is not None
+            and auto_trade_lane(self._pending_auto_trade[1], self._pending_auto_trade[3]) == "maker"
+        ):
+            self._pending_auto_maker_manual_cancel = True
         self._append_log(LogLevel.INFO, "手动撤单 · 正在撤销全部委托…")
         self.engine.cancel_all_open_orders()
 
@@ -1404,8 +1492,13 @@ class MainWindow(QMainWindow):
             if dlg.isVisible():
                 dlg.set_actions_enabled(True)
         pending = self._pending_auto_trade
+        restore_snapshot = list(self._pending_auto_maker_restore)
+        manual_auto_cancel = self._pending_auto_maker_manual_cancel
         self._pending_auto_trade = None
+        self._pending_auto_maker_restore = []
+        self._pending_auto_maker_manual_cancel = False
         is_auto = pending is not None
+        restored_auto_checkbox = False
         if is_auto and pending:
             outcome = (
                 "partial"
@@ -1414,16 +1507,44 @@ class MainWindow(QMainWindow):
                 if not result.success
                 else "success"
             )
+            restore_maker_auto = (
+                bool(restore_snapshot)
+                and not manual_auto_cancel
+                and auto_trade_lane(pending[1], pending[3]) == "maker"
+                and self._maker_auto_cancelled_without_fill(result)
+            )
             if pending[0] == "open":
                 # 自动开仓无论成功/部分/失败都取消勾选：需人工重新勾选授权，
                 # 避免部分成交/失败后条件仍满足导致反复触发、不停弹窗。
                 _, preset_id_p, mode, order_mode = pending
-                self._disable_auto_open(preset_id_p, mode, order_mode, outcome)
+                self._disable_auto_open(
+                    preset_id_p,
+                    mode,
+                    order_mode,
+                    outcome,
+                    log_cancel=not restore_maker_auto,
+                )
             elif pending[0] == "close":
                 # 自动平仓与开仓对称：每次只平一手，平成功/部分/失败后均取消勾选，
                 # 需人工重新勾选才平下一手，避免点差持续满足时连续平到光。
                 _, preset_id_p, mode, order_mode = pending
-                self._disable_auto_close(preset_id_p, mode, order_mode, outcome)
+                self._disable_auto_close(
+                    preset_id_p,
+                    mode,
+                    order_mode,
+                    outcome,
+                    log_cancel=not restore_maker_auto,
+                )
+            if restore_maker_auto:
+                restored_auto_checkbox = (
+                    self._restore_auto_maker_checkboxes(pending[1], restore_snapshot) > 0
+                )
+                if restored_auto_checkbox:
+                    sym = "黄金" if pending[1] == "xau" else "白银"
+                    self._append_log(
+                        LogLevel.INFO,
+                        f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",
+                    )
         self._manual_trade_notify = False
         preset_id = getattr(self, "_last_trade_preset_id", "xau")
         if result.partial:
@@ -1431,7 +1552,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(result.message, 10000)
             if is_auto:
                 # 自动下单不弹模态窗口，仅日志+状态栏，防止阻塞 UI / 连环弹窗
-                self._append_log(LogLevel.ERROR, f"部分成交：{result.message}（自动下单已取消勾选）")
+                note = "自动下单已恢复勾选" if restored_auto_checkbox else "自动下单已取消勾选"
+                self._append_log(LogLevel.ERROR, f"部分成交：{result.message}（{note}）")
             else:
                 box = QMessageBox(QMessageBox.Icon.Warning, "部分成交", result.message, parent=self)
                 box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
@@ -1440,7 +1562,8 @@ class MainWindow(QMainWindow):
             self.engine.refresh_positions(force_full=True)
             self.status_bar.showMessage(result.message, 10000)
             if is_auto:
-                self._append_log(LogLevel.ERROR, f"交易失败：{result.message}（自动下单已取消勾选）")
+                note = "自动下单已恢复勾选" if restored_auto_checkbox else "自动下单已取消勾选"
+                self._append_log(LogLevel.ERROR, f"交易失败：{result.message}（{note}）")
             else:
                 box = QMessageBox(QMessageBox.Icon.Critical, "交易失败", result.message, parent=self)
                 box.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
