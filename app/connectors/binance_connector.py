@@ -166,6 +166,7 @@ class BinanceConnector(QObject):
         self._positions_cache_at: float = 0.0
         self._symbol_leverage: dict[str, int] = {}          # 各交易对实际杠杆（来自账户接口）
         self._symbol_leverage_at: float = 0.0               # 杠杆缓存时间（带 TTL，少拉账户接口）
+        self._commission_rates: dict[str, tuple[float, float]] = {}  # symbol -> (maker, taker)
         self._positions_fetch_lock = threading.Lock()       # 持仓拉取单飞锁
         self._positions_inflight: threading.Event | None = None
         self._quote_poll_count = 0
@@ -455,6 +456,146 @@ class BinanceConnector(QObject):
     def _fetch_order_status(self, symbol: str, order_id: str) -> dict:
         """读取单个 BA 委托状态；调用方需在 BA API 执行上下文中使用。"""
         return self._client.futures_get_order(symbol=symbol, orderId=int(order_id))
+
+    def fetch_user_commission_rate(self, symbol: str) -> tuple[float, float] | None:
+        """读取 BA 合约账户在该交易对的 maker/taker 真实费率。"""
+        if not self.config.use_live_ba or not self._client:
+            return None
+
+        def _fetch() -> tuple[float, float] | None:
+            fn = getattr(self._client, "futures_commission_rate", None)
+            if fn is None:
+                return None
+            raw = fn(symbol=symbol)
+            maker = float(raw.get("makerCommissionRate", 0) or 0)
+            taker = float(raw.get("takerCommissionRate", 0) or 0)
+            if maker <= 0 and taker <= 0:
+                return None
+            self._commission_rates[symbol] = (maker, taker)
+            return maker, taker
+
+        try:
+            return self._run_ba_api(_fetch, log_failures=False)
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"BA 费率读取失败 {symbol}: {exc}")
+            return None
+
+    def sync_user_commission_rates(self, symbols: list[str]) -> float | None:
+        """同步多个交易对真实费率，返回用于预估的最高 taker 费率。"""
+        takers: list[float] = []
+        for symbol in symbols:
+            rate = self.fetch_user_commission_rate(symbol)
+            if rate is not None:
+                _, taker = rate
+                if taker > 0:
+                    takers.append(taker)
+        return max(takers) if takers else None
+
+    def _fetch_order_commission(self, symbol: str, order_id: str) -> tuple[float, bool]:
+        """按订单读取 BA 实际成交 commission；返回(正数成本, 是否取到成交明细)。"""
+        if not self._client or not order_id:
+            return 0.0, False
+        try:
+            rows = self._client.futures_account_trades(
+                symbol=symbol,
+                orderId=int(order_id),
+            ) or []
+        except Exception:
+            return 0.0, False
+        if not isinstance(rows, list):
+            return 0.0, False
+        if not rows:
+            return 0.0, False
+        total = 0.0
+        for row in rows:
+            try:
+                total += abs(float(row.get("commission", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        return round(total, 4), True
+
+    @staticmethod
+    def _maker_open_price(quote: Quote, side: Side, tick: float) -> str:
+        """BA Maker 开仓价：贴近触发价一跳，同时保持 post-only 不吃单。"""
+        if side == Side.BUY:
+            if quote.ask > 0:
+                px = quote.ask - tick * 0.5
+            else:
+                px = quote.bid or quote.mid
+        else:
+            if quote.bid > 0:
+                px = quote.bid + tick * 1.5
+            else:
+                px = quote.ask or quote.mid
+        return format_binance_price(px or quote.mid, tick)
+
+    @staticmethod
+    def _order_filled_price(order: dict | None, *, fallback: float = 0.0) -> float:
+        """从 BA 订单回报解析真实成交均价，失败时返回 fallback。"""
+        raw = order or {}
+        for key in ("avgPrice", "avg_price", "ap"):
+            try:
+                price = float(raw.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price > 0:
+                return price
+        try:
+            executed = float(raw.get("executedQty", 0) or 0)
+            cum_quote = float(raw.get("cumQuote", 0) or 0)
+        except (TypeError, ValueError):
+            executed = 0.0
+            cum_quote = 0.0
+        if executed > 0 and cum_quote > 0:
+            return cum_quote / executed
+        fills = raw.get("fills") if isinstance(raw, dict) else None
+        if isinstance(fills, list):
+            total_qty = 0.0
+            total_quote = 0.0
+            for fill in fills:
+                try:
+                    fill_price = float(fill.get("price", 0) or 0)
+                    fill_qty = float(fill.get("qty", fill.get("quantity", 0)) or 0)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if fill_price > 0 and fill_qty > 0:
+                    total_qty += fill_qty
+                    total_quote += fill_price * fill_qty
+            if total_qty > 0:
+                return total_quote / total_qty
+        return float(fallback or 0.0)
+
+    def _stream_filled_price(self, order_id: str) -> float:
+        with self._order_cond:
+            st = self._order_states.get(str(order_id))
+            return st.avg_price if st and st.avg_price > 0 else 0.0
+
+    def _resolve_order_filled_price(
+        self,
+        symbol: str,
+        order_id: str,
+        *,
+        fallback: float = 0.0,
+        order: dict | None = None,
+    ) -> float:
+        price = self._order_filled_price(order, fallback=0.0)
+        if price <= 0:
+            price = self._stream_filled_price(order_id)
+        if price <= 0:
+            try:
+                price = self._order_filled_price(
+                    self._fetch_order_status(symbol, order_id),
+                    fallback=0.0,
+                )
+            except Exception:
+                price = 0.0
+        return price if price > 0 else float(fallback or 0.0)
+
+    @staticmethod
+    def _market_fill_fallback_price(quote: Quote, side: Side) -> float:
+        if side == Side.BUY:
+            return float(quote.ask or quote.mid or quote.bid or 0.0)
+        return float(quote.bid or quote.mid or quote.ask or 0.0)
 
     @staticmethod
     def _parse_open_order(raw: dict) -> OpenOrder:
@@ -1231,6 +1372,7 @@ class BinanceConnector(QObject):
                 message=msg,
                 order_id="demo-ba",
                 filled_quantity=float(qty),
+                filled_price=float(price or 0),
             )
 
         if not self._client:
@@ -1254,8 +1396,11 @@ class BinanceConnector(QObject):
             target_qty = (before.quantity if before else 0.0) + float(quantity)
             if use_limit:
                 tick = get_binance_price_tick(self._client, symbol_ba)
-                px = quote.bid if ba_side == Side.BUY else quote.ask
-                price = format_binance_price(px or quote.mid, tick)
+                if maker_only:
+                    price = self._maker_open_price(quote, ba_side, tick)
+                else:
+                    px = quote.bid if ba_side == Side.BUY else quote.ask
+                    price = format_binance_price(px or quote.mid, tick)
                 time_in_force = "GTX" if maker_only else "GTC"
                 order = self._client.futures_create_order(
                     symbol=symbol_ba,
@@ -1275,6 +1420,7 @@ class BinanceConnector(QObject):
                 )
             oid = str(order.get("orderId", ""))
             filled_qty = 0.0
+            filled_price = 0.0
             if use_limit:
                 # 委托刚挂上即点亮委托灯（带数量），不等推送/轮询
                 self._note_local_pending_order(
@@ -1309,20 +1455,34 @@ class BinanceConnector(QObject):
                 )
                 if not confirmed:
                     self._try_cancel_order(symbol_ba, oid)
+                    final_order: dict | None = None
                     try:
-                        order = self._fetch_order_status(symbol_ba, oid)
-                        executed_after_cancel = float(order.get("executedQty", 0) or 0)
+                        final_order = self._fetch_order_status(symbol_ba, oid)
+                        executed_after_cancel = float(final_order.get("executedQty", 0) or 0)
                     except Exception:
                         executed_after_cancel = filled_qty
                     final_delta = max(0.0, executed_after_cancel - filled_qty)
+                    filled_price = self._resolve_order_filled_price(
+                        symbol_ba,
+                        oid,
+                        fallback=float(price or 0),
+                        order=final_order,
+                    )
+                    fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
                     if final_delta > 1e-9:
                         if on_fill_delta is not None and not on_fill_delta(final_delta):
                             return LegResult(
                                 platform="BA",
                                 success=False,
-                                message=f"BA Maker 部分成交 #{oid}，Exness 补对冲失败",
+                                message=(
+                                    f"BA Maker 部分成交 #{oid}，成交价 {filled_price:.3f}，"
+                                    "Exness 补对冲失败"
+                                ),
                                 order_id=oid,
                                 filled_quantity=executed_after_cancel,
+                                filled_price=filled_price,
+                                fee=fee,
+                                fee_known=fee_known,
                                 needs_reconciliation=True,
                             )
                         filled_qty = executed_after_cancel
@@ -1331,12 +1491,31 @@ class BinanceConnector(QObject):
                     except Exception:
                         pass
                     if filled_qty > 1e-9:
+                        self._log(
+                            LogLevel.TRADE,
+                            trade_leg_success_msg(
+                                "BA",
+                                "open",
+                                mode,
+                                oid,
+                                adding=adding,
+                                qty=f"{filled_qty:g}",
+                                price=f"{filled_price:.3f}",
+                                order_type="Maker" if maker_only else "限价",
+                            ),
+                        )
                         return LegResult(
                             platform="BA",
                             success=True,
-                            message=f"BA Maker 部分成交 {filled_qty:g}/{quantity}，已按成交量补 Exness",
+                            message=(
+                                f"BA Maker 部分成交 {filled_qty:g}/{quantity}，"
+                                f"成交价 {filled_price:.3f}，已按成交量补 Exness"
+                            ),
                             order_id=oid,
                             filled_quantity=filled_qty,
+                            filled_price=filled_price,
+                            fee=fee,
+                            fee_known=fee_known,
                         )
                     if guard_cancelled:
                         return LegResult(
@@ -1384,9 +1563,20 @@ class BinanceConnector(QObject):
             price_str = ""
             if use_limit:
                 mode_label = "Maker" if maker_only else "限价"
-                price_str = price
+                filled_price = self._resolve_order_filled_price(
+                    symbol_ba,
+                    oid,
+                    fallback=float(price or 0),
+                )
             else:
                 mode_label = "市价"
+                filled_price = self._order_filled_price(
+                    order,
+                    fallback=self._market_fill_fallback_price(quote, ba_side),
+                )
+            if filled_price > 0:
+                price_str = f"{filled_price:.3f}"
+            fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
             self._log(
                 LogLevel.TRADE,
                 trade_leg_success_msg(
@@ -1406,6 +1596,9 @@ class BinanceConnector(QObject):
                 message=f"{'加仓' if adding else '开仓'}{hedge_mode_word(mode)}成功",
                 order_id=oid,
                 filled_quantity=filled_qty or float(quantity),
+                filled_price=filled_price,
+                fee=fee,
+                fee_known=fee_known,
             )
 
         try:
@@ -1458,6 +1651,10 @@ class BinanceConnector(QObject):
                 return LegResult(platform="BA", success=True, message="演示无持仓")
             demo_pos = self._demo_positions[symbol_ba]
             qty_to_close = demo_pos.quantity if close_all else min(demo_pos.quantity, trade_qty)
+            close_side = "BUY" if demo_pos.side == Side.SELL else "SELL"
+            close_price = (
+                quote.ask if close_side == "BUY" else quote.bid
+            ) or quote.mid
             demo_pos.quantity -= qty_to_close
             if demo_pos.quantity <= 1e-9:
                 del self._demo_positions[symbol_ba]
@@ -1469,6 +1666,7 @@ class BinanceConnector(QObject):
                     mode,
                     "demo-ba-close",
                     qty=str(qty_to_close),
+                    price=f"{close_price:.3f}" if close_price else "",
                 ),
             )
             # 演示 Maker/限价同样需驱动 Exness 同步平仓：按成交量回调一次，
@@ -1481,6 +1679,7 @@ class BinanceConnector(QObject):
                 message="演示平仓成功",
                 order_id="demo-ba-close",
                 filled_quantity=float(qty_to_close),
+                filled_price=float(close_price or 0),
             )
 
         positions = [p for p in self.get_positions(force=False) if p.symbol == symbol_ba]
@@ -1544,20 +1743,34 @@ class BinanceConnector(QObject):
                     if not confirmed:
                         self._try_cancel_order(symbol_ba, oid)
                         # 撤单前可能又成交了一点：复查最终成交量，补上最后一笔对冲
+                        final_order: dict | None = None
                         try:
-                            order = self._fetch_order_status(symbol_ba, oid)
-                            executed_after_cancel = float(order.get("executedQty", 0) or 0)
+                            final_order = self._fetch_order_status(symbol_ba, oid)
+                            executed_after_cancel = float(final_order.get("executedQty", 0) or 0)
                         except Exception:
                             executed_after_cancel = filled_qty
                         final_delta = max(0.0, executed_after_cancel - filled_qty)
+                        filled_price = self._resolve_order_filled_price(
+                            symbol_ba,
+                            oid,
+                            fallback=float(price or 0),
+                            order=final_order,
+                        )
+                        fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
                         if final_delta > 1e-9:
                             if on_fill_delta is not None and not on_fill_delta(final_delta):
                                 return LegResult(
                                     platform="BA",
                                     success=False,
-                                    message=f"BA Maker 平仓部分成交 #{oid}，Exness 补平失败",
+                                    message=(
+                                        f"BA Maker 平仓部分成交 #{oid}，成交价 {filled_price:.3f}，"
+                                        "Exness 补平失败"
+                                    ),
                                     order_id=oid,
                                     filled_quantity=executed_after_cancel,
+                                    filled_price=filled_price,
+                                    fee=fee,
+                                    fee_known=fee_known,
                                     needs_reconciliation=True,
                                 )
                             filled_qty = executed_after_cancel
@@ -1569,15 +1782,26 @@ class BinanceConnector(QObject):
                             self._log(
                                 LogLevel.TRADE,
                                 trade_leg_success_msg(
-                                    "BA", "close", mode, oid, qty=f"{filled_qty:g}"
+                                    "BA",
+                                    "close",
+                                    mode,
+                                    oid,
+                                    qty=f"{filled_qty:g}",
+                                    price=f"{filled_price:.3f}",
                                 ),
                             )
                             return LegResult(
                                 platform="BA",
                                 success=True,
-                                message=f"BA Maker 平仓部分成交 {filled_qty:g}/{quantity}，已按成交量补 Exness",
+                                message=(
+                                    f"BA Maker 平仓部分成交 {filled_qty:g}/{quantity}，"
+                                    f"成交价 {filled_price:.3f}，已按成交量补 Exness"
+                                ),
                                 order_id=oid,
                                 filled_quantity=filled_qty,
+                                filled_price=filled_price,
+                                fee=fee,
+                                fee_known=fee_known,
                             )
                         return LegResult(
                             platform="BA",
@@ -1588,6 +1812,12 @@ class BinanceConnector(QObject):
                             ),
                             order_id=oid,
                         )
+                    filled_price = self._resolve_order_filled_price(
+                        symbol_ba,
+                        oid,
+                        fallback=float(price or 0),
+                    )
+                    fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
                     self._log(
                         LogLevel.TRADE,
                         trade_leg_success_msg(
@@ -1596,6 +1826,7 @@ class BinanceConnector(QObject):
                             mode,
                             oid,
                             qty=quantity,
+                            price=f"{filled_price:.3f}",
                         ),
                     )
                     return LegResult(
@@ -1604,6 +1835,9 @@ class BinanceConnector(QObject):
                         message=f"{action_label}成功",
                         order_id=oid,
                         filled_quantity=filled_qty or float(quantity),
+                        filled_price=filled_price,
+                        fee=fee,
+                        fee_known=fee_known,
                     )
                 # 市价平仓（并发模式）：直接市价 reduceOnly 平掉本手并确认减仓
                 order = self._client.futures_create_order(
@@ -1623,6 +1857,13 @@ class BinanceConnector(QObject):
                         order_id=oid,
                         needs_reconciliation=True,
                     )
+                filled_price = self._order_filled_price(
+                    order,
+                    fallback=self._market_fill_fallback_price(
+                        quote, Side.BUY if close_side == "BUY" else Side.SELL
+                    ),
+                )
+                fee, fee_known = self._fetch_order_commission(symbol_ba, oid)
                 self._log(
                     LogLevel.TRADE,
                     trade_leg_success_msg(
@@ -1631,6 +1872,7 @@ class BinanceConnector(QObject):
                         mode,
                         oid,
                         qty=quantity,
+                        price=f"{filled_price:.3f}" if filled_price > 0 else "",
                     ),
                 )
                 return LegResult(
@@ -1639,6 +1881,9 @@ class BinanceConnector(QObject):
                     message=f"{action_label}成功",
                     order_id=oid,
                     filled_quantity=float(quantity),
+                    filled_price=filled_price,
+                    fee=fee,
+                    fee_known=fee_known,
                 )
             return LegResult(platform="BA", success=False, message="未找到可平仓位")
 

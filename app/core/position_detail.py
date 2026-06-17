@@ -15,12 +15,18 @@ class PlatformDetail:
 
     platform: str
     pnl: float = 0.0
+    estimated_fee: float = 0.0
     quantity: float = 0.0
     side: Side = Side.NONE
     liquidation_price: float = 0.0
     liq_buffer: float = 0.0       # 距爆仓的资金缓冲（取最危险持仓）
     leverage: int = 0
     has_position: bool = False
+
+    @property
+    def net_pnl(self) -> float:
+        """平台净盈亏 = 浮动盈亏 - 预估平仓手续费。"""
+        return round(self.pnl - self.estimated_fee, 2)
 
 
 def _aggregate_platform(
@@ -49,6 +55,7 @@ def _aggregate_platform(
 
     detail.has_position = True
     detail.pnl = round(sum(p.unrealized_pnl for p, _ in matched), 2)
+    detail.estimated_fee = round(sum(p.estimated_fee for p, _ in matched), 4)
     detail.quantity = round(sum(p.quantity for p, _ in matched), 4)
     sides = {p.side for p, _ in matched}
     detail.side = sides.pop() if len(sides) == 1 else Side.NONE
@@ -109,6 +116,7 @@ def _detail_for_position(
 
     detail.has_position = True
     detail.pnl = round(pos.unrealized_pnl, 2)
+    detail.estimated_fee = round(pos.estimated_fee, 4)
     detail.quantity = round(pos.quantity, 4)
     detail.side = pos.side
     pos_lev = pos.leverage if pos.leverage > 0 else lev

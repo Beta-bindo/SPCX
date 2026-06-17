@@ -444,6 +444,41 @@ def test_profit_calculator_dialog_query():
     dlg.close()
 
 
+def test_profit_calculator_refreshes_on_close_record():
+    app = QApplication.instance() or QApplication(sys.argv)
+    from app.core.trade_ledger import TradeRecord
+    from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
+
+    dlg = ProfitCalculatorDialog()
+    calls = 0
+
+    def _mark_calculated():
+        nonlocal calls
+        calls += 1
+
+    dlg._calculate = _mark_calculated
+    dlg._on_trade_recorded(
+        TradeRecord(
+            settled_at="2026-06-08T12:00:00",
+            preset_id="xau",
+            mode="contraction",
+            action="open",
+        )
+    )
+    assert calls == 0
+
+    dlg._on_trade_recorded(
+        TradeRecord(
+            settled_at="2026-06-08T12:30:00",
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+        )
+    )
+    assert calls == 1
+    dlg.close()
+
+
 def test_live_ba_without_keys_fails_safe():
     cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="", ba_api_secret="")
     ba = BinanceConnector(cfg)

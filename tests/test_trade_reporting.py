@@ -20,7 +20,9 @@ from app.core.license.service import LicenseService
 from app.core.license.store import LicenseState, load_license, save_license
 from app.core.models import AppConfig
 from app.core.pnl_calculator import estimate_trade_fees
+from app.core.spread_engine import SpreadEngine
 from app.core.trade_ledger import TradeRecord, record_trade, trade_record_to_payload
+from app.core.trade_result import HedgeTradeResult, LegResult
 
 TEST_DEVICE_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -77,6 +79,49 @@ class TradeReportingTests(unittest.TestCase):
         payload = trade_record_to_payload(rec)
         self.assertEqual(payload["ba_fee"], ba_fee)
         self.assertGreater(payload["ba_fee"], 0.0)
+
+    def test_actual_trade_prices_prefer_filled_prices(self):
+        result = HedgeTradeResult(
+            action="open",
+            success=True,
+            legs=[
+                LegResult("BA", True, filled_quantity=1.0, filled_price=2650.01),
+                LegResult("MT5", True, filled_quantity=0.01, filled_price=2648.91),
+            ],
+        )
+
+        spread, ba_price, ex_price = SpreadEngine._actual_trade_prices(
+            result,
+            ba_fallback=999.0,
+            ex_fallback=998.0,
+        )
+
+        self.assertAlmostEqual(ba_price, 2650.01)
+        self.assertAlmostEqual(ex_price, 2648.91)
+        self.assertAlmostEqual(spread, 1.10)
+
+    def test_leg_fee_prefers_known_exchange_fee(self):
+        self.assertEqual(
+            SpreadEngine._leg_fee_or_estimate(
+                LegResult("BA", True, fee=0.0, fee_known=True),
+                1.23,
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            SpreadEngine._leg_fee_or_estimate(
+                LegResult("BA", True, fee=0.42, fee_known=True),
+                1.23,
+            ),
+            0.42,
+        )
+        self.assertEqual(
+            SpreadEngine._leg_fee_or_estimate(
+                LegResult("BA", True),
+                1.23,
+            ),
+            1.23,
+        )
 
     def test_close_payload_includes_ba_funding_fee(self):
         rec = TradeRecord(

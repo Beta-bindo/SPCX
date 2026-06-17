@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.models import AppConfig, Position, Quote, Side, SpreadSnapshot
 from app.core.pnl_calculator import build_spread_snapshot, calculate_pnl
+from app.core.position_detail import build_platform_details_for_preset
 
 
 def test_spread_snapshot_exec_vs_mid():
@@ -40,6 +41,37 @@ def test_pnl_with_fees():
     print("PNL TEST PASSED")
 
 
+def test_platform_detail_net_pnl_matches_summary_net():
+    ba = Quote(symbol="XAUUSDT", bid=2650.0, ask=2650.2, is_simulated=True)
+    mt5 = Quote(symbol="XAUUSD", bid=2648.0, ask=2648.2, is_simulated=True)
+    positions = [
+        Position(platform="BA", symbol="XAUUSDT", side=Side.SELL, quantity=0.01, entry_price=2651.0),
+        Position(platform="MT5", symbol="XAUUSD", side=Side.BUY, quantity=0.01, entry_price=2647.0),
+    ]
+    cfg = AppConfig(ba_fee_rate=0.0004, mt5_commission_per_lot=0, mt5_spread_points=0.25)
+    updated, summary = calculate_pnl(
+        positions,
+        {"XAUUSDT": ba},
+        {"XAUUSD": mt5},
+        cfg,
+        build_spread_snapshot(ba, mt5),
+    )
+
+    ba_detail, mt5_detail = build_platform_details_for_preset(
+        "xau",
+        updated,
+        {"XAUUSDT": ba},
+        {"XAUUSD": mt5},
+        cfg,
+    )
+
+    assert ba_detail.pnl == summary.ba_pnl
+    assert mt5_detail.pnl == summary.mt5_pnl
+    assert round(ba_detail.net_pnl + mt5_detail.net_pnl, 2) == summary.net_pnl
+    assert ba_detail.net_pnl != ba_detail.pnl or mt5_detail.net_pnl != mt5_detail.pnl
+
+
 if __name__ == "__main__":
     test_spread_snapshot_exec_vs_mid()
     test_pnl_with_fees()
+    test_platform_detail_net_pnl_matches_summary_net()

@@ -82,7 +82,7 @@ def trade_leg_success_msg(
     if lots:
         parts.append(f"手数 {lots}")
     if price:
-        parts.append(f"价 {price}")
+        parts.append(f"成交价 {price}")
     if order_type:
         parts.append(order_type)
     if spread_index is not None:

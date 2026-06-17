@@ -222,6 +222,34 @@ class SpreadEngine(QObject):
             return 0.0, 0.0, 0.0
         return snap.mid_spread, snap.ba_bid, snap.mt5_bid
 
+    @staticmethod
+    def _actual_trade_prices(
+        result: HedgeTradeResult,
+        ba_fallback: float,
+        ex_fallback: float,
+    ) -> tuple[float, float, float]:
+        """成交记录优先用真实成交均价，缺失时才回退下单前快照。"""
+        ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
+        mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
+        ba_price = (
+            ba_leg.filled_price
+            if ba_leg and ba_leg.filled_price > 0
+            else ba_fallback
+        )
+        ex_price = (
+            mt5_leg.filled_price
+            if mt5_leg and mt5_leg.filled_price > 0
+            else ex_fallback
+        )
+        return ba_price - ex_price, ba_price, ex_price
+
+    @staticmethod
+    def _leg_fee_or_estimate(leg, estimated: float) -> float:
+        """真实费用优先；没有交易所费用明细时回退本地估算。"""
+        if leg is not None and getattr(leg, "fee_known", False):
+            return round(float(getattr(leg, "fee", 0.0) or 0.0), 4)
+        return estimated
+
     def _order_quantities(self, preset_id: str) -> tuple[float, float]:
         return (
             self.config.ba_quantity_for(preset_id),
@@ -360,20 +388,27 @@ class SpreadEngine(QObject):
                 actual_mt5_qty = (
                     mt5_leg.filled_quantity if mt5_leg and mt5_leg.filled_quantity > 0 else mt5_qty
                 )
+                actual_spread, actual_ba_price, actual_ex_price = self._actual_trade_prices(
+                    result,
+                    ba_price,
+                    ex_price,
+                )
                 ba_fee, mt5_fee = estimate_trade_fees(
                     preset_id,
                     self.config,
-                    ba_price=ba_price,
+                    ba_price=actual_ba_price,
                     ba_quantity=actual_ba_qty,
                     mt5_quantity=actual_mt5_qty,
                 )
+                ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
+                mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
                 rec = record_trade(
                     preset_id,
                     mode,
                     "open",
-                    spread=spread,
-                    ba_price=ba_price,
-                    ex_price=ex_price,
+                    spread=actual_spread,
+                    ba_price=actual_ba_price,
+                    ex_price=actual_ex_price,
                     ba_quantity=actual_ba_qty,
                     mt5_quantity=actual_mt5_qty,
                     ba_side=ba_side,
@@ -442,15 +477,32 @@ class SpreadEngine(QObject):
             if result.success:
                 self._spread_log(preset_id, "平仓后")
             if result.success and (ba_pos or mt5_pos):
-                close_ba_qty = (
+                ba_leg = next((leg for leg in result.legs if leg.platform == "BA"), None)
+                mt5_leg = next((leg for leg in result.legs if leg.platform == "MT5"), None)
+                close_ba_qty_snapshot = (
                     min(self.config.ba_quantity_for(preset_id), ba_pos.quantity)
                     if ba_pos
                     else 0.0
                 )
-                close_mt5_qty = (
+                close_mt5_qty_snapshot = (
                     min(self.config.mt5_lot_for(preset_id), mt5_pos.quantity)
                     if mt5_pos
                     else 0.0
+                )
+                close_ba_qty = (
+                    ba_leg.filled_quantity
+                    if ba_leg and ba_leg.filled_quantity > 0
+                    else close_ba_qty_snapshot
+                )
+                close_mt5_qty = (
+                    mt5_leg.filled_quantity
+                    if mt5_leg and mt5_leg.filled_quantity > 0
+                    else close_mt5_qty_snapshot
+                )
+                actual_spread, actual_ba_price, actual_ex_price = self._actual_trade_prices(
+                    result,
+                    ba_price,
+                    ex_price,
                 )
 
                 def _scaled(pos: Position | None, close_qty: float) -> tuple[float, float]:
@@ -465,6 +517,8 @@ class SpreadEngine(QObject):
 
                 ba_pnl, ba_fee = _scaled(ba_pos, close_ba_qty)
                 mt5_pnl, mt5_fee = _scaled(mt5_pos, close_mt5_qty)
+                ba_fee = self._leg_fee_or_estimate(ba_leg, ba_fee)
+                mt5_fee = self._leg_fee_or_estimate(mt5_leg, mt5_fee)
                 ba_funding_fee = 0.0
                 ba_rebate = 0.0
                 if ba_pos and close_ba_qty > 0 and self.config.use_live_ba:
@@ -495,9 +549,9 @@ class SpreadEngine(QObject):
                     mt5_fee,
                     ba_funding_fee,
                     ba_rebate,
-                    spread=spread,
-                    ba_price=ba_price,
-                    ex_price=ex_price,
+                    spread=actual_spread,
+                    ba_price=actual_ba_price,
+                    ex_price=actual_ex_price,
                     ba_quantity=close_ba_qty or ba_qty_cfg,
                     mt5_quantity=close_mt5_qty or mt5_qty_cfg,
                     ba_side=ba_side,
@@ -592,6 +646,7 @@ class SpreadEngine(QObject):
     def _sync_platform_leverage_worker(self) -> None:
         """后台读取平台杠杆；避免 BA/MT5 连接异常时阻塞 UI 线程。"""
         changed = False
+        ba_fee_synced = False
         if not self.config.sync_leverage_on_trade:
             try:
                 self.binance.get_positions(force=True)
@@ -604,6 +659,15 @@ class SpreadEngine(QObject):
             except Exception as exc:
                 self._log(LogLevel.DEBUG, f"同步 BA 杠杆失败: {exc}")
         try:
+            ba_fee_rate = self.binance.sync_user_commission_rates(watched_ba_symbols())
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"同步 BA 费率失败: {exc}")
+            ba_fee_rate = None
+        if ba_fee_rate and abs(ba_fee_rate - self.config.ba_fee_rate) > 1e-12:
+            self.config.ba_fee_rate = ba_fee_rate
+            changed = True
+            ba_fee_synced = True
+        try:
             lev_mt5 = self.mt5.read_account_leverage()
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"同步 Ex 杠杆失败: {exc}")
@@ -612,10 +676,10 @@ class SpreadEngine(QObject):
             self.config.mt5_leverage = lev_mt5
             changed = True
         if changed and self._running:
-            self._log(
-                LogLevel.INFO,
-                f"已同步平台杠杆 · BA {self.config.ba_leverage}x · Ex {self.config.mt5_leverage}x",
-            )
+            detail = f"BA {self.config.ba_leverage}x · Ex {self.config.mt5_leverage}x"
+            if ba_fee_synced:
+                detail += f" · BA taker费率 {self.config.ba_fee_rate:.6f}"
+            self._log(LogLevel.INFO, f"已同步平台参数 · {detail}")
 
     def stop(self) -> None:
         """停止连接与所有定时器，清空缓存并静音告警。"""

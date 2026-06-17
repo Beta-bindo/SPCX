@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import queue
 import random
 import threading
@@ -541,6 +542,55 @@ class MT5Connector(QObject):
             return 0
         return len(text.split(".", 1)[1])
 
+    @staticmethod
+    def _result_filled_price(result, *, fallback: float = 0.0) -> float:
+        try:
+            price = float(getattr(result, "price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        return price if price > 0 else float(fallback or 0.0)
+
+    @staticmethod
+    def _deal_charge(deal) -> float:
+        """MT5 deal 中 commission/fee/swap 的净成本；正数=成本，负数=收益。"""
+        total = 0.0
+        for attr in ("commission", "fee", "swap"):
+            try:
+                total += float(getattr(deal, attr, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return -total
+
+    def _fetch_deal_charges(
+        self,
+        symbol: str,
+        order_ids: list[str],
+        start_ts: float,
+        end_ts: float | None = None,
+    ) -> tuple[float, bool]:
+        """从 MT5 历史成交读取真实 commission/fee/swap。"""
+        if not order_ids:
+            return 0.0, False
+        ids = {str(oid) for oid in order_ids if oid}
+        if not ids:
+            return 0.0, False
+        start = datetime.fromtimestamp(max(0.0, start_ts - 5.0))
+        end = datetime.fromtimestamp((end_ts or time.time()) + 5.0)
+        try:
+            deals = mt5.history_deals_get(start, end) or []
+        except Exception:
+            return 0.0, False
+        total = 0.0
+        matched = False
+        for deal in deals:
+            if symbol and str(getattr(deal, "symbol", "") or "") != symbol:
+                continue
+            if str(getattr(deal, "order", "") or "") not in ids:
+                continue
+            matched = True
+            total += self._deal_charge(deal)
+        return round(total, 4), matched
+
     def _normalize_mt5_volume(self, volume: float, info, *, cap: float | None = None) -> float:
         """把按 BA 成交量换算出来的 MT5 手数对齐到品种 volume_step。
 
@@ -639,6 +689,7 @@ class MT5Connector(QObject):
                 message=msg,
                 order_id="demo-mt5",
                 filled_quantity=float(lots),
+                filled_price=float(price or 0),
             )
 
         if not self._connected:
@@ -704,6 +755,7 @@ class MT5Connector(QObject):
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": get_mt5_filling_mode(info),
                 }
+            history_start = time.time()
             result = self._order_send_auto_filling(request, info)
             if result is None:
                 return LegResult(platform="MT5", success=False, message=f"order_send 失败: {mt5.last_error()}")
@@ -737,6 +789,12 @@ class MT5Connector(QObject):
                     order_id=oid,
                     needs_reconciliation=True,
                 )
+            filled_price = self._result_filled_price(result, fallback=float(price or 0))
+            fee, fee_known = self._fetch_deal_charges(
+                symbol_mt5,
+                [oid],
+                history_start,
+            )
             self._log(
                 LogLevel.TRADE,
                 trade_leg_success_msg(
@@ -746,6 +804,7 @@ class MT5Connector(QObject):
                     oid,
                     adding=adding,
                     lots=str(order_lots),
+                    price=f"{filled_price:.3f}" if filled_price > 0 else "",
                 ),
             )
             return LegResult(
@@ -754,6 +813,9 @@ class MT5Connector(QObject):
                 message=f"{'加仓' if adding else '开仓'}{hedge_mode_word(mode)}成功",
                 order_id=oid,
                 filled_quantity=order_lots,
+                filled_price=filled_price,
+                fee=fee,
+                fee_known=fee_known,
             )
 
         try:
@@ -788,12 +850,16 @@ class MT5Connector(QObject):
         else:
             trade_lots = self.config.mt5_lot_for(preset_id)
         action_label = hedge_action_label("close", mode)
+        quote = self._quotes.get(symbol_mt5, Quote(symbol=symbol_mt5))
 
         if not self.config.use_live_mt5:
             if symbol_mt5 not in self._demo_positions:
                 return LegResult(platform="MT5", success=True, message="演示无持仓")
             demo_pos = self._demo_positions[symbol_mt5]
             lots_to_close = demo_pos.quantity if close_all else min(demo_pos.quantity, trade_lots)
+            close_price = (
+                quote.bid if demo_pos.side == Side.BUY else quote.ask
+            ) or quote.mid
             demo_pos.quantity -= lots_to_close
             if demo_pos.quantity <= 1e-9:
                 del self._demo_positions[symbol_mt5]
@@ -805,9 +871,17 @@ class MT5Connector(QObject):
                     mode,
                     "demo-mt5-close",
                     lots=str(lots_to_close),
+                    price=f"{close_price:.3f}" if close_price else "",
                 ),
             )
-            return LegResult(platform="MT5", success=True, message="演示平仓成功", order_id="demo-mt5-close")
+            return LegResult(
+                platform="MT5",
+                success=True,
+                message="演示平仓成功",
+                order_id="demo-mt5-close",
+                filled_quantity=float(lots_to_close),
+                filled_price=float(close_price or 0),
+            )
 
         if not self._connected:
             return LegResult(platform="MT5", success=False, message="Exness 未连接")
@@ -843,7 +917,10 @@ class MT5Connector(QObject):
             target_remaining = 0.0 if close_all else max(0.0, initial_total - trade_budget)
 
             last_oid = ""
+            order_ids: list[str] = []
             closed_total = 0.0
+            filled_notional = 0.0
+            history_start = time.time()
             for pos in raw_positions:
                 if budget <= 1e-9:
                     break
@@ -885,11 +962,20 @@ class MT5Connector(QObject):
                         message=f"Exness {action_label}失败: {detail}",
                     )
                 last_oid = str(result.order)
+                order_ids.append(last_oid)
+                filled_price = self._result_filled_price(result, fallback=float(close_price or 0))
                 closed_total += lots_to_close
+                filled_notional += filled_price * lots_to_close
                 budget -= lots_to_close
 
             if closed_total <= 0:
                 return LegResult(platform="MT5", success=False, message="未找到可平仓位")
+            avg_filled_price = filled_notional / closed_total if filled_notional > 0 else 0.0
+            fee, fee_known = self._fetch_deal_charges(
+                symbol_mt5,
+                order_ids,
+                history_start if order_ids else time.time(),
+            )
 
             # 按同方向「总手数」确认减仓到位（兼容多票据）
             if not self._wait_until_position_at_most(symbol_mt5, close_side_obj, target_remaining):
@@ -908,6 +994,7 @@ class MT5Connector(QObject):
                     mode,
                     last_oid,
                     lots=str(closed_total),
+                    price=f"{avg_filled_price:.3f}" if avg_filled_price > 0 else "",
                 ),
             )
             return LegResult(
@@ -916,6 +1003,9 @@ class MT5Connector(QObject):
                 message=f"{action_label}成功",
                 order_id=last_oid,
                 filled_quantity=closed_total,
+                filled_price=avg_filled_price,
+                fee=fee,
+                fee_known=fee_known,
             )
 
         try:

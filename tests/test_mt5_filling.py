@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import types
+import time
 from types import SimpleNamespace
 
 
@@ -61,6 +62,29 @@ def test_mt5_volume_normalizes_to_symbol_step():
     assert MT5Connector._normalize_mt5_volume(MT5Connector, 0.004, info) == 0.0
 
 
+def test_mt5_deal_charges_sum_commission_fee_swap():
+    _install_fake_mt5()
+    from app.connectors.mt5_connector import MT5Connector
+    import app.connectors.mt5_connector as mt5_mod
+    from app.core.models import AppConfig
+
+    deals = [
+        SimpleNamespace(symbol="XAUUSD", order=11, commission=-0.50, fee=-0.10, swap=0.20),
+        SimpleNamespace(symbol="XAUUSD", order=12, commission=-0.30, fee=0.0, swap=-0.05),
+        SimpleNamespace(symbol="XAGUSD", order=11, commission=-99.0, fee=0.0, swap=0.0),
+    ]
+    mt5_mod.mt5 = SimpleNamespace(history_deals_get=lambda _start, _end: deals)
+
+    fee, known = MT5Connector(AppConfig())._fetch_deal_charges(
+        "XAUUSD",
+        ["11", "12"],
+        time.time() - 10,
+    )
+
+    assert known is True
+    assert fee == 0.75
+
+
 def main() -> int:
     tests = [
         test_filling_fok_only,
@@ -68,6 +92,7 @@ def main() -> int:
         test_filling_fok_and_ioc_prefers_fok,
         test_filling_none_falls_back_to_return,
         test_mt5_volume_normalizes_to_symbol_step,
+        test_mt5_deal_charges_sum_commission_fee_swap,
     ]
     for fn in tests:
         fn()

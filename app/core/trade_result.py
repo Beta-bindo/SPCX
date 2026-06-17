@@ -17,6 +17,9 @@ class LegResult:
     compensation_message: str = ""
     needs_reconciliation: bool = False  # 状态未知、需人工/后续对账（防止漏判真实成交）
     filled_quantity: float = 0.0        # 实际成交量：BA 为合约/币数，MT5 为手数
+    filled_price: float = 0.0           # 实际成交均价；拿不到时保持 0，由调用方回退快照价
+    fee: float = 0.0                    # 实际交易费用成本；负数表示返还/正向库存费
+    fee_known: bool = False             # fee 是否来自交易所/MT5 历史，而非本地估算
 
 
 @dataclass

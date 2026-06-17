@@ -30,7 +30,7 @@ from app.widgets.table_pagination import TablePagination
 class ProfitCalculatorDialog(QDialog):
     """利润计算器：筛选条件 + 汇总卡 + 分页明细表 + 导出。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, trade_recorded_signal=None):
         super().__init__(parent)
         self.setWindowTitle("利润计算器")
         self.resize(1080, 640)
@@ -148,6 +148,8 @@ class ProfitCalculatorDialog(QDialog):
 
         self._last_report = None
         self._all_rows: list[ProfitRow] = []
+        if trade_recorded_signal is not None:
+            trade_recorded_signal.connect(self._on_trade_recorded)
         self._calculate()
 
     def _date_range(self) -> tuple[date, date]:
@@ -178,6 +180,11 @@ class ProfitCalculatorDialog(QDialog):
         self.pagination.reset_page()
         self.pagination.set_total(len(self._all_rows))
         self._render_page()
+
+    def _on_trade_recorded(self, record) -> None:
+        """有新的平仓结算写入本地流水时，自动刷新已打开的计算器。"""
+        if getattr(record, "action", "") == "close":
+            self._calculate()
 
     def _render_page(self) -> None:
         """渲染当前分页的明细行；无数据时显示占位提示。"""

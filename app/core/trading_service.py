@@ -153,6 +153,25 @@ def _mt5_lots_for_ba_fill(config, preset_id: str, ba_filled_qty: float) -> float
     return max(0.0, mt5_cfg * float(ba_filled_qty) / ba_cfg)
 
 
+def _weighted_filled_price(legs: list[LegResult]) -> float:
+    """多笔同端成交按成交量加权为一个均价，供记账/上报使用。"""
+    total_qty = 0.0
+    total_notional = 0.0
+    for leg in legs:
+        if leg.filled_quantity > 0 and leg.filled_price > 0:
+            total_qty += leg.filled_quantity
+            total_notional += leg.filled_quantity * leg.filled_price
+    return total_notional / total_qty if total_qty > 0 else 0.0
+
+
+def _aggregate_known_fee(legs: list[LegResult]) -> tuple[float, bool]:
+    """聚合同一平台多笔成交的真实费用。"""
+    known = [leg for leg in legs if leg.fee_known]
+    if not known:
+        return 0.0, False
+    return round(sum(leg.fee for leg in known), 4), True
+
+
 def _has_known_execution(leg: LegResult) -> bool:
     """该腿是否有确认成交量：自动补偿只允许基于确认成交，而不是状态未知。"""
     return leg.success or leg.filled_quantity > 0
@@ -286,6 +305,7 @@ def open_hedge(
             mt5_needs_reconciliation = any(
                 leg.needs_reconciliation for leg in mt5_legs
             )
+            mt5_fee, mt5_fee_known = _aggregate_known_fee(mt5_legs)
             mt5_leg = LegResult(
                 platform="MT5",
                 success=mt5_success,
@@ -295,6 +315,9 @@ def open_hedge(
                     else "Exness 分批补对冲失败，请立即检查单边敞口"
                 ),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
+                filled_price=_weighted_filled_price(mt5_legs),
+                fee=mt5_fee,
+                fee_known=mt5_fee_known,
                 needs_reconciliation=mt5_needs_reconciliation,
             )
         else:
@@ -420,6 +443,7 @@ def close_hedge(
             failed_msgs = "; ".join(
                 leg.message for leg in mt5_legs if not leg.success and leg.message
             )
+            mt5_fee, mt5_fee_known = _aggregate_known_fee(mt5_legs)
             mt5_leg = LegResult(
                 platform="MT5",
                 success=mt5_success,
@@ -429,6 +453,9 @@ def close_hedge(
                     else f"Exness 分批平对冲失败：{failed_msgs or '请立即检查单边敞口'}"
                 ),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
+                filled_price=_weighted_filled_price(mt5_legs),
+                fee=mt5_fee,
+                fee_known=mt5_fee_known,
                 needs_reconciliation=mt5_needs_reconciliation,
             )
         elif ba.success:

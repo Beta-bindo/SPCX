@@ -28,7 +28,6 @@ from app.core.position_detail import (
     build_platform_details,
     build_platform_details_for_preset,
 )
-from app.core.symbols import find_preset
 from app.core.theme import set_flag, ui_font
 from app.widgets.panel_ui_scale import (
     DEFAULT_PANEL_FONT_PT,
@@ -130,7 +129,7 @@ class PnlDetailPanel(QFrame):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(2)
         grid.setVerticalSpacing(0)
-        col_titles = ["", "盈亏", "持仓", "方向"]
+        col_titles = ["", "净盈亏", "持仓", "方向"]
         if show_liq_buf:
             # 爆=距爆仓的资金缓冲（buf，账户还能亏多少钱），强=爆仓价位（liq）
             col_titles.extend(["爆", "强"])
@@ -245,7 +244,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
                     continue
                 self._set_cell(cells[key], "--")
             return
-        self._paint_pnl(cells["pnl"], detail.pnl)
+        self._paint_pnl(cells["pnl"], detail.net_pnl)
         self._set_cell(cells["qty"], f"{detail.quantity:.2f}")
         self._set_cell(
             cells["side"],
@@ -331,18 +330,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
             else None
         )
         self.update_hedge_health(health, repair)
-        preset = find_preset(self._preset_id)
-        ba_pos = next(
-            (p for p in positions if p.platform == "BA" and p.symbol == preset.symbol_ba),
-            None,
-        )
-        mt5_pos = next(
-            (p for p in positions if p.platform == "MT5" and p.symbol == preset.symbol_mt5),
-            None,
-        )
-        ba_fee = ba_pos.estimated_fee if ba_pos else 0.0
-        mt5_fee = mt5_pos.estimated_fee if mt5_pos else 0.0
-        net = round(ba.pnl + mt5.pnl - ba_fee - mt5_fee, 2)
+        net = round(ba.net_pnl + mt5.net_pnl, 2)
         sign = "+" if net >= 0 else "-"
         total_text = f"实时净盈亏：${sign}{abs(net):.2f}"
         if total_text != self._last_total_text:

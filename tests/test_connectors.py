@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, Quote, Side
+from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, Quote, Side
 from app.core.trading_service import close_hedge, open_hedge
 from app.connectors.binance_connector import BinanceConnector
 from app.connectors.mt5_connector import MT5Connector
@@ -195,6 +195,31 @@ def test_binance_get_positions_uses_lock():
     print("  ✓ BA 持仓查询 futures API")
 
 
+def test_binance_reads_account_commission_rate_and_order_fee():
+    cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
+    conn = BinanceConnector(cfg)
+    client = MagicMock()
+    client.futures_commission_rate.return_value = {
+        "symbol": "XAUUSDT",
+        "makerCommissionRate": "0.0002",
+        "takerCommissionRate": "0.00035",
+    }
+    client.futures_account_trades.return_value = [
+        {"orderId": 123, "commission": "0.12", "commissionAsset": "USDT"},
+        {"orderId": 123, "commission": "0.03", "commissionAsset": "USDT"},
+    ]
+    conn._client = client
+
+    rate = conn.fetch_user_commission_rate("XAUUSDT")
+    fee, known = conn._fetch_order_commission("XAUUSDT", "123")
+
+    assert rate == (0.0002, 0.00035)
+    assert conn.sync_user_commission_rates(["XAUUSDT"]) == 0.00035
+    assert known is True
+    assert fee == 0.15
+    print("  ✓ BA 读取账户费率与订单真实 commission")
+
+
 def test_cancel_all_open_orders_cancels_pending():
     cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BA.value, ba_api_key="k", ba_api_secret="s")
     conn = BinanceConnector(cfg)
@@ -260,6 +285,68 @@ def test_gold_maker_vs_market_demo():
     assert conn.open_hedge_leg("xau", order_mode=GoldOrderMode.MARKET.value).success
     assert any("市价" in msg for msg in logs)
     print("  ✓ 黄金 Maker/市价 demo 下单模式")
+
+
+def test_binance_live_maker_open_uses_inside_tick_and_fill_price():
+    cfg = AppConfig(
+        connection_mode=ConnectionMode.LIVE_BA.value,
+        ba_api_key="k",
+        ba_api_secret="s",
+        xau_ba_qty_map=1.0,
+    )
+    conn = BinanceConnector(cfg)
+    conn._quotes["XAUUSDT"] = Quote(
+        symbol="XAUUSDT",
+        bid=2650.0,
+        ask=2650.2,
+        is_simulated=False,
+    )
+    client = MagicMock()
+    client.futures_create_order.return_value = {"orderId": 901}
+    client.futures_get_order.return_value = {
+        "status": "FILLED",
+        "executedQty": "1",
+        "avgPrice": "2650.015",
+    }
+    conn._client = client
+
+    with patch.object(conn, "_run_ba_api", side_effect=lambda fn, **_kw: fn()):
+        with patch.object(conn, "get_positions", return_value=[]):
+            with patch.object(conn, "_position_from_cache", return_value=None):
+                with patch.object(conn, "_apply_margin_type"):
+                    with patch("app.connectors.binance_connector.get_binance_lot_step", return_value=0.001):
+                        with patch("app.connectors.binance_connector.get_binance_price_tick", return_value=0.01):
+                            with patch.object(conn, "_wait_for_limit_order_fills", return_value=(True, 1.0)):
+                                result = conn.open_hedge_leg(
+                                    "xau",
+                                    HedgeMode.CONTRACTION.value,
+                                    GoldOrderMode.MAKER.value,
+                                )
+
+                                assert result.success
+                                sell_kwargs = client.futures_create_order.call_args.kwargs
+                                assert sell_kwargs["side"] == "SELL"
+                                assert sell_kwargs["price"] == "2650.01"
+                                assert abs(result.filled_price - 2650.015) < 1e-9
+
+                                client.futures_create_order.reset_mock()
+                                client.futures_get_order.return_value = {
+                                    "status": "FILLED",
+                                    "executedQty": "1",
+                                    "avgPrice": "2650.185",
+                                }
+                                result = conn.open_hedge_leg(
+                                    "xau",
+                                    HedgeMode.EXPANSION.value,
+                                    GoldOrderMode.MAKER.value,
+                                )
+
+    assert result.success
+    buy_kwargs = client.futures_create_order.call_args.kwargs
+    assert buy_kwargs["side"] == "BUY"
+    assert buy_kwargs["price"] == "2650.19"
+    assert abs(result.filled_price - 2650.185) < 1e-9
+    print("  ✓ BA Maker 开仓用一跳内侧价并返回成交均价")
 
 
 def test_ws_stream_dispatches_depth_vs_book_ticker():

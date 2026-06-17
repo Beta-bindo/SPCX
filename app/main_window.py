@@ -1333,7 +1333,10 @@ class MainWindow(QMainWindow):
         self.license_expires_lbl.setVisible(bool(text))
 
     def _open_profit_calculator(self) -> None:
-        dlg = ProfitCalculatorDialog(self)
+        dlg = ProfitCalculatorDialog(
+            self,
+            trade_recorded_signal=self.engine.trade_recorded,
+        )
         dlg.exec()
 
     def _on_positions(self, positions, summary) -> None:
