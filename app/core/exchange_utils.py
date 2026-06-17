@@ -7,7 +7,7 @@ def _step(value: float, step: float) -> float:
     if step <= 0:
         return value
     precision = max(0, int(round(-math.log10(step)))) if step < 1 else 0
-    adjusted = math.floor(value / step) * step
+    adjusted = math.floor((value / step) + 1e-9) * step
     return round(adjusted, precision)
 
 

@@ -33,6 +33,7 @@ class ProfitCalculatorDialog(QDialog):
     def __init__(self, parent=None, *, trade_recorded_signal=None):
         super().__init__(parent)
         self.setWindowTitle("利润计算器")
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.resize(1080, 640)
         self.setMinimumSize(860, 540)
 

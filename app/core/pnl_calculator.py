@@ -2,7 +2,7 @@
 
 统一根据两端实时报价计算：
 - 点差快照（BA 与 Exness 的买价差 / 可执行差价）；
-- 每个持仓的浮动盈亏与预估手续费；
+- 每个持仓的官方浮动盈亏/模拟浮动盈亏与预估手续费；
 - 全局汇总（毛利、手续费、净利）。
 """
 
@@ -21,9 +21,9 @@ class PnlSummary:
     ba_pnl: float = 0.0          # BA 端浮动盈亏合计
     mt5_pnl: float = 0.0         # Exness/MT5 端浮动盈亏合计
     gross_pnl: float = 0.0       # 毛利 = ba_pnl + mt5_pnl
-    ba_fee: float = 0.0          # BA 端预估手续费
-    mt5_fee: float = 0.0         # MT5 端预估手续费（佣金 + 点差成本）
-    total_fees: float = 0.0      # 手续费合计
+    ba_fee: float = 0.0          # BA 端往返预估手续费
+    mt5_fee: float = 0.0         # MT5 端往返预估手续费（佣金 + 点差成本）
+    total_fees: float = 0.0      # 往返手续费合计
     net_pnl: float = 0.0         # 净利 = 毛利 − 手续费
     exec_spread: float = 0.0     # 可执行点差（主品种）
     mid_spread: float = 0.0      # 买价点差（主品种，字段名保留兼容）
@@ -82,7 +82,7 @@ def _position_pnl(position: Position, mark: float, multiplier: float) -> float:
 
 
 def _use_exchange_pnl(platform: str, config: AppConfig) -> bool:
-    """该平台是否处于实盘模式（实盘下优先采用交易所回报的盈亏）。"""
+    """该平台是否处于实盘模式；实盘盈亏始终按官方持仓接口返回值展示。"""
     if platform == "BA":
         return config.use_live_ba
     if platform == "MT5":
@@ -111,6 +111,11 @@ def _estimate_mt5_fee(
 def _fee_legs_for_display() -> int:
     """实时面板只展示预估平仓成本（单腿），而非开+平的往返成本。"""
     return 1
+
+
+def _fee_legs_for_summary() -> int:
+    """实时净盈亏汇总扣开仓+平仓往返费用。"""
+    return 2
 
 
 def estimate_trade_fees(
@@ -180,25 +185,30 @@ def calculate_pnl(
             quote = ba_quotes.get(pos.symbol, Quote(symbol=pos.symbol))
             mark = _mark_price(pos.side, quote)
             multiplier = preset.ba_qty_unit
-            if _use_exchange_pnl("BA", config) and not _quote_ready(quote):
+            if _use_exchange_pnl("BA", config):
                 pnl = pos.unrealized_pnl
             else:
                 pnl = _position_pnl(pos, mark, multiplier)
             price_for_fee = mark if mark > 0 else pos.entry_price
-            notional = price_for_fee * pos.quantity * multiplier
+            close_notional = price_for_fee * pos.quantity * multiplier
+            open_notional = pos.entry_price * pos.quantity * multiplier
             pos.current_price = mark if mark > 0 else pos.entry_price
             pos.unrealized_pnl = round(pnl, 2)
             pos.estimated_fee = round(
-                _estimate_ba_fee(notional, config.ba_fee_rate, _fee_legs_for_display()),
+                _estimate_ba_fee(close_notional, config.ba_fee_rate, _fee_legs_for_display()),
                 4,
             )
             summary.ba_pnl += pos.unrealized_pnl
-            summary.ba_fee += pos.estimated_fee
+            summary.ba_fee += round(
+                _estimate_ba_fee(open_notional, config.ba_fee_rate, 1)
+                + pos.estimated_fee,
+                4,
+            )
         elif pos.platform == "MT5":
             quote = mt5_quotes.get(pos.symbol, Quote(symbol=pos.symbol))
             mark = _mark_price(pos.side, quote)
             multiplier = preset.mt5_oz_per_lot
-            if _use_exchange_pnl("MT5", config) and not _quote_ready(quote):
+            if _use_exchange_pnl("MT5", config):
                 pnl = pos.unrealized_pnl
             else:
                 pnl = _position_pnl(pos, mark, multiplier)
@@ -215,7 +225,16 @@ def calculate_pnl(
                 4,
             )
             summary.mt5_pnl += pos.unrealized_pnl
-            summary.mt5_fee += pos.estimated_fee
+            summary.mt5_fee += round(
+                _estimate_mt5_fee(
+                    pos.quantity,
+                    config.mt5_commission_per_lot,
+                    config.mt5_spread_points,
+                    config.mt5_point_value,
+                    legs=_fee_legs_for_summary(),
+                ),
+                4,
+            )
         updated.append(pos)
 
     # 汇总并统一四舍五入（金额 2 位、费用 4 位）

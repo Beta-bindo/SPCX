@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QDate, QTimer
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from app.core.config import load_config, save_config
@@ -436,6 +436,7 @@ def test_profit_calculator_dialog_query():
     from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
 
     dlg = ProfitCalculatorDialog()
+    assert dlg.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
     dlg.date_range.start_edit.setDate(QDate(2028, 6, 8))
     dlg.date_range.end_edit.setDate(QDate(2026, 6, 1))
     dlg._calculate()

@@ -529,18 +529,40 @@ class BinanceConnector(QObject):
         return round(total, 4), True
 
     @staticmethod
-    def _maker_open_price(quote: Quote, side: Side, tick: float) -> str:
-        """BA Maker 开仓价：贴近触发价一跳，同时保持 post-only 不吃单。"""
+    def _maker_price_from_book(
+        bid: float,
+        ask: float,
+        side: Side,
+        tick: float,
+    ) -> float:
+        """根据盘口首档给出 Maker 价格，尽量贴近盘口但不穿过对手价。"""
+        if tick <= 0:
+            tick = 0.01
         if side == Side.BUY:
-            if quote.ask > 0:
-                px = quote.ask - tick * 0.5
-            else:
-                px = quote.bid or quote.mid
-        else:
-            if quote.bid > 0:
-                px = quote.bid + tick * 1.5
-            else:
-                px = quote.ask or quote.mid
+            if ask > 0:
+                px = ask - tick
+                if bid > 0 and px <= bid:
+                    return bid
+                return px
+            return bid
+        if bid > 0:
+            px = bid + tick
+            if ask > 0 and px >= ask:
+                return ask
+            return px
+        return ask
+
+    def _maker_order_price(self, symbol: str, quote: Quote, side: Side, tick: float) -> str:
+        """BA Maker 委托价：优先订单簿首档，缺盘口时回退 quote。"""
+        with self._book_lock:
+            book = self._order_books.get(symbol)
+            bid = book.bids[0].price if book and book.bids else 0.0
+            ask = book.asks[0].price if book and book.asks else 0.0
+        if bid <= 0:
+            bid = quote.bid
+        if ask <= 0:
+            ask = quote.ask
+        px = self._maker_price_from_book(bid, ask, side, tick)
         return format_binance_price(px or quote.mid, tick)
 
     @staticmethod
@@ -1413,7 +1435,7 @@ class BinanceConnector(QObject):
             if use_limit:
                 tick = get_binance_price_tick(self._client, symbol_ba)
                 if maker_only:
-                    price = self._maker_open_price(quote, ba_side, tick)
+                    price = self._maker_order_price(symbol_ba, quote, ba_side, tick)
                 else:
                     px = quote.bid if ba_side == Side.BUY else quote.ask
                     price = format_binance_price(px or quote.mid, tick)
@@ -1720,8 +1742,12 @@ class BinanceConnector(QObject):
                 quantity = format_binance_qty(qty_to_close, step)
                 remaining = max(0.0, pos.quantity - float(quantity))
                 if use_limit:
-                    px = quote.bid if close_side == "BUY" else quote.ask
-                    price = format_binance_price(px or quote.mid, tick)
+                    order_side_enum = Side.BUY if close_side == "BUY" else Side.SELL
+                    if maker_only:
+                        price = self._maker_order_price(symbol_ba, quote, order_side_enum, tick)
+                    else:
+                        px = quote.bid if close_side == "BUY" else quote.ask
+                        price = format_binance_price(px or quote.mid, tick)
                     time_in_force = "GTX" if maker_only else "GTC"
                     order = self._client.futures_create_order(
                         symbol=symbol_ba,
@@ -1739,7 +1765,7 @@ class BinanceConnector(QObject):
                             platform="BA",
                             symbol=symbol_ba,
                             order_id=oid,
-                            side=Side.BUY if close_side == "BUY" else Side.SELL,
+                            side=order_side_enum,
                             order_type="LIMIT",
                             total_quantity=float(quantity),
                             filled_quantity=0.0,

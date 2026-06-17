@@ -500,8 +500,13 @@ class SymbolActionStrip(QFrame):
             if ba_q is not None and mt5_q is not None
             else None
         )
-        updated, _ = calculate_pnl(positions, ba_quotes, mt5_quotes, config, snap)
-        self.pnl_detail.update(updated, ba_quotes, mt5_quotes, config)
+        preset_positions = [
+            p for p in positions
+            if (p.platform == "BA" and p.symbol == preset.symbol_ba)
+            or (p.platform == "MT5" and p.symbol == preset.symbol_mt5)
+        ]
+        updated, summary = calculate_pnl(preset_positions, ba_quotes, mt5_quotes, config, snap)
+        self.pnl_detail.update(updated, ba_quotes, mt5_quotes, config, summary)
         ba = next(
             (p for p in updated if p.platform == "BA" and p.symbol == preset.symbol_ba),
             None,

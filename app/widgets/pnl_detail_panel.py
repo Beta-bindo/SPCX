@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig, Position, Quote
+from app.core.pnl_calculator import PnlSummary
 from app.core.hedge_health import (
     HedgeRepair,
     analyze_hedge_health,
@@ -129,7 +130,7 @@ class PnlDetailPanel(QFrame):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(2)
         grid.setVerticalSpacing(0)
-        col_titles = ["", "净盈亏", "持仓", "方向"]
+        col_titles = ["", "点数", "持仓", "方向"]
         if show_liq_buf:
             # 爆=距强平价的价格距离，强=强平价位（liq）
             col_titles.extend(["爆", "强"])
@@ -223,6 +224,21 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
         if lbl.property("negative") != ("true" if negative else "false"):
             set_flag(lbl, "negative", negative)
 
+    def _paint_points(self, lbl: QLabel, value: float) -> None:
+        """渲染当前指数与持仓均价的点数差。"""
+        sign = "+" if value >= 0 else "-"
+        text = f"{sign}{abs(value):.3f}" if value != 0 else "0.000"
+        key = f"points:{id(lbl)}"
+        if self._last_cell_text.get(key) != text:
+            lbl.setText(text)
+            self._last_cell_text[key] = text
+        positive = value > 0
+        negative = value < 0
+        if lbl.property("positive") != ("true" if positive else "false"):
+            set_flag(lbl, "positive", positive)
+        if lbl.property("negative") != ("true" if negative else "false"):
+            set_flag(lbl, "negative", negative)
+
     def _set_cell(self, lbl: QLabel, text: str) -> None:
         key = f"cell:{id(lbl)}"
         if self._last_cell_text.get(key) == text:
@@ -244,7 +260,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
                     continue
                 self._set_cell(cells[key], "--")
             return
-        self._paint_pnl(cells["pnl"], detail.net_pnl)
+        self._paint_points(cells["pnl"], detail.point_diff)
         self._set_cell(cells["qty"], f"{detail.quantity:.2f}")
         self._set_cell(
             cells["side"],
@@ -301,6 +317,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
         ba_quotes: dict[str, Quote],
         mt5_quotes: dict[str, Quote],
         config: AppConfig,
+        summary: PnlSummary | None = None,
     ) -> None:
         """根据最新持仓/报价刷新整张面板：两端明细、对冲健康、净盈亏合计。"""
         ba, mt5 = (
@@ -330,7 +347,7 @@ QFrame#pnlDetailPanel QLabel#pnlTotal {{
             else None
         )
         self.update_hedge_health(health, repair)
-        net = round(ba.net_pnl + mt5.net_pnl, 2)
+        net = summary.net_pnl if summary is not None else round(ba.net_pnl + mt5.net_pnl, 2)
         sign = "+" if net >= 0 else "-"
         total_text = f"实时净盈亏：${sign}{abs(net):.2f}"
         if total_text != self._last_total_text:

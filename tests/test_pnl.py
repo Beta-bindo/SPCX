@@ -36,12 +36,15 @@ def test_pnl_with_fees():
     assert len(updated) == 2
     assert summary.gross_pnl != 0
     assert summary.total_fees > 0
-    # 单腿预估手续费；净盈亏 = 毛盈亏 - 预估平仓费
+    # 持仓上的 estimated_fee 仍为预估平仓单腿费用，用于平仓记账 fallback。
+    assert all(p.estimated_fee > 0 for p in updated)
+    assert summary.total_fees > round(sum(p.estimated_fee for p in updated), 4)
+    # 汇总净盈亏扣买入+卖出的往返费用。
     assert summary.net_pnl == round(summary.gross_pnl - summary.total_fees, 2)
     print("PNL TEST PASSED")
 
 
-def test_platform_detail_net_pnl_matches_summary_net():
+def test_platform_detail_points_are_separate_from_summary_net():
     ba = Quote(symbol="XAUUSDT", bid=2650.0, ask=2650.2, is_simulated=True)
     mt5 = Quote(symbol="XAUUSD", bid=2648.0, ask=2648.2, is_simulated=True)
     positions = [
@@ -67,8 +70,10 @@ def test_platform_detail_net_pnl_matches_summary_net():
 
     assert ba_detail.pnl == summary.ba_pnl
     assert mt5_detail.pnl == summary.mt5_pnl
-    assert round(ba_detail.net_pnl + mt5_detail.net_pnl, 2) == summary.net_pnl
-    assert ba_detail.net_pnl != ba_detail.pnl or mt5_detail.net_pnl != mt5_detail.pnl
+    assert ba_detail.point_diff == round(2650.2 - 2651.0, 3)
+    assert mt5_detail.point_diff == round(2648.0 - 2647.0, 3)
+    assert summary.net_pnl == round(summary.gross_pnl - summary.total_fees, 2)
+    assert summary.net_pnl < summary.gross_pnl
 
 
 def test_ba_detail_liquidation_price_uses_exchange_value_only():
@@ -149,6 +154,6 @@ def test_platform_detail_liq_buffer_displays_price_distance():
 if __name__ == "__main__":
     test_spread_snapshot_exec_vs_mid()
     test_pnl_with_fees()
-    test_platform_detail_net_pnl_matches_summary_net()
+    test_platform_detail_points_are_separate_from_summary_net()
     test_ba_detail_liquidation_price_uses_exchange_value_only()
     test_platform_detail_liq_buffer_displays_price_distance()

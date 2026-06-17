@@ -102,9 +102,8 @@ def run_pnl_live_tests(r: Report) -> None:
         ),
     ]
     updated, summary = calculate_pnl(positions, {"XAUUSDT": ba_q}, {}, cfg, None)
-    expected_local = round((2650.0 - 2640.2) * 500, 2)
-    r.check("实盘 BA 有行情时本地 mark", updated[0].unrealized_pnl == expected_local)
-    r.check("实盘汇总使用本地 mark", summary.ba_pnl == expected_local)
+    r.check("实盘 BA 始终使用交易所盈亏", updated[0].unrealized_pnl == exchange_ba_pnl)
+    r.check("实盘汇总使用交易所盈亏", summary.ba_pnl == exchange_ba_pnl)
 
     updated_fallback, summary_fallback = calculate_pnl(
         positions, {"XAUUSDT": Quote("XAUUSDT")}, {}, cfg, None
@@ -125,7 +124,7 @@ def run_pnl_live_tests(r: Report) -> None:
         )
     ]
     updated2, sum2 = calculate_pnl(pos_mt5, {}, {"XAUUSD": ba_q}, cfg2, None)
-    r.check("实盘 Exness 有行情时本地 mark", updated2[0].unrealized_pnl == 0.0)
+    r.check("实盘 Exness 始终使用交易所盈亏", updated2[0].unrealized_pnl == mt5_exchange)
     updated2_fb, _ = calculate_pnl(pos_mt5, {}, {"XAUUSD": Quote("XAUUSD")}, cfg2, None)
     r.check("实盘 Exness 无行情时回退交易所盈亏", updated2_fb[0].unrealized_pnl == mt5_exchange)
 

@@ -25,6 +25,7 @@ class PlatformDetail:
 
     platform: str
     pnl: float = 0.0
+    point_diff: float = 0.0      # 当前指数 - 持仓均价（按平仓方向取价）
     estimated_fee: float = 0.0
     quantity: float = 0.0
     side: Side = Side.NONE
@@ -70,6 +71,7 @@ def _aggregate_platform(
     sides = {p.side for p, _ in matched}
     detail.side = sides.pop() if len(sides) == 1 else Side.NONE
 
+    point_diffs: list[tuple[float, float]] = []
     liq_prices: list[float] = []
     buffers: list[float] = []
     for pos, preset_id in matched:
@@ -84,12 +86,22 @@ def _aggregate_platform(
             if platform == "BA"
             else mt5_quotes.get(pos.symbol)
         )
+        point_diff = _resolve_point_diff(pos, quote)
+        if point_diff is not None:
+            point_diffs.append((point_diff, pos.quantity))
         if platform == "BA":
             buffers.append(_resolve_price_distance(platform, pos, quote, config.ba_leverage))
         else:
             mt5_lev = pos.leverage if pos.leverage > 0 else config.mt5_leverage
             buffers.append(_resolve_price_distance(platform, pos, quote, mt5_lev))
 
+    if point_diffs:
+        total_qty = sum(qty for _diff, qty in point_diffs)
+        if total_qty > 0:
+            detail.point_diff = round(
+                sum(diff * qty for diff, qty in point_diffs) / total_qty,
+                3,
+            )
     if liq_prices:
         detail.liquidation_price = round(sum(liq_prices) / len(liq_prices), 3)
     finite_buffers = [b for b in buffers if b != float("inf")]
@@ -101,6 +113,25 @@ def _aggregate_platform(
             config.ba_leverage if platform == "BA" else config.mt5_leverage
         )
     return detail
+
+
+def _resolve_point_diff(pos: Position, quote: Quote | None) -> float | None:
+    """当前可平仓价 - 持仓均价；无实时价时用持仓当前价兜底。"""
+    if pos.entry_price <= 0:
+        return None
+    mark = 0.0
+    if quote is not None:
+        if pos.side == Side.BUY:
+            mark = quote.bid if quote.bid > 0 else quote.mid
+        elif pos.side == Side.SELL:
+            mark = quote.ask if quote.ask > 0 else quote.mid
+        else:
+            mark = quote.mid
+    if mark <= 0:
+        mark = pos.current_price if pos.current_price > 0 else pos.mark_price
+    if mark <= 0:
+        return None
+    return mark - pos.entry_price
 
 
 def _resolve_price_distance(
@@ -130,6 +161,12 @@ def _detail_for_position(
 
     detail.has_position = True
     detail.pnl = round(pos.unrealized_pnl, 2)
+    point_diff = _resolve_point_diff(
+        pos,
+        ba_quotes.get(pos.symbol) if platform == "BA" else mt5_quotes.get(pos.symbol),
+    )
+    if point_diff is not None:
+        detail.point_diff = round(point_diff, 3)
     detail.estimated_fee = round(pos.estimated_fee, 4)
     detail.quantity = round(pos.quantity, 4)
     detail.side = pos.side

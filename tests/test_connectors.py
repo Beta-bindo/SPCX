@@ -4,7 +4,19 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, OpenOrder, Quote, Side
+from app.core.models import (
+    AppConfig,
+    ConnectionMode,
+    GoldOrderMode,
+    HedgeMode,
+    OpenOrder,
+    OrderBook,
+    OrderBookLevel,
+    Position,
+    Quote,
+    Side,
+)
+from app.core.exchange_utils import format_binance_price
 from app.core.trading_service import close_hedge, open_hedge
 from app.connectors.binance_connector import BinanceConnector
 from app.connectors.mt5_connector import MT5Connector
@@ -342,6 +354,10 @@ def test_binance_live_maker_open_uses_inside_tick_and_fill_price():
         ask=2650.2,
         is_simulated=False,
     )
+    conn._order_books["XAUUSDT"] = OrderBook(
+        bids=[OrderBookLevel(2650.03, 3.0)],
+        asks=[OrderBookLevel(2650.23, 2.0)],
+    )
     client = MagicMock()
     client.futures_create_order.return_value = {"orderId": 901}
     client.futures_get_order.return_value = {
@@ -367,7 +383,7 @@ def test_binance_live_maker_open_uses_inside_tick_and_fill_price():
                                 assert result.success
                                 sell_kwargs = client.futures_create_order.call_args.kwargs
                                 assert sell_kwargs["side"] == "SELL"
-                                assert sell_kwargs["price"] == "2650.01"
+                                assert sell_kwargs["price"] == "2650.04"
                                 assert abs(result.filled_price - 2650.015) < 1e-9
 
                                 client.futures_create_order.reset_mock()
@@ -385,9 +401,83 @@ def test_binance_live_maker_open_uses_inside_tick_and_fill_price():
     assert result.success
     buy_kwargs = client.futures_create_order.call_args.kwargs
     assert buy_kwargs["side"] == "BUY"
-    assert buy_kwargs["price"] == "2650.19"
+    assert buy_kwargs["price"] == "2650.22"
     assert abs(result.filled_price - 2650.185) < 1e-9
-    print("  ✓ BA Maker 开仓用一跳内侧价并返回成交均价")
+    print("  ✓ BA Maker 开仓优先用订单簿一跳内侧价并返回成交均价")
+
+
+def test_binance_live_maker_close_uses_order_book_inside_tick():
+    cfg = AppConfig(
+        connection_mode=ConnectionMode.LIVE_BA.value,
+        ba_api_key="k",
+        ba_api_secret="s",
+        xau_ba_qty_map=1.0,
+    )
+    conn = BinanceConnector(cfg)
+    conn._quotes["XAUUSDT"] = Quote(
+        symbol="XAUUSDT",
+        bid=2650.0,
+        ask=2650.2,
+        is_simulated=False,
+    )
+    conn._order_books["XAUUSDT"] = OrderBook(
+        bids=[OrderBookLevel(2650.03, 3.0)],
+        asks=[OrderBookLevel(2650.23, 2.0)],
+    )
+    pos = Position(
+        platform="BA",
+        symbol="XAUUSDT",
+        side=Side.SELL,
+        quantity=1.0,
+        entry_price=2651.0,
+    )
+    client = MagicMock()
+    client.futures_create_order.return_value = {"orderId": 902}
+    client.futures_get_order.return_value = {
+        "status": "FILLED",
+        "executedQty": "1",
+        "avgPrice": "2650.225",
+    }
+    conn._client = client
+
+    with patch.object(conn, "_run_ba_api", side_effect=lambda fn, **_kw: fn()):
+        with patch.object(conn, "get_positions", return_value=[pos]):
+            with patch("app.connectors.binance_connector.get_binance_lot_step", return_value=0.001):
+                with patch("app.connectors.binance_connector.get_binance_price_tick", return_value=0.01):
+                    with patch.object(conn, "_wait_for_limit_order_fills", return_value=(True, 1.0)):
+                        result = conn.close_hedge_leg(
+                            "xau",
+                            GoldOrderMode.MAKER.value,
+                            HedgeMode.CONTRACTION.value,
+                        )
+
+    assert result.success
+    kwargs = client.futures_create_order.call_args.kwargs
+    assert kwargs["side"] == "BUY"
+    assert kwargs["reduceOnly"] is True
+    assert kwargs["price"] == "2650.22"
+    print("  ✓ BA Maker 平仓优先用订单簿一跳内侧价")
+
+
+def test_binance_maker_price_handles_one_tick_spread():
+    assert BinanceConnector._maker_price_from_book(
+        2650.03,
+        2650.04,
+        Side.SELL,
+        0.01,
+    ) == 2650.04
+    assert BinanceConnector._maker_price_from_book(
+        2650.03,
+        2650.04,
+        Side.BUY,
+        0.01,
+    ) == 2650.03
+    print("  ✓ BA Maker 窄价差时仍贴近盘口且不穿对手价")
+
+
+def test_binance_price_format_tolerates_float_tick_noise():
+    assert format_binance_price(1.2345 + 0.0001, 0.0001) == "1.2346"
+    print("  ✓ BA 价格按 tick 格式化时容忍浮点误差")
 
 
 def test_ws_stream_dispatches_depth_vs_book_ticker():
@@ -486,6 +576,10 @@ if __name__ == "__main__":
     test_hedge_expansion_demo()
     test_binance_get_positions_uses_lock()
     test_gold_maker_vs_market_demo()
+    test_binance_live_maker_open_uses_inside_tick_and_fill_price()
+    test_binance_live_maker_close_uses_order_book_inside_tick()
+    test_binance_maker_price_handles_one_tick_spread()
+    test_binance_price_format_tolerates_float_tick_noise()
     test_ws_stream_dispatches_depth_vs_book_ticker()
     test_ws_depth_url_includes_depth_stream()
     test_connector_on_ws_depth_replaces_order_book()
