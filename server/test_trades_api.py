@@ -109,6 +109,65 @@ class ServerTradeApiTests(unittest.TestCase):
                 self.assertEqual(data["mt5_quantity"], 1.0)
                 self.assertEqual(data["direction"], "BA SELL / Ex BUY")
 
+    def test_official_trade_upload_persists_multiple_exchange_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "license.db"
+            with patched_settings(db_path):
+                init_db()
+                device_id = "official-dev-001"
+                token = create_device_token(device_id, "approved")
+                with get_conn() as conn:
+                    _insert_device(conn, device_id, status="approved")
+
+                body = TradeBatchRequest(
+                    trades=[
+                        TradeItem(
+                            report_source="official",
+                            settled_at="2026-06-10 12:00:00",
+                            preset_id="xau",
+                            mode="contraction",
+                            action="open",
+                            net_pnl=1.25,
+                            official_platform="BA",
+                            official_record_type="userTrades",
+                            official_key="BA|userTrades|XAUUSDT|9001",
+                            official_time="2026-06-10 12:00:00",
+                            official_order_no="7001",
+                            official_trade_no="9001",
+                            official_commission="0.25",
+                        ),
+                        TradeItem(
+                            report_source="official",
+                            settled_at="2026-06-10 12:00:00",
+                            preset_id="xau",
+                            mode="contraction",
+                            action="open",
+                            net_pnl=-0.50,
+                            official_platform="BA",
+                            official_record_type="userTrades",
+                            official_key="BA|userTrades|XAUUSDT|9002",
+                            official_time="2026-06-10 12:00:00",
+                            official_order_no="7001",
+                            official_trade_no="9002",
+                            official_commission="0.20",
+                        ),
+                    ]
+                )
+
+                result = upload_trades(body, authorization=f"Bearer {token}")
+                self.assertEqual(result["inserted"], 2)
+                duplicate = upload_trades(body, authorization=f"Bearer {token}")
+                self.assertEqual(duplicate["inserted"], 0)
+
+                with get_conn() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM trades WHERE device_id = ? ORDER BY official_trade_no",
+                        (device_id,),
+                    ).fetchall()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(dict(rows[0])["report_source"], "official")
+                self.assertEqual(dict(rows[1])["official_trade_no"], "9002")
+
     def test_trade_migration_adds_new_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "legacy.db"
@@ -159,6 +218,8 @@ class ServerTradeApiTests(unittest.TestCase):
             self.assertIn("action", cols)
             self.assertIn("spread", cols)
             self.assertIn("ba_price", cols)
+            self.assertIn("report_source", cols)
+            self.assertIn("official_key", cols)
 
 
     def test_nolicense_register_auto_approves(self):

@@ -19,6 +19,11 @@ from app.core.license.pending_trades import clear_pending, enqueue_trades, load_
 from app.core.license.service import LicenseService
 from app.core.license.store import LicenseState, load_license, save_license
 from app.core.models import AppConfig
+from app.core.official_profit import (
+    OfficialProfitReport,
+    OfficialProfitRow,
+    official_report_to_trade_payloads,
+)
 from app.core.pnl_calculator import estimate_trade_fees
 from app.core.spread_engine import SpreadEngine
 from app.core.trade_ledger import TradeRecord, record_trade, trade_record_to_payload
@@ -170,6 +175,71 @@ class TradeReportingTests(unittest.TestCase):
         payload = trade_record_to_payload(rec)
         self.assertEqual(payload["ba_rebate"], 0.8)
         self.assertEqual(payload["net_pnl"], 4.3)
+
+    def test_official_report_payload_keeps_exchange_fields(self):
+        report = OfficialProfitReport(
+            rows=[
+                OfficialProfitRow(
+                    fields={
+                        "platform": "BA",
+                        "recordType": "userTrades",
+                        "time": "2026-06-10 12:00:01",
+                        "product": "黄金",
+                        "symbol": "XAUUSDT",
+                        "orderNo": "7001",
+                        "tradeNo": "9001",
+                        "sideType": "SELL",
+                        "price": "2650.5",
+                        "quantity": "1",
+                        "realizedPnl": "3.5",
+                        "commission": "0.25",
+                        "commissionAsset": "USDT",
+                        "net": "3.25",
+                    },
+                    raw={"id": "9001", "orderId": "7001"},
+                ),
+                OfficialProfitRow(
+                    fields={
+                        "platform": "EX",
+                        "recordType": "history_deals",
+                        "time": "2026-06-10 12:00:02",
+                        "product": "黄金",
+                        "symbol": "XAUUSD",
+                        "orderNo": "8001",
+                        "tradeNo": "8101",
+                        "price": "2649.5",
+                        "quantity": "0.01",
+                        "profit": "-1.0",
+                        "commission": "-0.05",
+                        "fee": "0",
+                        "swap": "0",
+                        "net": "-1.05",
+                    },
+                    raw={"ticket": "8101", "order": "8001"},
+                ),
+            ]
+        )
+        rec = TradeRecord(
+            settled_at="2026-06-10T12:00:03",
+            preset_id="xau",
+            mode="contraction",
+            action="open",
+            spread=1.0,
+            ba_side="SELL",
+            mt5_side="BUY",
+        )
+
+        payloads = official_report_to_trade_payloads(report, source_record=rec)
+
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["report_source"], "official")
+        self.assertEqual(payloads[0]["official_key"], "BA|userTrades|XAUUSDT|9001")
+        self.assertEqual(payloads[0]["official_order_no"], "7001")
+        self.assertEqual(payloads[0]["ba_fee"], 0.25)
+        self.assertEqual(payloads[0]["net_pnl"], 3.25)
+        self.assertEqual(payloads[1]["official_key"], "EX|history_deals|8101")
+        self.assertEqual(payloads[1]["mt5_fee"], 0.05)
+        self.assertEqual(payloads[1]["net_pnl"], -1.05)
 
     def test_balance_delta_payload_does_not_double_deduct_fees(self):
         rec = TradeRecord(

@@ -114,10 +114,41 @@ const TRADE_LIST_ID = 'trades';
 const TRADE_LIST_COLUMNS = [
   { key: 'display_name', label: '用户' },
   { key: 'device_id', label: '机器码' },
+  { key: 'report_source', label: '来源' },
   { key: 'action', label: '类型' },
   { key: 'preset_id', label: '品种' },
   { key: 'mode', label: '模式' },
   { key: 'settled_at', label: '时间' },
+  { key: 'official_platform', label: '官方平台' },
+  { key: 'official_record_type', label: '官方类型' },
+  { key: 'official_time', label: '官方时间' },
+  { key: 'official_product', label: '产品' },
+  { key: 'official_symbol', label: 'symbol' },
+  { key: 'official_order_no', label: '订单号' },
+  { key: 'official_trade_no', label: '成交号' },
+  { key: 'official_side_type', label: 'side/type' },
+  { key: 'official_entry', label: 'entry' },
+  { key: 'official_price', label: 'price' },
+  { key: 'official_quantity', label: 'qty/volume' },
+  { key: 'official_quote_qty', label: 'quoteQty' },
+  { key: 'official_realized_pnl', label: 'realizedPnl' },
+  { key: 'official_profit', label: 'profit' },
+  { key: 'official_commission', label: 'commission' },
+  { key: 'official_commission_asset', label: 'commissionAsset' },
+  { key: 'official_fee', label: 'fee' },
+  { key: 'official_swap', label: 'swap' },
+  { key: 'official_income_type', label: 'incomeType' },
+  { key: 'official_income', label: 'income' },
+  { key: 'official_funding_fee', label: 'FUNDING_FEE' },
+  { key: 'official_rebate', label: 'rebate' },
+  { key: 'official_position_side', label: 'positionSide' },
+  { key: 'official_maker', label: 'maker' },
+  { key: 'official_buyer', label: 'buyer' },
+  { key: 'official_position_id', label: 'position_id' },
+  { key: 'official_reason', label: 'reason' },
+  { key: 'official_comment', label: 'comment' },
+  { key: 'official_external_id', label: 'external_id' },
+  { key: 'official_net', label: '官方net' },
   { key: 'spread', label: '点差' },
   { key: 'ba_price', label: 'BA价' },
   { key: 'ex_price', label: 'Ex价' },
@@ -143,10 +174,41 @@ function renderTradeCell(key, t) {
   switch (key) {
     case 'display_name': return esc(t.display_name || '-');
     case 'device_id': return `<code>${esc((t.device_id||'').slice(0,12))}…</code>`;
+    case 'report_source': return esc(t.report_source === 'official' ? '官方' : '本地');
     case 'action': return esc(actionLabel(t.action));
     case 'preset_id': return esc(presetLabel(t.preset_id));
     case 'mode': return esc(modeLabel(t.mode));
     case 'settled_at': return esc(fmtBeijing(t.settled_at));
+    case 'official_platform': return esc(t.official_platform || '-');
+    case 'official_record_type': return esc(t.official_record_type || '-');
+    case 'official_time': return esc(fmtBeijing(t.official_time || t.settled_at || ''));
+    case 'official_product': return esc(t.official_product || '-');
+    case 'official_symbol': return esc(t.official_symbol || '-');
+    case 'official_order_no': return esc(t.official_order_no || '-');
+    case 'official_trade_no': return esc(t.official_trade_no || '-');
+    case 'official_side_type': return esc(t.official_side_type || '-');
+    case 'official_entry': return esc(t.official_entry || '-');
+    case 'official_price': return esc(t.official_price || '-');
+    case 'official_quantity': return esc(t.official_quantity || '-');
+    case 'official_quote_qty': return esc(t.official_quote_qty || '-');
+    case 'official_realized_pnl': return esc(t.official_realized_pnl || '-');
+    case 'official_profit': return esc(t.official_profit || '-');
+    case 'official_commission': return esc(t.official_commission || '-');
+    case 'official_commission_asset': return esc(t.official_commission_asset || '-');
+    case 'official_fee': return esc(t.official_fee || '-');
+    case 'official_swap': return esc(t.official_swap || '-');
+    case 'official_income_type': return esc(t.official_income_type || '-');
+    case 'official_income': return esc(t.official_income || '-');
+    case 'official_funding_fee': return esc(t.official_funding_fee || '-');
+    case 'official_rebate': return esc(t.official_rebate || '-');
+    case 'official_position_side': return esc(t.official_position_side || '-');
+    case 'official_maker': return esc(t.official_maker || '-');
+    case 'official_buyer': return esc(t.official_buyer || '-');
+    case 'official_position_id': return esc(t.official_position_id || '-');
+    case 'official_reason': return esc(t.official_reason || '-');
+    case 'official_comment': return esc(t.official_comment || '-');
+    case 'official_external_id': return esc(t.official_external_id || '-');
+    case 'official_net': return fmtMoney(t.official_net);
     case 'spread': return fmtSpread(t.spread);
     case 'ba_price': return fmtPrice(t.ba_price);
     case 'ex_price': return fmtPrice(t.ex_price);

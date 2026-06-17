@@ -41,6 +41,26 @@ def test_enqueue_dedupes_by_settlement_key():
     assert len(load_pending()) == 1
 
 
+def test_enqueue_keeps_distinct_official_rows():
+    base = {
+        "report_source": "official",
+        "settled_at": "2026-06-10 12:00:00",
+        "preset_id": "xau",
+        "mode": "contraction",
+        "action": "open",
+        "official_platform": "BA",
+        "official_record_type": "userTrades",
+    }
+    enqueue_trades(
+        [
+            {**base, "official_key": "BA|userTrades|XAUUSDT|1"},
+            {**base, "official_key": "BA|userTrades|XAUUSDT|2"},
+            {**base, "official_key": "BA|userTrades|XAUUSDT|2"},
+        ]
+    )
+    assert len(load_pending()) == 2
+
+
 def test_remove_trades():
     trade = {
         "settled_at": "2026-06-10T12:00:00",
