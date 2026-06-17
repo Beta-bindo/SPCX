@@ -218,8 +218,9 @@ class SpreadEngine(QObject):
         snap = self._spreads.get(preset_id)
         if snap is None:
             return
+        # 行情快照属调试明细：降到 DEBUG，普通模式只保留触发与成交关键行。
         self._log(
-            LogLevel.TRADE,
+            LogLevel.DEBUG,
             f"{prefix}行情 · 点差 {snap.mid_spread:+.3f}"
             f"｜BA {snap.ba_bid:.3f}/{snap.ba_ask:.3f}"
             f"｜Ex {snap.mt5_bid:.3f}/{snap.mt5_ask:.3f}",

@@ -363,8 +363,8 @@ def evaluate_auto_trades(
                         mode,
                         order_mode,
                         (
-                            f"自动开仓 · {label} {mlabel}（{lane_name}）"
-                            f"：点差 {eff_spread:+.3f} {op} {thresh:.3f} 已满足{add_note}"
+                            f"自动开仓 · {label}{mlabel}（{lane_name}） · "
+                            f"点差 {eff_spread:+.3f} {op} {thresh:.3f}{add_note}"
                         ),
                     )
                 )
@@ -493,8 +493,8 @@ def evaluate_auto_closes(
                     mode,
                     order_mode,
                     (
-                        f"自动平仓 · {label} {mlabel}（{lane_name}）"
-                        f"：点差 {eff_spread:+.3f} {op} {thresh:.3f} 已满足"
+                        f"自动平仓 · {label}{mlabel}（{lane_name}） · "
+                        f"点差 {eff_spread:+.3f} {op} {thresh:.3f}"
                     ),
                 )
             )

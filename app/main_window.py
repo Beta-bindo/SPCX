@@ -1038,7 +1038,7 @@ class MainWindow(QMainWindow):
         # 中间存在窗口；用 _pending_auto_trade(主线程读写、随取消勾选同一时机清空)兜住该窗口，
         # 避免同一笔尚未收尾就被重复触发。
         if self.engine.is_trading or self._pending_auto_trade is not None:
-            self._append_log(LogLevel.INFO, "自动下单：上一笔交易尚未完成，已跳过")
+            self._append_log(LogLevel.DEBUG, "自动下单：上一笔交易尚未完成，已跳过")
             return
         # 必须在 open_hedge 之前乐观置位：市价/秒成交时后台线程可能在本函数返回前就
         # 完成并 emit trade_finished，若等调用后再读 is_trading 会读到 False 而漏置位，
@@ -1074,7 +1074,7 @@ class MainWindow(QMainWindow):
         # 互斥：同 _execute_auto_open，用 _pending_auto_trade 兜住 is_trading 重置与取消勾选之间的窗口，
         # 防止点差持续满足时一次性平掉多手。
         if self.engine.is_trading or self._pending_auto_trade is not None:
-            self._append_log(LogLevel.INFO, "自动平仓：上一笔交易尚未完成，已跳过")
+            self._append_log(LogLevel.DEBUG, "自动平仓：上一笔交易尚未完成，已跳过")
             return
         # 必须在 close_hedge 之前乐观置位，理由同 _execute_auto_open（防秒成交漏置位重复委托）。
         self._pending_auto_trade = ("close", preset_id, mode, order_mode)
@@ -1567,10 +1567,11 @@ class MainWindow(QMainWindow):
         summary = build_open_orders_summary(orders)
         if summary != self._last_open_orders_log:
             self._last_open_orders_log = summary
+            # 委托明细属调试信息（UI 已有委托灯/剩余量指示），降到 DEBUG 避免刷屏。
             if orders:
-                self._append_log(LogLevel.INFO, f"委托同步 · {summary}")
+                self._append_log(LogLevel.DEBUG, f"委托同步 · {summary}")
             else:
-                self._append_log(LogLevel.INFO, "委托同步 · 当前无挂单")
+                self._append_log(LogLevel.DEBUG, "委托同步 · 当前无挂单")
 
     def _on_license_status_changed(self, _status: str, _message: str) -> None:
         self._refresh_license_expires_label()

@@ -821,48 +821,11 @@ def test_open_orders_dedupes_same_ba_order_for_pending_light():
 
     window._on_open_orders(orders)
 
+    # 委托摘要行已移除，仅保留 Maker 委托灯：同一 order_id 去重后剩余量按 2 统计（非 4）。
     light = window.gold_actions.auto_trade_settings.maker_pending_light
     assert light.text() == "● 有委托 · 剩余量 2"
-    assert "总量2" in window.gold_actions.pending_label.text()
-    assert "总量4" not in window.gold_actions.pending_label.text()
     window.close()
-    print("  ✓ 委托同步：同一 BA order_id 去重后再统计数量")
-
-
-def test_pending_ba_order_displays_order_price_index():
-    from app.main_window import MainWindow
-
-    app = QApplication.instance() or QApplication(sys.argv)
-    window = MainWindow()
-    window.gold_actions.update_spread(
-        SpreadSnapshot(
-            preset_id="xau",
-            ba_bid=4365.64,
-            ba_ask=4365.66,
-            mt5_bid=4363.40,
-            mt5_ask=4363.65,
-            mid_spread=2.24,
-        )
-    )
-    window._on_open_orders(
-        [
-            OpenOrder(
-                platform="BA",
-                symbol="XAUUSDT",
-                order_id="42",
-                side=Side.SELL,
-                total_quantity=1.0,
-                remaining_quantity=1.0,
-                price=4365.65,
-            )
-        ]
-    )
-
-    text = window.gold_actions.pending_label.text()
-    assert "@ 4365.650" in text
-    assert "指数+2.000" in text
-    window.close()
-    print("  ✓ 委托同步：BA 委托显示委托价与对应指数")
+    print("  ✓ 委托灯：同一 BA order_id 去重后再统计数量")
 
 
 def main() -> int:
@@ -900,7 +863,6 @@ def main() -> int:
         test_auto_maker_pending_order_schedules_configured_timeout_cancel,
         test_auto_trade_hint_routes_to_matching_symbol_panel,
         test_open_orders_dedupes_same_ba_order_for_pending_light,
-        test_pending_ba_order_displays_order_price_index,
     ]
     for fn in tests:
         try:
