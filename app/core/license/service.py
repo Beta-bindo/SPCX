@@ -6,9 +6,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from typing import Callable
 
-from app.core.official_profit import official_report_to_trade_payloads
+from app.core.hedge_trade_report import HedgeTradeRow
 from app.core.license.client import LicenseClient, LicenseError
-from app.core.trade_ledger import TradeRecord, trade_record_to_payload
 
 HEARTBEAT_MS = 10 * 60 * 1000  # 10 分钟
 
@@ -182,13 +181,25 @@ class LicenseService(QObject):
             raise LicenseError(str(exc)) from exc
         self.client.require_approved()
 
-    def ensure_approved_for_trade(self, connection_mode: str | None = None) -> None:
-        """交易前强制刷新授权与平台账号状态，避免后台停用后本地缓存仍可下单。"""
+    def ensure_approved_for_trade(
+        self, connection_mode: str | None = None, *, fast: bool = False
+    ) -> None:
+        """交易前校验授权与平台账号状态，避免后台停用后本地缓存仍可下单。
+
+        fast=True 用于点击热路径（打开交易弹窗 / 提交下单）：本地已授权时只读本地
+        缓存判断，network 心跳改为后台异步触发，避免 15s 同步 HTTP 卡死 UI。
+        后台停用由 10 分钟定时心跳 + revoked 信号兜底。仅当本地尚无有效授权时，
+        才回退做一次同步刷新。
+        """
         from app.core.build_config import LICENSE_REQUIRED
 
         if not LICENSE_REQUIRED:
             return
         mode = connection_mode or self._current_connection_mode()
+        if fast and self.client.is_approved:
+            self.client.require_platform_accounts_enabled(mode)
+            self._run_async("heartbeat", self.refresh)
+            return
         try:
             self.refresh()
         except LicenseError:
@@ -253,32 +264,7 @@ class LicenseService(QObject):
                 except Exception:
                     pass
 
-    def _official_trade_payloads(
-        self,
-        record: TradeRecord,
-        report_provider: Callable | None,
-    ) -> list[dict]:
-        if report_provider is None:
-            return []
-        try:
-            from datetime import date, datetime
-
-            try:
-                settled_day = datetime.fromisoformat(
-                    record.settled_at.replace(" ", "T")
-                ).date()
-            except (TypeError, ValueError):
-                settled_day = date.today()
-            report = report_provider(settled_day, settled_day, record.preset_id or "all")
-            return official_report_to_trade_payloads(report, source_record=record)
-        except Exception:
-            return []
-
-    def upload_trade(
-        self,
-        record: TradeRecord,
-        report_provider: Callable | None = None,
-    ) -> None:
+    def upload_trade(self, row: HedgeTradeRow) -> None:
         with self._net_lock:
             if not self.client.can_upload_trades:
                 try:
@@ -290,8 +276,7 @@ class LicenseService(QObject):
                         self.refresh()
                     except LicenseError:
                         pass
-            official_trades = self._official_trade_payloads(record, report_provider)
-            trades = official_trades or [trade_record_to_payload(record)]
+            trades = [row.to_payload()]
             if not self.client.can_upload_trades:
                 from app.core.license.pending_trades import enqueue_trades
 

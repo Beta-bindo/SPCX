@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 from app.connectors.binance_connector import BinanceConnector
 from app.connectors.mt5_connector import MT5Connector
 from app.core.models import AppConfig, ConnectionMode, GoldOrderMode, HedgeMode, Quote, Side
-from app.core.trade_ledger import hedge_sides
+from app.core.trade_anchor import hedge_sides
 from app.core.trading_service import close_hedge, detect_hedge_mode, open_hedge
 
 

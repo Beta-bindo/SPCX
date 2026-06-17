@@ -27,11 +27,10 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 from app.core.config import load_config, save_config
 from app.core.models import AppConfig, ConnectionMode, HedgeMode, Quote, Side
-from app.core.profit_calculator import calculate_profit, record_label
+from app.core.hedge_trade_report import HedgeTradeReport, HedgeTradeRow, build_row_from_settlement
 from app.core.profit_export import export_profit_xlsx
 from app.core.spread_engine import SpreadEngine
-from app.core.paths import ledger_path
-from app.core.trade_ledger import TradeLedger, TradeRecord, load_ledger, record_close_settlement
+from app.core.trade_anchor import funding_period_start, record_trade_anchor
 from app.core.trading_service import close_hedge, detect_hedge_mode, open_hedge
 from app.core.xlsx_writer import CellSpec, write_styled_xlsx
 from app.connectors.binance_connector import BinanceConnector
@@ -83,75 +82,82 @@ def test_date_range_same_day():
     assert start == end
 
 
-def test_profit_cumulative_net_pnl():
-    """多笔平仓盈亏相加：+5 与 -10 合计 -5（扣费后）。"""
-    ledger = TradeLedger(
-        records=[
-            TradeRecord(
-                "2026-06-08T10:00:00",
-                "xau",
-                "contraction",
-                action="close",
-                ba_pnl=3.0,
-                mt5_pnl=2.0,
-                ba_fee=0.0,
-                mt5_fee=0.0,
-            ),
-            TradeRecord(
-                "2026-06-09T10:00:00",
-                "xau",
-                "contraction",
-                action="close",
-                ba_pnl=-4.0,
-                mt5_pnl=-6.0,
-                ba_fee=0.0,
-                mt5_fee=0.0,
-            ),
-            TradeRecord(
-                "2026-06-09T11:00:00",
-                "xau",
-                "contraction",
-                action="open",
-                ba_pnl=0.0,
-                mt5_pnl=0.0,
-            ),
-        ]
-    )
-    report = calculate_profit(ledger, date(2026, 6, 1), date(2026, 6, 30), "all")
-    assert len(report.records) == 2
+def test_hedge_report_total_pnl():
+    """多笔平仓净利润相加。"""
+    rows = [
+        build_row_from_settlement(
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=3.0,
+            ex_pnl=2.0,
+            order_time="2026-06-08 10:00:00",
+        ),
+        build_row_from_settlement(
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=-4.0,
+            ex_pnl=-6.0,
+            order_time="2026-06-09 10:00:00",
+        ),
+    ]
+    report = HedgeTradeReport(rows=rows)
+    assert report.row_count == 2
     assert report.total_pnl == -5.0
 
 
-def test_profit_filter_empty_range():
-    ledger = TradeLedger(records=[])
-    report = calculate_profit(ledger, date(2099, 1, 1), date(2099, 12, 31), "all")
+def test_hedge_report_empty():
+    report = HedgeTradeReport(rows=[])
     assert report.total_pnl == 0
-    assert report.records == []
+    assert report.row_count == 0
 
 
-def test_profit_filter_symbol_xau_only():
-    ledger = TradeLedger(
-        records=[
-            TradeRecord("2026-06-08T10:00:00", "xau", "contraction", ba_pnl=10, mt5_pnl=-5),
-            TradeRecord("2026-06-08T11:00:00", "xag", "contraction", ba_pnl=20, mt5_pnl=-8),
-        ]
-    )
-    report = calculate_profit(ledger, date(2026, 6, 1), date(2026, 6, 30), "xau")
-    assert len(report.records) == 1
-    assert report.ba_pnl == 10
+def test_hedge_report_product_filter_gold_only():
+    rows = [
+        build_row_from_settlement(
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=10.0,
+            ex_pnl=-5.0,
+            order_time="2026-06-08 10:00:00",
+        ),
+        build_row_from_settlement(
+            preset_id="xag",
+            mode="contraction",
+            action="close",
+            ba_pnl=20.0,
+            ex_pnl=-8.0,
+            order_time="2026-06-08 11:00:00",
+        ),
+    ]
+    gold_rows = [row for row in rows if row.product == "黄金"]
+    report = HedgeTradeReport(rows=gold_rows)
+    assert report.row_count == 1
+    assert report.ba_pnl == 10.0
 
 
-def test_profit_boundary_date_inclusive():
-    ledger = TradeLedger(
-        records=[
-            TradeRecord("2026-06-01T00:00:00", "xau", "contraction", ba_pnl=1),
-            TradeRecord("2026-06-30T23:59:59", "xau", "contraction", ba_pnl=2),
-            TradeRecord("2026-05-31T23:59:59", "xau", "contraction", ba_pnl=99),
-        ]
-    )
-    report = calculate_profit(ledger, date(2026, 6, 1), date(2026, 6, 30), "all")
-    assert len(report.records) == 2
-    assert report.ba_pnl == 3
+def test_hedge_report_boundary_dates_present():
+    rows = [
+        build_row_from_settlement(
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=1.0,
+            order_time="2026-06-01 00:00:00",
+        ),
+        build_row_from_settlement(
+            preset_id="xau",
+            mode="contraction",
+            action="close",
+            ba_pnl=2.0,
+            order_time="2026-06-30 23:59:59",
+        ),
+    ]
+    report = HedgeTradeReport(rows=rows)
+    assert report.row_count == 2
+    assert report.ba_pnl == 3.0
 
 
 # ── 幂等：引擎 / 按钮逻辑 ────────────────────────────────────────────
@@ -269,41 +275,28 @@ def test_detect_hedge_mode_and_trade_dialog_buttons():
 # ── 并发 / 容错 ──────────────────────────────────────────────────────
 
 
-def test_ledger_concurrent_writes():
-    backup = ledger_path().read_text(encoding="utf-8") if ledger_path().exists() else None
-    try:
-        path = ledger_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"records": []}', encoding="utf-8")
+def test_trade_anchor_concurrent_writes():
+    with tempfile.TemporaryDirectory() as tmp:
+        anchor_file = Path(tmp) / "trade_anchors.json"
+        with patch("app.core.trade_anchor._path", lambda: anchor_file):
+            def _write(i: int) -> None:
+                record_trade_anchor("xau", "contraction", "close", settled_at=f"2026-06-08 10:{i:02d}:00")
 
-        def _write(i: int) -> None:
-            record_close_settlement("xau", "contraction", float(i), 0, 0, 0)
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(_write, range(20)))
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(_write, range(20)))
-
-        ledger = load_ledger()
-        assert len(ledger.records) == 20
-    finally:
-        if backup is None:
-            ledger_path().unlink(missing_ok=True)
-        else:
-            ledger_path().write_text(backup, encoding="utf-8")
+            start = funding_period_start("xau", "contraction")
+            assert start is not None
+            saved = json.loads(anchor_file.read_text(encoding="utf-8"))
+            assert "xau:contraction" in saved
 
 
-def test_corrupt_ledger_json():
-    backup = ledger_path().read_text(encoding="utf-8") if ledger_path().exists() else None
-    try:
-        path = ledger_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not valid json", encoding="utf-8")
-        ledger = load_ledger()
-        assert ledger.records == []
-    finally:
-        if backup is None:
-            ledger_path().unlink(missing_ok=True)
-        else:
-            ledger_path().write_text(backup, encoding="utf-8")
+def test_corrupt_trade_anchor_json():
+    with tempfile.TemporaryDirectory() as tmp:
+        anchor_file = Path(tmp) / "trade_anchors.json"
+        with patch("app.core.trade_anchor._path", lambda: anchor_file):
+            anchor_file.write_text("{not valid json", encoding="utf-8")
+            assert funding_period_start("xau", "contraction") is None
 
 
 def test_config_special_chars_roundtrip():
@@ -389,13 +382,19 @@ def test_ba_quantity_zero_lot_map():
     assert qty > 0
 
 
-def test_record_label_modes():
-    rec = TradeRecord("2026-01-01", "xag", "expansion", 0, 0, 0, 0)
-    assert record_label(rec) == "白银扩张"
+def test_hedge_row_labels():
+    row = build_row_from_settlement(
+        preset_id="xag",
+        mode="expansion",
+        action="open",
+        order_time="2026-01-01 00:00:00",
+    )
+    assert row.product == "白银"
+    assert row.direction == "扩张"
 
 
 def test_export_empty_report():
-    report = calculate_profit(TradeLedger(), date(2026, 1, 1), date(2026, 12, 31), "all")
+    report = HedgeTradeReport(rows=[])
     with tempfile.TemporaryDirectory() as tmp:
         out = export_profit_xlsx(report, "all", date(2026, 1, 1), date(2026, 12, 31), Path(tmp) / "e.xlsx")
         assert out.exists()
@@ -445,9 +444,8 @@ def test_profit_calculator_dialog_query():
     dlg.close()
 
 
-def test_profit_calculator_refreshes_on_close_record():
+def test_profit_calculator_refreshes_on_trade_row():
     app = QApplication.instance() or QApplication(sys.argv)
-    from app.core.trade_ledger import TradeRecord
     from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
 
     dlg = ProfitCalculatorDialog()
@@ -459,21 +457,11 @@ def test_profit_calculator_refreshes_on_close_record():
 
     dlg._calculate = _mark_calculated
     dlg._on_trade_recorded(
-        TradeRecord(
-            settled_at="2026-06-08T12:00:00",
+        build_row_from_settlement(
             preset_id="xau",
             mode="contraction",
             action="open",
-        )
-    )
-    assert calls == 0
-
-    dlg._on_trade_recorded(
-        TradeRecord(
-            settled_at="2026-06-08T12:30:00",
-            preset_id="xau",
-            mode="contraction",
-            action="close",
+            order_time="2026-06-08 12:00:00",
         )
     )
     assert calls == 1
@@ -497,17 +485,18 @@ def main() -> int:
     cases = [
         ("日期反转自动交换", test_date_range_reversed_auto_swap),
         ("同一天日期范围", test_date_range_same_day),
-        ("空日期区间利润", test_profit_filter_empty_range),
-        ("品种筛选仅黄金", test_profit_filter_symbol_xau_only),
-        ("日期边界含起止", test_profit_boundary_date_inclusive),
+        ("对冲报表净利润合计", test_hedge_report_total_pnl),
+        ("空对冲报表", test_hedge_report_empty),
+        ("品种筛选仅黄金", test_hedge_report_product_filter_gold_only),
+        ("报表日期行数", test_hedge_report_boundary_dates_present),
         ("引擎启停幂等", test_engine_start_stop_idempotent),
         ("交易互斥锁", test_trading_mutex_blocks_concurrent),
         ("演示同向加仓", test_demo_double_open_adds),
         ("无持仓平仓演示", test_close_without_position_demo),
         ("收缩扩张业务闭环", test_expansion_contraction_business_loop),
         ("持仓检测与弹窗按钮", test_detect_hedge_mode_and_trade_dialog_buttons),
-        ("账本并发写入", test_ledger_concurrent_writes),
-        ("损坏账本 JSON 容错", test_corrupt_ledger_json),
+        ("锚点并发写入", test_trade_anchor_concurrent_writes),
+        ("损坏锚点 JSON 容错", test_corrupt_trade_anchor_json),
         ("配置特殊字符往返", test_config_special_chars_roundtrip),
         ("XLSX XML 转义", test_xlsx_xml_escape_injection),
         ("日志面板纯文本", test_log_panel_plain_text_no_html_exec),
@@ -515,7 +504,7 @@ def main() -> int:
         ("空分页", test_pagination_empty),
         ("无效 preset 不崩溃", test_invalid_preset_still_resolves_or_fails_gracefully),
         ("零手数映射边界", test_ba_quantity_zero_lot_map),
-        ("记录标签", test_record_label_modes),
+        ("对冲行标签", test_hedge_row_labels),
         ("空报告导出", test_export_empty_report),
         ("主窗口交易流程", test_main_window_trade_flow_offscreen),
         ("利润计算器日期", test_profit_calculator_dialog_query),

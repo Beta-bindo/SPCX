@@ -85,6 +85,31 @@ class HedgeHealthTests(unittest.TestCase):
         self.assertEqual(repair.mode, HedgeMode.CONTRACTION.value)
         self.assertEqual(repair.order_mode, GoldOrderMode.MARKET.value)
 
+    def test_qty_skew_uses_map_ratio_not_trade_lots(self):
+        """多次 0.01 手叠加后，不应因开仓手数配置为 2 而误报不齐。"""
+        config = AppConfig(xau_ba_qty_map=100.0, xau_mt5_lot_map=1.0, xau_trade_lots=2.0)
+        health = analyze_hedge_health(
+            "xau",
+            [
+                Position(platform="BA", symbol="XAUUSDT", side=Side.SELL, quantity=2.0),
+                Position(platform="MT5", symbol="XAUUSD", side=Side.BUY, quantity=0.02),
+            ],
+            config,
+        )
+        self.assertTrue(health.is_ok, health.title)
+
+    def test_qty_skew_detects_real_mismatch(self):
+        config = AppConfig(xau_ba_qty_map=100.0, xau_mt5_lot_map=1.0, xau_trade_lots=0.01)
+        health = analyze_hedge_health(
+            "xau",
+            [
+                Position(platform="BA", symbol="XAUUSDT", side=Side.SELL, quantity=2.0),
+                Position(platform="MT5", symbol="XAUUSD", side=Side.BUY, quantity=0.01),
+            ],
+            config,
+        )
+        self.assertEqual(health.code, "qty_skew")
+
     def test_suggest_repair_none_when_ok(self):
         health = analyze_hedge_health(
             "xau",

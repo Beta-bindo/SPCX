@@ -763,7 +763,9 @@ class MainWindow(QMainWindow):
             return True
         try:
             if fast:
-                self.license_service.ensure_approved_for_trade(self.config.connection_mode)
+                self.license_service.ensure_approved_for_trade(
+                    self.config.connection_mode, fast=True
+                )
             else:
                 self.license_service.ensure_approved()
             return True
@@ -812,7 +814,7 @@ class MainWindow(QMainWindow):
             return
         threading.Thread(
             target=service.upload_trade,
-            args=(record, self.engine.fetch_official_profit_report),
+            args=(record,),
             daemon=True,
             name="upload-trade",
         ).start()

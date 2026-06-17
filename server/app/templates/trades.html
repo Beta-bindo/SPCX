@@ -38,7 +38,7 @@
       <main class="admin-main">
         <header class="admin-page-head">
           <h1>交易助手 · 交易明细</h1>
-          <p class="sub">查看各用户上报的开仓与平仓明细（含下单时点差、双端价格、数量与方向）</p>
+          <p class="sub">查看各用户上报的对冲成交明细（与客户端利润计算器字段一致）</p>
         </header>
 
       <div class="card filter-bar">
@@ -54,9 +54,9 @@
             <option value="xag">白银 XAG</option>
           </select>
         </label>
-        <label>模式
+        <label>方向
           <select id="modeFilter" onchange="loadTrades(1)">
-            <option value="">全部模式</option>
+            <option value="">全部方向</option>
             <option value="contraction">收缩</option>
             <option value="expansion">扩张</option>
           </select>
@@ -114,54 +114,21 @@ const TRADE_LIST_ID = 'trades';
 const TRADE_LIST_COLUMNS = [
   { key: 'display_name', label: '用户' },
   { key: 'device_id', label: '机器码' },
-  { key: 'report_source', label: '来源' },
-  { key: 'action', label: '类型' },
-  { key: 'preset_id', label: '品种' },
-  { key: 'mode', label: '模式' },
-  { key: 'settled_at', label: '时间' },
-  { key: 'official_platform', label: '官方平台' },
-  { key: 'official_record_type', label: '官方类型' },
-  { key: 'official_time', label: '官方时间' },
-  { key: 'official_product', label: '产品' },
-  { key: 'official_symbol', label: 'symbol' },
-  { key: 'official_order_no', label: '订单号' },
-  { key: 'official_trade_no', label: '成交号' },
-  { key: 'official_side_type', label: 'side/type' },
-  { key: 'official_entry', label: 'entry' },
-  { key: 'official_price', label: 'price' },
-  { key: 'official_quantity', label: 'qty/volume' },
-  { key: 'official_quote_qty', label: 'quoteQty' },
-  { key: 'official_realized_pnl', label: 'realizedPnl' },
-  { key: 'official_profit', label: 'profit' },
-  { key: 'official_commission', label: 'commission' },
-  { key: 'official_commission_asset', label: 'commissionAsset' },
-  { key: 'official_fee', label: 'fee' },
-  { key: 'official_swap', label: 'swap' },
-  { key: 'official_income_type', label: 'incomeType' },
-  { key: 'official_income', label: 'income' },
-  { key: 'official_funding_fee', label: 'FUNDING_FEE' },
-  { key: 'official_rebate', label: 'rebate' },
-  { key: 'official_position_side', label: 'positionSide' },
-  { key: 'official_maker', label: 'maker' },
-  { key: 'official_buyer', label: 'buyer' },
-  { key: 'official_position_id', label: 'position_id' },
-  { key: 'official_reason', label: 'reason' },
-  { key: 'official_comment', label: 'comment' },
-  { key: 'official_external_id', label: 'external_id' },
-  { key: 'official_net', label: '官方net' },
-  { key: 'spread', label: '点差' },
-  { key: 'ba_price', label: 'BA价' },
-  { key: 'ex_price', label: 'Ex价' },
-  { key: 'ba_quantity', label: 'BA量' },
-  { key: 'mt5_quantity', label: 'Ex量' },
+  { key: 'ba_order_no', label: 'BA订单号' },
+  { key: 'ex_order_no', label: 'EX订单号' },
+  { key: 'product', label: '产品' },
   { key: 'direction', label: '方向' },
+  { key: 'ba_qty', label: 'BA数量' },
+  { key: 'ex_qty', label: 'EX数量' },
+  { key: 'ba_open_spread', label: 'BA开仓点数' },
+  { key: 'ba_close_spread', label: '平仓点数' },
   { key: 'ba_pnl', label: 'BA盈亏' },
-  { key: 'mt5_pnl', label: 'Ex盈亏' },
-  { key: 'ba_fee', label: 'BA手续费' },
-  { key: 'mt5_fee', label: 'Ex手续费' },
-  { key: 'ba_funding_fee', label: 'BA资金费' },
-  { key: 'ba_rebate', label: 'BA返佣' },
-  { key: 'net_pnl', label: '净利' },
+  { key: 'ex_open_spread', label: 'EX开仓点数' },
+  { key: 'ex_close_spread', label: 'EX平仓点数' },
+  { key: 'ba_charges', label: 'BA资费' },
+  { key: 'ba_commission', label: 'BA手续费' },
+  { key: 'order_time', label: '下单时间' },
+  { key: 'net_profit', label: '净利润' },
   { key: 'uploaded_at', label: '上报时间' },
 ];
 let adminToken = '';
@@ -174,57 +141,28 @@ function renderTradeCell(key, t) {
   switch (key) {
     case 'display_name': return esc(t.display_name || '-');
     case 'device_id': return `<code>${esc((t.device_id||'').slice(0,12))}…</code>`;
-    case 'report_source': return esc(t.report_source === 'official' ? '官方' : '本地');
-    case 'action': return esc(actionLabel(t.action));
-    case 'preset_id': return esc(presetLabel(t.preset_id));
-    case 'mode': return esc(modeLabel(t.mode));
-    case 'settled_at': return esc(fmtBeijing(t.settled_at));
-    case 'official_platform': return esc(t.official_platform || '-');
-    case 'official_record_type': return esc(t.official_record_type || '-');
-    case 'official_time': return esc(fmtBeijing(t.official_time || t.settled_at || ''));
-    case 'official_product': return esc(t.official_product || '-');
-    case 'official_symbol': return esc(t.official_symbol || '-');
-    case 'official_order_no': return esc(t.official_order_no || '-');
-    case 'official_trade_no': return esc(t.official_trade_no || '-');
-    case 'official_side_type': return esc(t.official_side_type || '-');
-    case 'official_entry': return esc(t.official_entry || '-');
-    case 'official_price': return esc(t.official_price || '-');
-    case 'official_quantity': return esc(t.official_quantity || '-');
-    case 'official_quote_qty': return esc(t.official_quote_qty || '-');
-    case 'official_realized_pnl': return esc(t.official_realized_pnl || '-');
-    case 'official_profit': return esc(t.official_profit || '-');
-    case 'official_commission': return esc(t.official_commission || '-');
-    case 'official_commission_asset': return esc(t.official_commission_asset || '-');
-    case 'official_fee': return esc(t.official_fee || '-');
-    case 'official_swap': return esc(t.official_swap || '-');
-    case 'official_income_type': return esc(t.official_income_type || '-');
-    case 'official_income': return esc(t.official_income || '-');
-    case 'official_funding_fee': return esc(t.official_funding_fee || '-');
-    case 'official_rebate': return esc(t.official_rebate || '-');
-    case 'official_position_side': return esc(t.official_position_side || '-');
-    case 'official_maker': return esc(t.official_maker || '-');
-    case 'official_buyer': return esc(t.official_buyer || '-');
-    case 'official_position_id': return esc(t.official_position_id || '-');
-    case 'official_reason': return esc(t.official_reason || '-');
-    case 'official_comment': return esc(t.official_comment || '-');
-    case 'official_external_id': return esc(t.official_external_id || '-');
-    case 'official_net': return fmtMoney(t.official_net);
-    case 'spread': return fmtSpread(t.spread);
-    case 'ba_price': return fmtPrice(t.ba_price);
-    case 'ex_price': return fmtPrice(t.ex_price);
-    case 'ba_quantity': return fmtQty(t.ba_quantity);
-    case 'mt5_quantity': return fmtQty(t.mt5_quantity);
-    case 'direction': return esc(t.direction || '-');
-    case 'ba_pnl': return fmtTradePnl(t.action, t.ba_pnl);
-    case 'mt5_pnl': return fmtTradePnl(t.action, t.mt5_pnl);
-    case 'ba_fee': return fmtMoney(t.ba_fee);
-    case 'mt5_fee': return fmtMoney(t.mt5_fee);
-    case 'ba_funding_fee': return fmtFundingFee(t.action, t.ba_funding_fee);
-    case 'ba_rebate': return fmtFundingFee(t.action, t.ba_rebate);
-    case 'net_pnl': {
-      const rowNet = t.net_pnl || 0;
-      return `<span class="${rowNet>=0?'pos':'neg'}">${fmtTradePnl(t.action, rowNet)}</span>`;
+    case 'ba_order_no':
+    case 'ex_order_no':
+    case 'product':
+    case 'direction':
+    case 'ba_qty':
+    case 'ex_qty':
+    case 'ba_open_spread':
+    case 'ba_close_spread':
+    case 'ex_open_spread':
+    case 'ex_close_spread':
+    case 'ba_charges':
+    case 'ba_commission':
+      return esc(t[key] || '--');
+    case 'ba_pnl':
+    case 'net_profit': {
+      const raw = t[key] || '--';
+      if (raw === '--') return '--';
+      const num = Number(String(raw).replace('+', ''));
+      const cls = num >= 0 ? 'pos' : 'neg';
+      return `<span class="${cls}">${esc(raw)}</span>`;
     }
+    case 'order_time': return esc(fmtBeijing(t.order_time || ''));
     case 'uploaded_at': return esc(fmtBeijing(t.uploaded_at));
     default: return '-';
   }
@@ -277,16 +215,13 @@ async function loadTrades(page) {
   tradePage = data.page || tradePage;
   const summary = data.summary || {};
   tradeSummaryCount = Number(summary.count ?? data.total ?? 0);
-  const net = Number(summary.net_pnl || 0);
+  const net = Number(summary.net_profit || 0);
   document.getElementById('tradeSummary').innerHTML = `
     <div class="summary-item"><span class="sub">筛选笔数</span><b>${summary.count || data.total || 0}</b></div>
     <div class="summary-item"><span class="sub">BA 盈亏合计</span><b class="${Number(summary.ba_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.ba_pnl)}</b></div>
-    <div class="summary-item"><span class="sub">EX 盈亏合计</span><b class="${Number(summary.mt5_pnl||0)>=0?'pos':'neg'}">${fmtMoney(summary.mt5_pnl)}</b></div>
-    <div class="summary-item"><span class="sub">BA 手续费合计</span><b>${fmtMoney(summary.ba_fee)}</b></div>
-    <div class="summary-item"><span class="sub">EX 手续费合计</span><b>${fmtMoney(summary.mt5_fee)}</b></div>
-    <div class="summary-item"><span class="sub">BA 资金费合计</span><b>${fmtMoney(summary.ba_funding_fee)}</b></div>
-    <div class="summary-item"><span class="sub">BA 返佣合计</span><b>${fmtMoney(summary.ba_rebate)}</b></div>
-    <div class="summary-item"><span class="sub">净利合计</span><b class="${net>=0?'pos':'neg'}">${fmtMoney(summary.net_pnl)}</b></div>
+    <div class="summary-item"><span class="sub">BA 手续费合计</span><b>${fmtMoney(summary.ba_commission)}</b></div>
+    <div class="summary-item"><span class="sub">BA 资费合计</span><b>${fmtMoney(summary.ba_charges)}</b></div>
+    <div class="summary-item"><span class="sub">净利润合计</span><b class="${net>=0?'pos':'neg'}">${fmtMoney(summary.net_profit)}</b></div>
   `;
   applyListTable({
     listId: TRADE_LIST_ID,

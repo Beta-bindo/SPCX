@@ -252,31 +252,6 @@ class SymbolActionStrip(QFrame):
         self.position_repair_btn.setFixedHeight(28)
         self.position_repair_btn.setVisible(False)
         position_header.addWidget(self.position_repair_btn)
-        self._position_header = position_wrap
-
-        self.pnl_detail = PnlDetailPanel(preset_id, parent=self)
-        self.pnl_detail.hedge_repair_requested.connect(
-            lambda repair, pid=preset_id: self.hedge_repair_requested.emit(pid, repair)
-        )
-        self.position_repair_btn.clicked.connect(self.pnl_detail.request_hedge_repair)
-        self.pending_label = QLabel("委托 —")
-        self.pending_label.setObjectName("pendingHint")
-        self.pending_label.setWordWrap(True)
-        self.pending_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        risk_row = QHBoxLayout()
-        risk_row.setContentsMargins(0, 0, 0, 0)
-        risk_row.setSpacing(6)
-        risk_wrap = QWidget(self)
-        risk_wrap.setFixedHeight(28)
-        risk_wrap.setLayout(risk_row)
-        self.risk_label = QLabel("爆仓缓冲 —")
-        self.risk_label.setObjectName("riskHint")
-        self.risk_label.setWordWrap(False)
-        self.risk_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
         self.refresh_positions_btn = QPushButton("刷新持仓")
         self.refresh_positions_btn.setObjectName("ghostButton")
         self.refresh_positions_btn.setProperty("compact", True)
@@ -284,9 +259,21 @@ class SymbolActionStrip(QFrame):
         self.refresh_positions_btn.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
-        risk_row.addWidget(self.risk_label)
-        risk_row.addWidget(self.refresh_positions_btn)
-        self._risk_row = risk_wrap
+        position_header.addWidget(self.refresh_positions_btn)
+        self._position_header = position_wrap
+
+        self.pnl_detail = PnlDetailPanel(preset_id, parent=self)
+        self.pnl_detail.hedge_repair_requested.connect(
+            lambda repair, pid=preset_id: self.hedge_repair_requested.emit(pid, repair)
+        )
+        self.position_repair_btn.clicked.connect(self.pnl_detail.request_hedge_repair)
+        # 委托/爆仓缓冲摘要行已移除，明细表内仍展示爆仓列
+        self.pending_label = QLabel()
+        self.pending_label.hide()
+        self.risk_label = QLabel()
+        self.risk_label.hide()
+        self._risk_row = QWidget(self)
+        self._risk_row.hide()
         self._last_risk_text = ""
         self._last_pending_text = ""
 
@@ -297,8 +284,6 @@ class SymbolActionStrip(QFrame):
         position_block_layout.setSpacing(6)
         position_block_layout.addWidget(self._position_header)
         position_block_layout.addWidget(self.pnl_detail)
-        position_block_layout.addWidget(self.pending_label)
-        position_block_layout.addWidget(self._risk_row)
 
         # 「自动交易」板块（可配置）
         self.auto_trade_settings = SymbolAutoTradeSettings(preset_id, parent=self)
@@ -519,89 +504,12 @@ class SymbolActionStrip(QFrame):
         self._update_position_status(ba, mt5, updated, config)
 
     def update_risk(self, ba_liq: float, mt5_liq: float) -> None:
-        """刷新本品种两端的爆仓缓冲展示。"""
-        def fmt(v: float) -> str:
-            return "∞" if v > 90000 else f"{v:.1f}"
-
-        text = f"爆仓缓冲 · BA {fmt(ba_liq)} / Ex {fmt(mt5_liq)}"
-        if text != self._last_risk_text:
-            self.risk_label.setText(text)
-            self._last_risk_text = text
+        """爆仓缓冲已改在盈亏明细表内展示，此处保留接口兼容。"""
+        return
 
     def update_open_orders(self, orders: list[OpenOrder]) -> None:
-        """刷新本品种两端的委托明细（总量 / 已成交 / 剩余 / BA 委托指数）。"""
-        preset = find_preset(self.preset_id)
-        ba_orders = [
-            o for o in orders if o.platform == "BA" and o.symbol == preset.symbol_ba
-        ]
-        mt5_orders = [
-            o for o in orders if o.platform == "MT5" and o.symbol == preset.symbol_mt5
-        ]
-
-        def _aggregate(platform_orders: list[OpenOrder]) -> tuple[float, float, float]:
-            total = sum(o.total_quantity for o in platform_orders)
-            filled = sum(o.filled_quantity for o in platform_orders)
-            remaining = sum(o.remaining_quantity for o in platform_orders)
-            return total, filled, remaining
-
-        def _ba_order_index(order: OpenOrder) -> float | None:
-            snap = self._last_spread
-            if snap is None or order.price <= 0:
-                return None
-            if order.reduce_only:
-                ex_ref = snap.mt5_bid if order.side == Side.BUY else snap.mt5_ask
-            else:
-                ex_ref = snap.mt5_ask if order.side == Side.SELL else snap.mt5_bid
-            if ex_ref <= 0:
-                return None
-            return order.price - ex_ref
-
-        def _order_price_index_text(platform_orders: list[OpenOrder]) -> str:
-            priced = [o for o in platform_orders if o.price > 0]
-            if not priced:
-                return ""
-            order = max(priced, key=lambda o: o.remaining_quantity)
-            text = f" @ {order.price:.3f}"
-            idx = _ba_order_index(order)
-            if idx is not None:
-                text += f" 指数{idx:+.3f}"
-            return text
-
-        def _fmt_ba(platform_orders: list[OpenOrder]) -> str:
-            if not platform_orders:
-                return "BA —"
-            open_orders = [o for o in platform_orders if not o.reduce_only]
-            close_orders = [o for o in platform_orders if o.reduce_only]
-            parts: list[str] = []
-            if open_orders:
-                total, filled, remaining = _aggregate(open_orders)
-                parts.append(
-                    f"开 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
-                    f"{_order_price_index_text(open_orders)}"
-                )
-            if close_orders:
-                total, filled, remaining = _aggregate(close_orders)
-                parts.append(
-                    f"平 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
-                    f"{_order_price_index_text(close_orders)}"
-                )
-            return "BA " + " · ".join(parts)
-
-        def _fmt_ex(platform: str, platform_orders: list[OpenOrder]) -> str:
-            if not platform_orders:
-                return f"{platform} —"
-            total, filled, remaining = _aggregate(platform_orders)
-            return (
-                f"{platform} 总量{total:.4g}/已成交{filled:.4g}/剩余{remaining:.4g}"
-            )
-
-        if not ba_orders and not mt5_orders:
-            text = "委托 —"
-        else:
-            text = f"委托 · {_fmt_ba(ba_orders)} · {_fmt_ex('Ex', mt5_orders)}"
-        if text != self._last_pending_text:
-            self.pending_label.setText(text)
-            self._last_pending_text = text
+        """委托摘要行已移除，此处保留接口兼容。"""
+        return
 
     def load_settings_from(self, config: AppConfig) -> None:
         """加载告警/自动交易/区块布局设置（加载期间屏蔽信号防误触发自动保存）。"""

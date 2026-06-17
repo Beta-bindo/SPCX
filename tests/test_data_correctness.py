@@ -16,9 +16,7 @@ from app.core.models import AppConfig, ConnectionMode, Position, Quote, Side, Sp
 from app.core.pnl_calculator import build_spread_snapshot, calculate_pnl
 from app.core.liquidation import estimate_liquidation_price
 from app.core.position_detail import build_platform_details
-from app.core.profit_calculator import calculate_profit
 from app.core.risk import _ba_liq_distance, build_risk_snapshot
-from app.core.trade_ledger import TradeLedger, TradeRecord
 from app.core.trading_service import hedge_mode_strategy_label, position_entry_spread
 
 
@@ -179,22 +177,21 @@ def run_hedge_scenario_tests(r: Report) -> None:
     r.check("收缩对冲价差有利时组合盈利", summary.gross_pnl > 0, f"gross={summary.gross_pnl}")
 
 
-def run_profit_ledger_tests(r: Report) -> None:
-    ledger = TradeLedger(
-        records=[
-            TradeRecord(
-                settled_at="2026-06-08T10:00:00",
-                preset_id="xau",
-                mode="contraction",
-                ba_pnl=100,
-                mt5_pnl=-20,
-                ba_fee=1,
-                mt5_fee=0.5,
-            ),
-        ]
+def run_profit_report_tests(r: Report) -> None:
+    from app.core.hedge_trade_report import HedgeTradeReport, build_row_from_settlement
+
+    row = build_row_from_settlement(
+        preset_id="xau",
+        mode="contraction",
+        action="close",
+        ba_pnl=100.0,
+        ex_pnl=-20.0,
+        ba_commission=1.0,
+        ba_charges=-2.5,
+        order_time="2026-06-08 10:00:00",
     )
-    rep = calculate_profit(ledger, __import__("datetime").date(2026, 6, 8), __import__("datetime").date(2026, 6, 8), "all")
-    r.check("利润结算净额", rep.total_pnl == round(100 - 20 - 1 - 0.5, 2))
+    rep = HedgeTradeReport(rows=[row])
+    r.check("利润结算净额", rep.total_pnl == 77.5, f"got {rep.total_pnl}")
 
 
 def run_platform_detail_tests(r: Report) -> None:
@@ -233,7 +230,7 @@ def main(repeat: int = 1) -> int:
         run_risk_tests(r)
         run_liq_price_tests(r)
         run_hedge_scenario_tests(r)
-        run_profit_ledger_tests(r)
+        run_profit_report_tests(r)
         run_platform_detail_tests(r)
         run_alert_boundary_tests(r)
         print("=" * 60)

@@ -170,6 +170,18 @@ def admin_verify_password_route(
     return {"ok": True}
 
 
+_PRODUCT_FILTER = {"xau": "黄金", "xag": "白银"}
+_DIRECTION_FILTER = {"contraction": "收缩", "expansion": "扩张"}
+
+
+def _money_text_sql(col: str) -> str:
+    """将 +/- 金额 TEXT 列解析为 REAL，供聚合与筛选使用。"""
+    return (
+        f"CASE WHEN {col} IS NULL OR TRIM({col}) IN ('', '--') THEN 0.0 "
+        f"ELSE CAST(REPLACE(TRIM({col}), '+', '') AS REAL) END"
+    )
+
+
 def _trade_where(
     *,
     device_id: Optional[str] = None,
@@ -185,23 +197,24 @@ def _trade_where(
         clauses.append("t.device_id = ?")
         params.append(device_id)
     if preset_id:
-        clauses.append("t.preset_id = ?")
-        params.append(preset_id)
+        clauses.append("t.product = ?")
+        params.append(_PRODUCT_FILTER.get(preset_id, preset_id))
     if mode:
-        clauses.append("t.mode = ?")
-        params.append(mode)
+        clauses.append("t.direction = ?")
+        params.append(_DIRECTION_FILTER.get(mode, mode))
     if date_from:
-        clauses.append("datetime(replace(t.settled_at, 'T', ' ')) >= datetime(?)")
+        clauses.append("datetime(replace(t.order_time, 'T', ' ')) >= datetime(?)")
         params.append(date_from.replace("T", " "))
     if date_to:
-        clauses.append("datetime(replace(t.settled_at, 'T', ' ')) <= datetime(?)")
+        clauses.append("datetime(replace(t.order_time, 'T', ' ')) <= datetime(?)")
         params.append(date_to.replace("T", " "))
+    net_expr = _money_text_sql("t.net_profit")
     if pnl == "profit":
-        clauses.append("t.net_pnl > 0")
+        clauses.append(f"({net_expr}) > 0")
     elif pnl == "loss":
-        clauses.append("t.net_pnl < 0")
+        clauses.append(f"({net_expr}) < 0")
     elif pnl == "flat":
-        clauses.append("t.net_pnl = 0")
+        clauses.append(f"({net_expr}) = 0")
     return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", params)
 
 
@@ -318,22 +331,24 @@ def list_trades(
             FROM trades t
             LEFT JOIN devices d ON d.device_id = t.device_id
             {where}
-            ORDER BY t.settled_at DESC
+            ORDER BY t.order_time DESC
             LIMIT ? OFFSET ?
             """,
             (*params, page_size, offset),
         ).fetchall()
         trades = [row_to_dict(r) for r in rows]
+        ba_expr = _money_text_sql("ba_pnl")
+        comm_expr = _money_text_sql("ba_commission")
+        charges_expr = _money_text_sql("ba_charges")
+        net_expr = _money_text_sql("net_profit")
         summary_row = conn.execute(
             f"""
             SELECT
-                COALESCE(SUM(ba_pnl), 0),
-                COALESCE(SUM(mt5_pnl), 0),
-                COALESCE(SUM(ba_fee), 0),
-                COALESCE(SUM(mt5_fee), 0),
-                COALESCE(SUM(ba_funding_fee), 0),
-                COALESCE(SUM(ba_rebate), 0),
-                COALESCE(SUM(net_pnl), 0)
+                COUNT(*),
+                COALESCE(SUM({ba_expr}), 0),
+                COALESCE(SUM({comm_expr}), 0),
+                COALESCE(SUM({charges_expr}), 0),
+                COALESCE(SUM({net_expr}), 0)
             FROM trades t{where}
             """,
             params,
@@ -347,13 +362,10 @@ def list_trades(
         "pages": pages,
         "summary": {
             "count": total,
-            "ba_pnl": round(summary_row[0], 2),
-            "mt5_pnl": round(summary_row[1], 2),
-            "ba_fee": round(summary_row[2], 4),
-            "mt5_fee": round(summary_row[3], 4),
-            "ba_funding_fee": round(summary_row[4], 4),
-            "ba_rebate": round(summary_row[5], 4),
-            "net_pnl": round(summary_row[6], 2),
+            "ba_pnl": round(summary_row[1], 2),
+            "ba_commission": round(summary_row[2], 4),
+            "ba_charges": round(summary_row[3], 4),
+            "net_profit": round(summary_row[4], 2),
         },
     }
 
@@ -424,15 +436,10 @@ def export_trades(
     )
     max_rows = settings.export_max_rows
     header = [
-        "用户", "联系方式", "机器码", "来源", "类型", "品种", "模式", "时间",
-        "官方平台", "官方类型", "官方时间", "产品", "symbol", "订单号",
-        "成交号", "side/type", "entry", "price", "qty/volume", "quoteQty",
-        "realizedPnl", "profit", "commission", "commissionAsset", "fee",
-        "swap", "incomeType", "income", "FUNDING_FEE", "rebate", "positionSide",
-        "maker", "buyer", "position_id", "reason", "comment", "external_id",
-        "官方net", "点差", "BA价", "Ex价", "BA数量", "Ex数量", "方向",
-        "BA盈亏", "Exness盈亏", "BA手续费", "Exness手续费", "BA资金费",
-        "BA返佣", "净利", "上报时间",
+        "用户", "联系方式", "机器码",
+        "BA订单号", "EX订单号", "产品", "方向", "BA数量", "EX数量",
+        "BA开仓点数", "平仓点数", "BA盈亏", "EX开仓点数", "EX平仓点数",
+        "BA资费", "BA手续费", "下单时间", "净利润", "上报时间",
     ]
 
     def _generate():
@@ -451,7 +458,7 @@ def export_trades(
                 FROM trades t
                 LEFT JOIN devices d ON d.device_id = t.device_id
                 {where}
-                ORDER BY t.settled_at DESC
+                ORDER BY t.order_time DESC
                 LIMIT ?
                 """,
                 (*params, max_rows),
@@ -467,54 +474,21 @@ def export_trades(
                             item.get("display_name") or "",
                             item.get("contact") or "",
                             item.get("device_id") or "",
-                            "官方" if item.get("report_source") == "official" else "本地",
-                            "开仓" if item.get("action") == "open" else "平仓",
-                            item.get("preset_id") or "",
-                            item.get("mode") or "",
-                            item.get("settled_at") or "",
-                            item.get("official_platform") or "",
-                            item.get("official_record_type") or "",
-                            item.get("official_time") or "",
-                            item.get("official_product") or "",
-                            item.get("official_symbol") or "",
-                            item.get("official_order_no") or "",
-                            item.get("official_trade_no") or "",
-                            item.get("official_side_type") or "",
-                            item.get("official_entry") or "",
-                            item.get("official_price") or "",
-                            item.get("official_quantity") or "",
-                            item.get("official_quote_qty") or "",
-                            item.get("official_realized_pnl") or "",
-                            item.get("official_profit") or "",
-                            item.get("official_commission") or "",
-                            item.get("official_commission_asset") or "",
-                            item.get("official_fee") or "",
-                            item.get("official_swap") or "",
-                            item.get("official_income_type") or "",
-                            item.get("official_income") or "",
-                            item.get("official_funding_fee") or "",
-                            item.get("official_rebate") or "",
-                            item.get("official_position_side") or "",
-                            item.get("official_maker") or "",
-                            item.get("official_buyer") or "",
-                            item.get("official_position_id") or "",
-                            item.get("official_reason") or "",
-                            item.get("official_comment") or "",
-                            item.get("official_external_id") or "",
-                            item.get("official_net") or 0,
-                            item.get("spread") or 0,
-                            item.get("ba_price") or 0,
-                            item.get("ex_price") or 0,
-                            item.get("ba_quantity") or 0,
-                            item.get("mt5_quantity") or 0,
+                            item.get("ba_order_no") or "",
+                            item.get("ex_order_no") or "",
+                            item.get("product") or "",
                             item.get("direction") or "",
-                            item.get("ba_pnl") or 0,
-                            item.get("mt5_pnl") or 0,
-                            item.get("ba_fee") or 0,
-                            item.get("mt5_fee") or 0,
-                            item.get("ba_funding_fee") or 0,
-                            item.get("ba_rebate") or 0,
-                            item.get("net_pnl") or 0,
+                            item.get("ba_qty") or "",
+                            item.get("ex_qty") or "",
+                            item.get("ba_open_spread") or "",
+                            item.get("ba_close_spread") or "",
+                            item.get("ba_pnl") or "",
+                            item.get("ex_open_spread") or "",
+                            item.get("ex_close_spread") or "",
+                            item.get("ba_charges") or "",
+                            item.get("ba_commission") or "",
+                            item.get("order_time") or "",
+                            item.get("net_profit") or "",
                             item.get("uploaded_at") or "",
                         ]
                     )
@@ -563,14 +537,19 @@ def device_trades(device_id: str, admin: RequireDevices) -> dict:
         rows = conn.execute(
             """
             SELECT * FROM trades WHERE device_id = ?
-            ORDER BY settled_at DESC LIMIT 500
+            ORDER BY order_time DESC LIMIT 500
             """,
             (device_id,),
         ).fetchall()
+        net_expr = _money_text_sql("net_profit")
+        net_total = conn.execute(
+            f"SELECT COALESCE(SUM({net_expr}), 0) FROM trades WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()[0]
     trades = [row_to_dict(r) for r in rows]
     summary = {
         "count": len(trades),
-        "net_pnl": round(sum(t.get("net_pnl") or 0 for t in trades), 2),
+        "net_profit": round(net_total, 2),
     }
     return {"device": enrich_device(dev), "summary": summary, "trades": trades}
 
@@ -860,7 +839,10 @@ def admin_stats(admin: RequireDashboard) -> dict:
             """
         ).fetchall()
         trade_count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-        total_pnl = conn.execute("SELECT COALESCE(SUM(net_pnl), 0) FROM trades").fetchone()[0]
+        net_expr = _money_text_sql("net_profit")
+        total_pnl = conn.execute(
+            f"SELECT COALESCE(SUM({net_expr}), 0) FROM trades"
+        ).fetchone()[0]
         online = conn.execute(
             "SELECT COUNT(*) FROM devices WHERE last_seen_at >= ?",
             ((now - timedelta(seconds=900)).isoformat(),),
@@ -920,31 +902,30 @@ def admin_dashboard(*, days: int = 30, admin: RequireDashboard) -> dict:
     bj_now = datetime.now(timezone.utc) + timedelta(hours=8)
     start = (bj_now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     with get_conn() as conn:
-        # 按北京时区日期聚合：settled_at 存 UTC ISO，+8 小时后取日期
+        # 按北京时区日期聚合：order_time 为本地时间字符串
+        net_expr = _money_text_sql("net_profit")
         daily_rows = conn.execute(
-            """
+            f"""
             SELECT
-                date(datetime(replace(settled_at, 'T', ' '), '+8 hours')) AS day,
+                date(datetime(replace(order_time, 'T', ' '), '+8 hours')) AS day,
                 COUNT(*) AS cnt,
-                COALESCE(SUM(net_pnl), 0) AS net,
+                COALESCE(SUM({net_expr}), 0) AS net,
                 COUNT(DISTINCT device_id) AS users
             FROM trades
-            WHERE action = 'close'
-              AND date(datetime(replace(settled_at, 'T', ' '), '+8 hours')) >= ?
+            WHERE date(datetime(replace(order_time, 'T', ' '), '+8 hours')) >= ?
             GROUP BY day
             ORDER BY day
             """,
             (start,),
         ).fetchall()
         top_rows = conn.execute(
-            """
+            f"""
             SELECT t.device_id,
                    COALESCE(d.display_name, '') AS display_name,
                    COUNT(*) AS cnt,
-                   COALESCE(SUM(t.net_pnl), 0) AS net
+                   COALESCE(SUM({_money_text_sql('t.net_profit')}), 0) AS net
             FROM trades t
             LEFT JOIN devices d ON d.device_id = t.device_id
-            WHERE t.action = 'close'
             GROUP BY t.device_id
             ORDER BY net DESC
             LIMIT 10

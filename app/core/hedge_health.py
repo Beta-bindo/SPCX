@@ -33,6 +33,13 @@ class HedgeRepair:
     tooltip: str = ""             # 鼠标悬浮提示
 
 
+def _qty_map_ratio(config: AppConfig, preset_id: str) -> float:
+    """配置中 BA 数量与 Ex 手数的固定配比（与单次开仓手数无关）。"""
+    if preset_id == "xag":
+        return config.xag_ba_qty_map / max(config.xag_mt5_lot_map, 0.001)
+    return config.xau_ba_qty_map / max(config.xau_mt5_lot_map, 0.001)
+
+
 def _side_label(side: Side) -> str:
     """方向枚举 → 显示文本。"""
     if side == Side.BUY:
@@ -103,12 +110,18 @@ def analyze_hedge_health(
 
     mode_label = "收缩" if mode == HedgeMode.CONTRACTION else "扩张"
     if config is not None:
-        # 两边实际持仓量与配置预期量的比值：任一边明显偏小，或两边比值相差过大，判为不齐
-        expected_ba = config.ba_quantity_for(preset_id)
-        expected_ex = config.mt5_lot_for(preset_id)
-        ba_ratio = ba_pos.quantity / expected_ba if expected_ba > 0 else 1.0
-        ex_ratio = mt5_pos.quantity / expected_ex if expected_ex > 0 else 1.0
-        if ba_ratio < 0.85 or ex_ratio < 0.85 or abs(ba_ratio - ex_ratio) > 0.2:
+        # 按 BA:Ex 配比核对（如 100:0.01 手），而非与「当前开仓手数」单次预期比较。
+        # 否则开仓手数设为 2 而实际持仓为 2 次 0.01 手叠加时，会误报数量不齐。
+        map_ratio = _qty_map_ratio(config, preset_id)
+        actual_ratio = (
+            ba_pos.quantity / mt5_pos.quantity if mt5_pos.quantity > 0 else 0.0
+        )
+        if map_ratio <= 0 or actual_ratio <= 0:
+            qty_skew = True
+        else:
+            rel_err = abs(actual_ratio - map_ratio) / map_ratio
+            qty_skew = rel_err > 0.15
+        if qty_skew:
             return HedgeHealth(
                 "warn",
                 "qty_skew",

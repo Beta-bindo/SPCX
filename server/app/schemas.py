@@ -68,58 +68,22 @@ class HeartbeatResponse(BaseModel):
 
 
 class TradeItem(BaseModel):
-    report_source: str = "ledger"
-    settled_at: str
-    preset_id: str
-    mode: str
-    action: str = "close"
-    spread: float = 0.0
-    ba_price: float = 0.0
-    ex_price: float = 0.0
-    ba_quantity: float = 0.0
-    mt5_quantity: float = 0.0
-    ba_side: str = ""
-    mt5_side: str = ""
+    ba_order_no: str = ""
+    ex_order_no: str = ""
+    product: str = ""
     direction: str = ""
-    ba_pnl: float = 0.0
-    mt5_pnl: float = 0.0
-    ba_fee: float = 0.0
-    mt5_fee: float = 0.0
-    ba_funding_fee: float = 0.0
-    ba_rebate: float = 0.0
-    net_pnl: float = 0.0
-    official_platform: str = ""
-    official_record_type: str = ""
-    official_key: str = ""
-    official_time: str = ""
-    official_product: str = ""
-    official_symbol: str = ""
-    official_order_no: str = ""
-    official_trade_no: str = ""
-    official_side_type: str = ""
-    official_entry: str = ""
-    official_price: str = ""
-    official_quantity: str = ""
-    official_quote_qty: str = ""
-    official_realized_pnl: str = ""
-    official_profit: str = ""
-    official_commission: str = ""
-    official_commission_asset: str = ""
-    official_fee: str = ""
-    official_swap: str = ""
-    official_income_type: str = ""
-    official_income: str = ""
-    official_funding_fee: str = ""
-    official_rebate: str = ""
-    official_position_side: str = ""
-    official_maker: str = ""
-    official_buyer: str = ""
-    official_position_id: str = ""
-    official_reason: str = ""
-    official_comment: str = ""
-    official_external_id: str = ""
-    official_net: float = 0.0
-    official_raw_json: str = ""
+    ba_qty: str = ""
+    ex_qty: str = ""
+    ba_open_spread: str = ""
+    ba_close_spread: str = ""
+    ba_pnl: str = ""
+    ex_open_spread: str = ""
+    ex_close_spread: str = ""
+    ba_charges: str = ""
+    ba_commission: str = ""
+    order_time: str = ""
+    net_profit: str = ""
+    record_key: str = ""
 
 
 class TradeBatchRequest(BaseModel):

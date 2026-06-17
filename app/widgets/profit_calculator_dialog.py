@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,11 +21,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.core.official_profit import (
-    OFFICIAL_FIELD_LABELS,
-    OFFICIAL_FIELD_ORDER,
-    OfficialProfitReport,
-    OfficialProfitRow,
+from app.core.hedge_trade_report import (
+    FIELD_LABELS,
+    FIELD_ORDER,
+    HedgeTradeReport,
+    HedgeTradeRow,
 )
 from app.core.profit_export import export_profit_xlsx
 from app.widgets.date_range_picker import DateRangePicker
@@ -34,9 +35,14 @@ from app.widgets.table_pagination import TablePagination
 class ProfitCalculatorDialog(QDialog):
     """利润计算器：筛选条件 + 汇总卡 + 分页明细表 + 导出。"""
 
+    # 后台线程查询完成后，跨线程把报表投递回主线程渲染（QueuedConnection）。
+    _report_ready = Signal(object)
+
     def __init__(self, parent=None, *, engine=None, trade_recorded_signal=None):
         super().__init__(parent)
         self._engine = engine
+        self._querying = False
+        self._query_seq = 0
         self.setWindowTitle("利润计算器")
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.resize(1080, 640)
@@ -64,10 +70,10 @@ class ProfitCalculatorDialog(QDialog):
         self.symbol_combo.addItem("白银", "xag")
         self.symbol_combo.setCurrentIndex(0)
 
-        calc_btn = QPushButton("查询")
-        calc_btn.setObjectName("primaryButton")
-        calc_btn.setMinimumSize(88, 36)
-        calc_btn.clicked.connect(self._calculate)
+        self.calc_btn = QPushButton("查询")
+        self.calc_btn.setObjectName("primaryButton")
+        self.calc_btn.setMinimumSize(88, 36)
+        self.calc_btn.clicked.connect(self._calculate)
         export_btn = QPushButton("导出记录")
         export_btn.setObjectName("ghostButton")
         export_btn.setMinimumSize(96, 36)
@@ -79,7 +85,7 @@ class ProfitCalculatorDialog(QDialog):
         filter_bar.addWidget(product_label)
         filter_bar.addWidget(self.symbol_combo)
         filter_bar.addStretch()
-        filter_bar.addWidget(calc_btn)
+        filter_bar.addWidget(self.calc_btn)
         filter_bar.addWidget(export_btn)
         root.addLayout(filter_bar)
 
@@ -107,7 +113,7 @@ class ProfitCalculatorDialog(QDialog):
         summary_row.addStretch()
         root.addWidget(summary)
 
-        self._headers = list(OFFICIAL_FIELD_ORDER)
+        self._headers = list(FIELD_ORDER)
         self.table = QTableWidget(0, len(self._headers))
         self.table.setObjectName("profitTable")
         self.table.setHorizontalHeaderLabels(self._header_labels(self._headers))
@@ -140,9 +146,10 @@ class ProfitCalculatorDialog(QDialog):
             close_btn.setText("关闭")
         root.addWidget(buttons)
 
-        self._last_report: OfficialProfitReport | None = None
-        self._all_rows: list[OfficialProfitRow] = []
+        self._last_report: HedgeTradeReport | None = None
+        self._all_rows: list[HedgeTradeRow] = []
         self._empty_message = "该时段无官方历史成交"
+        self._report_ready.connect(self._apply_report)
         if trade_recorded_signal is not None:
             trade_recorded_signal.connect(self._on_trade_recorded)
         self._calculate()
@@ -156,35 +163,60 @@ class ProfitCalculatorDialog(QDialog):
 
     @staticmethod
     def _header_labels(headers: list[str]) -> list[str]:
-        return [OFFICIAL_FIELD_LABELS.get(h, h) for h in headers]
+        return [FIELD_LABELS.get(h, h) for h in headers]
 
     def _set_headers(self, headers: list[str]) -> None:
-        self._headers = headers or list(OFFICIAL_FIELD_ORDER[:8])
+        self._headers = headers or list(FIELD_ORDER)
         self.table.setColumnCount(len(self._headers))
         self.table.setHorizontalHeaderLabels(self._header_labels(self._headers))
 
     def _calculate(self) -> None:
-        """按当前筛选条件查询 BA/EX 官方历史成交并刷新汇总与表格。"""
+        """后台线程查询 BA/EX 官方历史成交，避免同步 HTTP 卡死 UI 主线程。"""
+        if self._engine is None:
+            report = HedgeTradeReport()
+            report.errors.append("未连接交易引擎，无法查询官方历史成交")
+            self._apply_report(report)
+            return
+        if self._querying:
+            return
+        self._querying = True
+        self._query_seq += 1
+        seq = self._query_seq
         start, end = self._date_range()
         symbol = self.symbol_combo.currentData()
-        if self._engine is None:
-            report = OfficialProfitReport()
-            report.errors.append("未连接交易引擎，无法查询官方历史成交")
-        else:
-            report = self._engine.fetch_official_profit_report(start, end, symbol)
+        engine = self._engine
+
+        self.calc_btn.setEnabled(False)
+        self._all_rows = []
+        self._empty_message = "正在查询官方历史成交…"
+        self._set_headers(list(FIELD_ORDER))
+        self.pagination.set_total(0)
+        self._render_page()
+
+        def _work() -> None:
+            try:
+                report = engine.fetch_official_profit_report(start, end, symbol)
+            except Exception as exc:  # noqa: BLE001
+                report = HedgeTradeReport()
+                report.errors.append(f"查询失败: {exc}")
+            # 仅最近一次查询的结果才生效，避免过期响应覆盖新查询
+            if seq == self._query_seq:
+                self._report_ready.emit(report)
+
+        threading.Thread(target=_work, daemon=True, name="profit-calc").start()
+
+    def _apply_report(self, report: HedgeTradeReport) -> None:
+        """主线程渲染查询结果（由 _report_ready 投递）。"""
+        self._querying = False
+        self.calc_btn.setEnabled(True)
         self._last_report = report
         count = report.row_count
         self.count_lbl.setText(f"笔数 {count}")
-        self.ba_pnl_lbl.setText(f"BA利润 ${report.ba_pnl:+.2f}")
-        self.mt5_pnl_lbl.setText(f"Exness利润 ${report.mt5_profit:+.2f}")
-        self.fee_lbl.setText(
-            f"BA手续费 ${report.ba_commission:.4f} · EX费用 ${report.mt5_charges:+.4f}"
-        )
-        self.ba_charges_lbl.setText(
-            f"BA资费 ${report.ba_charges:+.4f}"
-            f"（资金费 {report.ba_funding_fee:+.4f} · 返佣 {report.ba_rebate:+.4f}）"
-        )
-        self.total_lbl.setText(f"总利润 ${report.total_pnl:+.2f}")
+        self.ba_pnl_lbl.setText(f"BA盈亏 ${report.ba_pnl:+.2f}")
+        self.mt5_pnl_lbl.setText(f"EX盈亏 ${report.ex_pnl:+.2f}")
+        self.fee_lbl.setText(f"BA手续费 ${report.ba_commission:.4f}")
+        self.ba_charges_lbl.setText(f"BA资费 ${report.ba_charges_total:+.4f}")
+        self.total_lbl.setText(f"净利润 ${report.total_pnl:+.2f}")
 
         self._all_rows = report.rows
         self._empty_message = "；".join(report.errors) if report.errors else "该时段无官方历史成交"
@@ -194,8 +226,8 @@ class ProfitCalculatorDialog(QDialog):
         self._render_page()
 
     def _on_trade_recorded(self, record) -> None:
-        """有新的平仓结算写入本地流水时，自动刷新已打开的计算器。"""
-        if getattr(record, "action", "") == "close":
+        """有新的成交上报行时，自动刷新已打开的计算器。"""
+        if isinstance(record, HedgeTradeRow):
             self._calculate()
 
     def _render_page(self) -> None:

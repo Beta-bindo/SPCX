@@ -32,7 +32,13 @@ from app.core.models import (
     SpreadSnapshot,
 )
 from app.core.network_status import NetworkStatus
-from app.core.official_profit import OfficialProfitReport, fetch_official_profit_report
+from app.core.hedge_trade_report import (
+    HedgeTradeReport,
+    HedgeTradeRow,
+    build_row_from_settlement,
+    fetch_hedge_trade_report,
+)
+from app.core.trade_anchor import funding_period_start, hedge_sides, record_trade_anchor
 from app.core.pnl_calculator import (
     PnlSummary,
     build_spread_snapshot,
@@ -42,7 +48,6 @@ from app.core.pnl_calculator import (
 from app.core.risk import build_risk_snapshot
 from app.core.symbols import WATCHED_PRESETS, find_preset, watched_ba_symbols
 from app.core.app_log import LogLevel, should_log
-from app.core.trade_ledger import funding_period_start, hedge_sides, record_close_settlement, record_trade
 from app.core.trade_result import HedgeTradeResult
 from app.core.trading_service import close_hedge, open_hedge, position_entry_spread
 from app.connectors.binance_connector import BinanceConnector
@@ -445,28 +450,32 @@ class SpreadEngine(QObject):
                     self._balance_delta(account_before, account_after, "MT5"),
                     mt5_fee,
                 )
-                rec = record_trade(
-                    preset_id,
-                    mode,
-                    "open",
-                    spread=actual_spread,
-                    ba_price=actual_ba_price,
-                    ex_price=actual_ex_price,
-                    ba_quantity=actual_ba_qty,
-                    mt5_quantity=actual_mt5_qty,
-                    ba_side=ba_side,
-                    mt5_side=mt5_side,
-                    ba_fee=ba_fee,
-                    mt5_fee=mt5_fee,
+                row = build_row_from_settlement(
+                    preset_id=preset_id,
+                    mode=mode,
+                    action="open",
+                    ba_order_no=str(ba_leg.order_id) if ba_leg and ba_leg.order_id else "",
+                    ex_order_no=str(mt5_leg.order_id) if mt5_leg and mt5_leg.order_id else "",
+                    ba_qty=actual_ba_qty,
+                    ex_qty=actual_mt5_qty,
+                    ba_open_spread=actual_spread,
+                    ba_close_spread=None,
+                    ex_open_spread=actual_spread,
+                    ex_close_spread=None,
+                    ba_pnl=None,
+                    ex_pnl=None,
+                    ba_charges=None,
+                    ba_commission=ba_fee if ba_fee else None,
                 )
+                record_trade_anchor(preset_id, mode, "open", row.order_time)
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
-                    f"【上报】{label} 开仓{mlabel} · 点差 {rec.spread:+.3f} "
-                    f"BA {rec.ba_price:.3f} / Ex {rec.ex_price:.3f}",
+                    f"【上报】{label} 开仓{mlabel} · 点差 {actual_spread:+.3f} "
+                    f"BA {actual_ba_price:.3f} / Ex {actual_ex_price:.3f}",
                 )
-                self.trade_recorded.emit(rec)
+                self.trade_recorded.emit(row)
                 preset = find_preset(preset_id)
                 ba_pos = next(
                     (
@@ -592,33 +601,41 @@ class SpreadEngine(QObject):
                         )
                         ba_funding_fee = round(raw_funding * ratio, 4)
                         ba_rebate = round(raw_rebate * ratio, 4)
-                rec = record_close_settlement(
-                    preset_id,
-                    mode,
-                    ba_pnl,
-                    mt5_pnl,
-                    ba_fee,
-                    mt5_fee,
-                    ba_funding_fee,
-                    ba_rebate,
-                    spread=actual_spread,
-                    ba_price=actual_ba_price,
-                    ex_price=actual_ex_price,
-                    ba_quantity=close_ba_qty or ba_qty_cfg,
-                    mt5_quantity=close_mt5_qty or mt5_qty_cfg,
-                    ba_side=ba_side,
-                    mt5_side=mt5_side,
-                    ba_pnl_includes_fee=ba_pnl_includes_fee,
-                    mt5_pnl_includes_fee=mt5_pnl_includes_fee,
+                entry_spread = position_entry_spread(ba_pos, mt5_pos)
+                ba_charges = round(ba_funding_fee + ba_rebate, 4)
+                ba_commission = 0.0 if ba_pnl_includes_fee else ba_fee
+                ex_commission = 0.0 if mt5_pnl_includes_fee else mt5_fee
+                net_pnl = round(
+                    ba_pnl + mt5_pnl + ba_charges - ba_commission - ex_commission,
+                    2,
                 )
+                row = build_row_from_settlement(
+                    preset_id=preset_id,
+                    mode=mode,
+                    action="close",
+                    ba_order_no=str(ba_leg.order_id) if ba_leg and ba_leg.order_id else "",
+                    ex_order_no=str(mt5_leg.order_id) if mt5_leg and mt5_leg.order_id else "",
+                    ba_qty=close_ba_qty or ba_qty_cfg,
+                    ex_qty=close_mt5_qty or mt5_qty_cfg,
+                    ba_open_spread=entry_spread,
+                    ba_close_spread=actual_spread,
+                    ex_open_spread=entry_spread,
+                    ex_close_spread=actual_spread,
+                    ba_pnl=ba_pnl,
+                    ex_pnl=mt5_pnl,
+                    ba_charges=ba_charges if ba_charges else None,
+                    ba_commission=ba_commission if ba_commission else None,
+                )
+                row.net_profit = f"{net_pnl:+.2f}"
+                record_trade_anchor(preset_id, mode, "close", row.order_time)
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
-                    f"【结算】{label} 平仓{mlabel} · 点差 {rec.spread:+.3f} "
-                    f"BA {rec.ba_price:.3f} / Ex {rec.ex_price:.3f} · 净利 {rec.net_pnl:+.2f}",
+                    f"【结算】{label} 平仓{mlabel} · 点差 {actual_spread:+.3f} "
+                    f"BA {actual_ba_price:.3f} / Ex {actual_ex_price:.3f} · 净利 {net_pnl:+.2f}",
                 )
-                self.trade_recorded.emit(rec)
+                self.trade_recorded.emit(row)
             if result.success:
                 self._log_remaining_positions(preset_id)
             self.trade_finished.emit(result)
@@ -917,9 +934,9 @@ class SpreadEngine(QObject):
 
     def fetch_official_profit_report(
         self, start: date, end: date, symbol_filter: str = "all"
-    ) -> OfficialProfitReport:
-        """利润计算器使用官方历史成交，不再读取本地流水。"""
-        return fetch_official_profit_report(
+    ) -> HedgeTradeReport:
+        """利润计算器：从 BA/EX 官方历史成交拉取对冲报表。"""
+        return fetch_hedge_trade_report(
             self.binance,
             self.mt5,
             self.config,

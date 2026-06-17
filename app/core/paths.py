@@ -15,7 +15,3 @@ def exports_dir() -> Path:
     d = user_data_dir() / "exports"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def ledger_path() -> Path:
-    return user_data_dir() / "trade_ledger.json"

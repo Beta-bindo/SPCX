@@ -51,8 +51,31 @@ def _insert_device(conn, device_id, status="approved", expires_at=None):
     )
 
 
+def _sample_trade(**overrides) -> TradeItem:
+    data = {
+        "ba_order_no": "7001",
+        "ex_order_no": "12345",
+        "product": "黄金",
+        "direction": "收缩",
+        "ba_qty": "500",
+        "ex_qty": "1",
+        "ba_open_spread": "+3.125",
+        "ba_close_spread": "--",
+        "ba_pnl": "--",
+        "ex_open_spread": "+3.125",
+        "ex_close_spread": "--",
+        "ba_charges": "--",
+        "ba_commission": "-0.2500",
+        "order_time": "2026-06-10 12:00:00",
+        "net_profit": "-0.2500",
+        "record_key": "7001|12345|2026-06-10 12:00:00",
+    }
+    data.update(overrides)
+    return TradeItem(**data)
+
+
 class ServerTradeApiTests(unittest.TestCase):
-    def test_trade_upload_persists_order_fields(self):
+    def test_trade_upload_persists_hedge_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "license.db"
             from server.app import config as cfg_mod
@@ -74,24 +97,7 @@ class ServerTradeApiTests(unittest.TestCase):
                         (device_id,),
                     )
 
-                body = TradeBatchRequest(
-                    trades=[
-                        TradeItem(
-                            settled_at="2026-06-10T12:00:00",
-                            preset_id="xau",
-                            mode="contraction",
-                            action="open",
-                            spread=3.125,
-                            ba_price=2650.5,
-                            ex_price=2647.375,
-                            ba_quantity=500.0,
-                            mt5_quantity=1.0,
-                            ba_side="SELL",
-                            mt5_side="BUY",
-                            direction="BA SELL / Ex BUY",
-                        )
-                    ]
-                )
+                body = TradeBatchRequest(trades=[_sample_trade()])
                 result = upload_trades(body, authorization=f"Bearer {token}")
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["inserted"], 1)
@@ -101,55 +107,30 @@ class ServerTradeApiTests(unittest.TestCase):
                         "SELECT * FROM trades WHERE device_id = ?", (device_id,)
                     ).fetchone()
                 data = dict(row)
-                self.assertEqual(data["action"], "open")
-                self.assertEqual(data["spread"], 3.125)
-                self.assertEqual(data["ba_price"], 2650.5)
-                self.assertEqual(data["ex_price"], 2647.375)
-                self.assertEqual(data["ba_quantity"], 500.0)
-                self.assertEqual(data["mt5_quantity"], 1.0)
-                self.assertEqual(data["direction"], "BA SELL / Ex BUY")
+                self.assertEqual(data["ba_order_no"], "7001")
+                self.assertEqual(data["ex_order_no"], "12345")
+                self.assertEqual(data["product"], "黄金")
+                self.assertEqual(data["direction"], "收缩")
+                self.assertEqual(data["ba_open_spread"], "+3.125")
+                self.assertEqual(data["net_profit"], "-0.2500")
 
-    def test_official_trade_upload_persists_multiple_exchange_rows(self):
+    def test_trade_upload_dedupes_by_record_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "license.db"
             with patched_settings(db_path):
                 init_db()
-                device_id = "official-dev-001"
+                device_id = "dedup-dev-001"
                 token = create_device_token(device_id, "approved")
                 with get_conn() as conn:
                     _insert_device(conn, device_id, status="approved")
 
                 body = TradeBatchRequest(
                     trades=[
-                        TradeItem(
-                            report_source="official",
-                            settled_at="2026-06-10 12:00:00",
-                            preset_id="xau",
-                            mode="contraction",
-                            action="open",
-                            net_pnl=1.25,
-                            official_platform="BA",
-                            official_record_type="userTrades",
-                            official_key="BA|userTrades|XAUUSDT|9001",
-                            official_time="2026-06-10 12:00:00",
-                            official_order_no="7001",
-                            official_trade_no="9001",
-                            official_commission="0.25",
-                        ),
-                        TradeItem(
-                            report_source="official",
-                            settled_at="2026-06-10 12:00:00",
-                            preset_id="xau",
-                            mode="contraction",
-                            action="open",
-                            net_pnl=-0.50,
-                            official_platform="BA",
-                            official_record_type="userTrades",
-                            official_key="BA|userTrades|XAUUSDT|9002",
-                            official_time="2026-06-10 12:00:00",
-                            official_order_no="7001",
-                            official_trade_no="9002",
-                            official_commission="0.20",
+                        _sample_trade(record_key="k1|k2|t1", net_profit="+1.2500"),
+                        _sample_trade(
+                            ba_order_no="7002",
+                            record_key="k3|k4|t2",
+                            net_profit="-0.5000",
                         ),
                     ]
                 )
@@ -161,14 +142,12 @@ class ServerTradeApiTests(unittest.TestCase):
 
                 with get_conn() as conn:
                     rows = conn.execute(
-                        "SELECT * FROM trades WHERE device_id = ? ORDER BY official_trade_no",
+                        "SELECT * FROM trades WHERE device_id = ? ORDER BY ba_order_no",
                         (device_id,),
                     ).fetchall()
                 self.assertEqual(len(rows), 2)
-                self.assertEqual(dict(rows[0])["report_source"], "official")
-                self.assertEqual(dict(rows[1])["official_trade_no"], "9002")
 
-    def test_trade_migration_adds_new_columns(self):
+    def test_trade_migration_rebuilds_legacy_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "legacy.db"
             conn = sqlite3.connect(db_path)
@@ -199,6 +178,7 @@ class ServerTradeApiTests(unittest.TestCase):
                     mt5_fee REAL NOT NULL DEFAULT 0,
                     net_pnl REAL NOT NULL DEFAULT 0,
                     uploaded_at TEXT NOT NULL,
+                    report_source TEXT NOT NULL DEFAULT 'ledger',
                     UNIQUE(device_id, settled_at, preset_id, mode)
                 );
                 """
@@ -215,12 +195,10 @@ class ServerTradeApiTests(unittest.TestCase):
                 init_db()
                 with get_conn() as conn:
                     cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
-            self.assertIn("action", cols)
-            self.assertIn("spread", cols)
-            self.assertIn("ba_price", cols)
-            self.assertIn("report_source", cols)
-            self.assertIn("official_key", cols)
-
+            self.assertIn("ba_order_no", cols)
+            self.assertIn("record_key", cols)
+            self.assertNotIn("report_source", cols)
+            self.assertNotIn("net_pnl", cols)
 
     def test_nolicense_register_auto_approves(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,9 +249,7 @@ class ServerTradeApiTests(unittest.TestCase):
                 with get_conn() as conn:
                     _insert_device(conn, dev, status="rejected")
                 token = create_device_token(dev, "approved")
-                body = TradeBatchRequest(
-                    trades=[TradeItem(settled_at="2026-06-10T12:00:00", preset_id="xau", mode="contraction")]
-                )
+                body = TradeBatchRequest(trades=[_sample_trade()])
                 with self.assertRaises(HTTPException) as ctx:
                     upload_trades(body, authorization=f"Bearer {token}")
                 self.assertEqual(ctx.exception.status_code, 403)
@@ -287,9 +263,7 @@ class ServerTradeApiTests(unittest.TestCase):
                 with get_conn() as conn:
                     _insert_device(conn, dev, status="approved", expires_at="2000-01-01T00:00:00+00:00")
                 token = create_device_token(dev, "approved")
-                body = TradeBatchRequest(
-                    trades=[TradeItem(settled_at="2026-06-10T12:00:00", preset_id="xau", mode="contraction")]
-                )
+                body = TradeBatchRequest(trades=[_sample_trade()])
                 with self.assertRaises(HTTPException) as ctx:
                     upload_trades(body, authorization=f"Bearer {token}")
                 self.assertEqual(ctx.exception.status_code, 403)
