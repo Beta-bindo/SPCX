@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.core.auto_trade import AutoTradeState, evaluate_auto_closes, evaluate_auto_trades
 from app.core.config import load_config, save_config
-from app.core.models import AppConfig, ConnectionMode, HedgeMode, Position, Side, SpreadSnapshot
+from app.core.models import AppConfig, ConnectionMode, HedgeMode, OpenOrder, Position, Side, SpreadSnapshot
 
 
 def _cfg_contraction_only(threshold: float = 3.0) -> AppConfig:
@@ -330,24 +330,58 @@ def test_pending_light_states():
     assert light.text() == "○ 无委托"
     assert light.property("pendingActive") == "false"
 
-    # 有委托并带数量：点亮（绿色）、文案「有委托」、数量显示在后面
+    # 有委托并带数量：点亮，数字明确表示剩余委托量
     gold.set_pending_order(True, 500.0)
-    assert light.text() == "● 有委托 500"
+    assert light.text() == "● 有委托 · 剩余 500"
     assert light.property("pendingActive") == "true"
 
     # 数量变化时实时刷新
     gold.set_pending_order(True, 1234.0)
-    assert light.text() == "● 有委托 1234"
+    assert light.text() == "● 有委托 · 剩余 1234"
 
     # 仅集合更新（不带数量）时沿用上次数量
     gold.set_pending_order(True)
-    assert light.text() == "● 有委托 1234"
+    assert light.text() == "● 有委托 · 剩余 1234"
 
     # 撤销后恢复无委托
     gold.set_pending_order(False)
     assert light.text() == "○ 无委托"
     assert light.property("pendingActive") == "false"
     print("  ✓ 委托指示灯：无委托/有委托+数量/清空 状态正确")
+
+
+def test_open_orders_dedupes_same_ba_order_for_pending_light():
+    from app.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow()
+    orders = [
+        OpenOrder(
+            platform="BA",
+            symbol="XAUUSDT",
+            order_id="42",
+            side=Side.SELL,
+            total_quantity=2.0,
+            remaining_quantity=2.0,
+        ),
+        OpenOrder(
+            platform="BA",
+            symbol="XAUUSDT",
+            order_id="42",
+            side=Side.SELL,
+            total_quantity=2.0,
+            remaining_quantity=2.0,
+        ),
+    ]
+
+    window._on_open_orders(orders)
+
+    light = window.gold_actions.auto_trade_settings.maker_pending_light
+    assert light.text() == "● 有委托 · 剩余 2"
+    assert "总量2" in window.gold_actions.pending_label.text()
+    assert "总量4" not in window.gold_actions.pending_label.text()
+    window.close()
+    print("  ✓ 委托同步：同一 BA order_id 去重后再统计数量")
 
 
 def main() -> int:
@@ -371,6 +405,7 @@ def main() -> int:
         test_config_roundtrip,
         test_manual_cancel_button_emits_signal,
         test_pending_light_states,
+        test_open_orders_dedupes_same_ba_order_for_pending_light,
     ]
     for fn in tests:
         try:

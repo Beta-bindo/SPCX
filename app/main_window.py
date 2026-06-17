@@ -1271,6 +1271,20 @@ class MainWindow(QMainWindow):
         from app.core.license.telemetry import build_open_orders_summary
         from app.core.symbols import find_preset
 
+        deduped_orders = []
+        seen_ba_orders: set[tuple[str, str]] = set()
+        for order in orders:
+            order_id = str(getattr(order, "order_id", "") or "")
+            platform = getattr(order, "platform", "")
+            symbol = getattr(order, "symbol", "")
+            if platform == "BA" and order_id:
+                key = (symbol, order_id)
+                if key in seen_ba_orders:
+                    continue
+                seen_ba_orders.add(key)
+            deduped_orders.append(order)
+        orders = deduped_orders
+
         self.gold_actions.update_open_orders(orders)
         self.silver_actions.update_open_orders(orders)
         for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):

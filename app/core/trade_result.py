@@ -33,5 +33,6 @@ class HedgeTradeResult:
         """是否部分成交（一腿成/需对账、另一腿未成）——存在单边敞口风险。"""
         if not self.legs:
             return False
-        ok = sum(1 for leg in self.legs if leg.success or leg.needs_reconciliation)
-        return 0 < ok < len(self.legs)
+        if all(leg.success for leg in self.legs):
+            return False
+        return any(leg.success or leg.needs_reconciliation for leg in self.legs)

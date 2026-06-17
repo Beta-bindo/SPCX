@@ -217,14 +217,14 @@ class SymbolAutoTradeSettings(QFrame):
         )
 
     def _update_pending_light(self) -> None:
-        """刷新委托指示灯外观：有挂单亮（橙），无挂单灭（灰）。"""
+        """刷新委托指示灯外观：有挂单亮，无挂单灭；数字展示剩余委托量。"""
         if self.maker_pending_light is None:
             return
         self._sync_pending_light_font()
         if self._maker_pending:
             qty = self._maker_pending_qty
             if qty > 0:
-                self.maker_pending_light.setText(f"● 有委托 {qty:.4g}")
+                self.maker_pending_light.setText(f"● 有委托 · 剩余 {qty:.4g}")
             else:
                 self.maker_pending_light.setText("● 有委托")
             self.maker_pending_light.setProperty("pendingActive", "true")
@@ -487,7 +487,7 @@ class SymbolAutoTradeSettings(QFrame):
         self._recompute_locks()
 
     def set_pending_order(self, active: bool, quantity: float | None = None) -> None:
-        """设置 Maker 委托灯状态：有挂单时点亮（绿色「有委托 数量」）并禁止勾选 Maker 自动开仓。
+        """设置 Maker 委托灯状态：有挂单时点亮（「有委托 · 剩余量」）并禁止勾选 Maker 自动开仓。
 
         quantity 为 BA 该品种未成交委托的剩余数量；传 None 时沿用上次数量
         （供仅有挂单交易对集合、无数量的快速更新路径使用）。

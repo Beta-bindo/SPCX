@@ -1135,6 +1135,7 @@ class BinanceConnector(QObject):
         mode: str = "contraction",
         order_mode: str = GoldOrderMode.LIMIT.value,
         *,
+        qty_override: float | None = None,
         on_fill_delta: Callable[[float], bool] | None = None,
     ) -> LegResult:
         """在 BA 端开/加一腿对冲仓。
@@ -1142,6 +1143,7 @@ class BinanceConnector(QObject):
         收缩 → 卖出（SELL），扩张 → 买入（BUY）。模拟模式直接更新虚拟持仓；
         实盘按市价/限价/Maker 下单，限价单等待成交、超时撤单，并通过复查持仓确认成交，
         状态不明时返回 needs_reconciliation 交由上层回滚。
+        qty_override 用于平仓补偿时按刚刚被平掉的实际 BA 数量恢复对冲。
         """
         from app.core.models import HedgeMode
 
@@ -1149,6 +1151,10 @@ class BinanceConnector(QObject):
             preset_id, self.config.symbol_ba, self.config.symbol_mt5
         )
         qty = self.config.ba_quantity_for(preset_id)
+        if qty_override is not None:
+            qty = max(0.0, float(qty_override))
+        if qty <= 0:
+            return LegResult(platform="BA", success=False, message="BA 下单数量为 0")
         with self._book_lock:
             quote = self._quotes.get(symbol_ba, Quote(symbol=symbol_ba))
         use_limit, maker_only = resolve_execution_flags(preset_id, order_mode)
