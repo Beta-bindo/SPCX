@@ -51,12 +51,23 @@ def test_filling_none_falls_back_to_return():
     assert _filling_for(0) == 2
 
 
+def test_mt5_volume_normalizes_to_symbol_step():
+    """BA 部分成交换算成 0.00996 手时，应按 Exness 0.01 手步进归一化。"""
+    _install_fake_mt5()
+    from app.connectors.mt5_connector import MT5Connector
+
+    info = SimpleNamespace(volume_min=0.01, volume_step=0.01)
+    assert MT5Connector._normalize_mt5_volume(MT5Connector, 0.00996, info) == 0.01
+    assert MT5Connector._normalize_mt5_volume(MT5Connector, 0.004, info) == 0.0
+
+
 def main() -> int:
     tests = [
         test_filling_fok_only,
         test_filling_ioc_only,
         test_filling_fok_and_ioc_prefers_fok,
         test_filling_none_falls_back_to_return,
+        test_mt5_volume_normalizes_to_symbol_step,
     ]
     for fn in tests:
         fn()

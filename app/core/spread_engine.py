@@ -133,39 +133,48 @@ class SpreadEngine(QObject):
 
     def open_hedge(
         self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
-    ) -> None:
-        """对外的开仓入口：前置校验通过后，在后台线程执行开仓。"""
+    ) -> bool:
+        """对外的开仓入口：前置校验通过后，在后台线程执行开仓。
+
+        返回是否成功启动后台交易（True=已受理）。调用方应据此判断，而不要在
+        调用后读 is_trading——后台线程可能极快完成并已把 _trading 重置回 False。
+        """
         if self._trading:
             self._log(LogLevel.INFO, "交易进行中，请稍候")
-            return
+            return False
         error = self._trade_preflight_error(preset_id)
         if error:
             self._log(LogLevel.ERROR, error)
-            return
+            return False
         self._seed_trade_positions_cache()
         self._trading = True
         self.trade_started.emit("open", preset_id, order_mode)
         threading.Thread(
             target=self._run_open, args=(preset_id, mode, order_mode), daemon=True
         ).start()
+        return True
 
     def close_hedge(
         self, preset_id: str, mode: str = "contraction", order_mode: str = "limit"
-    ) -> None:
-        """对外的平仓入口：前置校验通过后，在后台线程执行平仓。"""
+    ) -> bool:
+        """对外的平仓入口：前置校验通过后，在后台线程执行平仓。
+
+        返回是否成功启动后台交易（True=已受理）。语义同 open_hedge。
+        """
         if self._trading:
             self._log(LogLevel.INFO, "交易进行中，请稍候")
-            return
+            return False
         error = self._trade_preflight_error(preset_id)
         if error:
             self._log(LogLevel.ERROR, error)
-            return
+            return False
         self._seed_trade_positions_cache()
         self._trading = True
         self.trade_started.emit("close", preset_id, order_mode)
         threading.Thread(
             target=self._run_close, args=(preset_id, mode, order_mode), daemon=True
         ).start()
+        return True
 
     def _trade_preflight_error(self, preset_id: str) -> str | None:
         """实盘下单前置校验，返回拦截原因；通过则返回 None。
@@ -661,7 +670,15 @@ class SpreadEngine(QObject):
         if not self._running:
             return
         mt5_orders = [o for o in self._open_orders if o.platform != "BA"]
-        merged = list(ba_orders) + mt5_orders
+        merged_by_key = {}
+        for order in list(ba_orders) + mt5_orders:
+            key = (
+                getattr(order, "platform", ""),
+                getattr(order, "symbol", ""),
+                str(getattr(order, "order_id", "")),
+            )
+            merged_by_key[key] = order
+        merged = list(merged_by_key.values())
         self._open_orders = merged
         self.open_orders_updated.emit(merged)
 

@@ -286,6 +286,25 @@ class SpreadSnapshot:
         """币安 − Exness（买价差）."""
         return self.mid_spread
 
+    def executable_spread(self, action: str, mode: str) -> float:
+        """该场景实际可成交的点差（按两腿真实吃 bid/ask 的方向计算）。
+
+        各场景两腿成交方向与对应公式：
+        - 收缩开仓 / 扩张平仓：BA 卖@bid + Ex 买@ask → ba_bid − mt5_ask
+        - 扩张开仓 / 收缩平仓：BA 买@ask + Ex 卖@bid → ba_ask − mt5_bid
+
+        action 为 "open"/"close"，mode 为 HedgeMode 值（"contraction"/"expansion"）。
+        缺完整两端买卖价时（如测试/降级场景）回退到点差指数 mid_spread。
+        """
+        if self.ba_bid <= 0 or self.ba_ask <= 0 or self.mt5_bid <= 0 or self.mt5_ask <= 0:
+            return self.mid_spread
+        contraction = mode == "contraction"
+        opening = action == "open"
+        # 收缩开仓 与 扩张平仓 同侧；扩张开仓 与 收缩平仓 同侧
+        if contraction == opening:
+            return self.ba_bid - self.mt5_ask
+        return self.ba_ask - self.mt5_bid
+
 
 @dataclass
 class RiskSnapshot:

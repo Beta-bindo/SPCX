@@ -202,6 +202,55 @@ def test_maker_fire_preserves_market_contraction_timer():
     print("  ✓ Maker 触发后不影响市价收缩计时")
 
 
+def test_executable_spread_four_scenarios():
+    """可执行点差按两腿真实成交方向计算（收缩/扩张 × 开/平 共 4 种）。"""
+    snap = SpreadSnapshot(
+        preset_id="xau",
+        ba_bid=4343.8, ba_ask=4344.0,
+        mt5_bid=4341.6, mt5_ask=4342.0,
+        mid_spread=4343.8 - 4341.6,  # 点差指数 = 2.2
+    )
+    # 收缩开仓 = BA卖@bid + Ex买@ask = 4343.8 - 4342.0 = 1.8
+    assert round(snap.executable_spread("open", "contraction"), 3) == 1.8
+    # 扩张平仓 与收缩开仓同侧
+    assert round(snap.executable_spread("close", "expansion"), 3) == 1.8
+    # 扩张开仓 = BA买@ask + Ex卖@bid = 4344.0 - 4341.6 = 2.4
+    assert round(snap.executable_spread("open", "expansion"), 3) == 2.4
+    # 收缩平仓 与扩张开仓同侧
+    assert round(snap.executable_spread("close", "contraction"), 3) == 2.4
+    print("  ✓ 可执行点差：四种场景方向正确")
+
+
+def test_executable_spread_falls_back_to_mid_when_no_quotes():
+    """缺完整 bid/ask 时回退到点差指数（兼容仅设 mid_spread 的快照）。"""
+    snap = SpreadSnapshot(preset_id="xau", mid_spread=3.5)
+    assert snap.executable_spread("open", "contraction") == 3.5
+    assert snap.executable_spread("close", "expansion") == 3.5
+    print("  ✓ 可执行点差：缺报价回退 mid_spread")
+
+
+def test_contraction_open_uses_executable_spread():
+    """收缩开仓按可执行点差判断：点差指数=2.2 但可执行=1.8，阈值2.0 时不应触发。"""
+    state = AutoTradeState()
+    cfg = _cfg_contraction_only(threshold=2.0)
+    snap = SpreadSnapshot(
+        preset_id="xau",
+        ba_bid=4343.8, ba_ask=4344.0,
+        mt5_bid=4341.6, mt5_ask=4342.0,
+        mid_spread=2.2,
+    )
+    # 可执行点差(1.8) < 阈值(2.0) → 不触发，尽管点差指数(2.2) ≥ 阈值
+    assert not evaluate_auto_trades(cfg, {"xau": snap}, [], 10.0, state)
+
+    # 阈值降到 1.8 → 可执行点差正好达标，触发
+    cfg2 = _cfg_contraction_only(threshold=1.8)
+    state2 = AutoTradeState()
+    orders = evaluate_auto_trades(cfg2, {"xau": snap}, [], 10.0, state2)
+    assert len(orders) == 1
+    assert "1.800" in orders[0][3]  # 日志显示的是可执行点差
+    print("  ✓ 收缩开仓按可执行点差判断与展示")
+
+
 def test_market_auto_open_fires_with_market_order_mode():
     state = AutoTradeState()
     cfg = AppConfig(
@@ -314,6 +363,9 @@ def main() -> int:
         test_contraction_open_with_existing_contraction_position,
         test_expansion_blocked_with_contraction_position,
         test_other_symbol_unaffected_by_position,
+        test_executable_spread_four_scenarios,
+        test_executable_spread_falls_back_to_mid_when_no_quotes,
+        test_contraction_open_uses_executable_spread,
         test_market_auto_open_fires_with_market_order_mode,
         test_maker_fire_preserves_market_contraction_timer,
         test_config_roundtrip,

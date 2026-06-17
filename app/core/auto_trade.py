@@ -96,15 +96,24 @@ def _mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str) -> bo
     return config.auto_expansion_on_lane(preset_id, lane)
 
 
-def _mode_satisfied(config: AppConfig, preset_id: str, mode: str, spread: float, lane: str) -> bool:
-    """当前点差是否满足开仓阈值（收缩要求 ≥ 上阈值，扩张要求 ≤ 下阈值）。"""
+def _mode_satisfied(
+    config: AppConfig, preset_id: str, mode: str, snap: SpreadSnapshot, lane: str
+) -> bool:
+    """当前点差是否满足开仓阈值（收缩要求 ≥ 上阈值，扩张要求 ≤ 下阈值）。
+
+    用「可执行点差」判断：收缩开仓与扩张开仓两腿吃 bid/ask 方向不同，公式不同。
+    """
+    spread = snap.executable_spread("open", mode)
     if mode == HedgeMode.CONTRACTION.value:
         return spread >= config.auto_contraction_threshold_lane(preset_id, lane)
     return spread <= config.auto_expansion_threshold_lane(preset_id, lane)
 
 
-def _mode_reset(config: AppConfig, preset_id: str, mode: str, spread: float, lane: str) -> bool:
+def _mode_reset(
+    config: AppConfig, preset_id: str, mode: str, snap: SpreadSnapshot, lane: str
+) -> bool:
     """点差是否已回落出迟滞带，需重置计时。"""
+    spread = snap.executable_spread("open", mode)
     if mode == HedgeMode.CONTRACTION.value:
         return spread < config.auto_contraction_threshold_lane(preset_id, lane) - RESET_MARGIN
     return spread > config.auto_expansion_threshold_lane(preset_id, lane) + RESET_MARGIN
@@ -113,7 +122,7 @@ def _mode_reset(config: AppConfig, preset_id: str, mode: str, spread: float, lan
 def _active_modes(
     config: AppConfig,
     preset_id: str,
-    spread: float,
+    snap: SpreadSnapshot,
     state: AutoTradeState,
     lane: str,
 ) -> list[str]:
@@ -123,10 +132,10 @@ def _active_modes(
         if not _mode_enabled(config, preset_id, mode, lane):
             continue
         key = (preset_id, mode, lane)
-        if _mode_satisfied(config, preset_id, mode, spread, lane):
+        if _mode_satisfied(config, preset_id, mode, snap, lane):
             modes.append(mode)
         elif state.since.get(key) is not None and not _mode_reset(
-            config, preset_id, mode, spread, lane
+            config, preset_id, mode, snap, lane
         ):
             modes.append(mode)
     return modes
@@ -135,14 +144,14 @@ def _active_modes(
 def _open_modes_for_evaluation(
     config: AppConfig,
     preset_id: str,
-    spread: float,
+    snap: SpreadSnapshot,
     state: AutoTradeState,
     positions: list,
     lane: str,
 ) -> list[str]:
     """评估可开仓方向：已有持仓时只允许沿现有对冲方向加仓，避免反向对锁。"""
     active = detect_hedge_mode(preset_id, positions)
-    modes = _active_modes(config, preset_id, spread, state, lane)
+    modes = _active_modes(config, preset_id, snap, state, lane)
     if active is None:
         return modes
     if not _mode_enabled(config, preset_id, active, lane):
@@ -229,8 +238,8 @@ def diagnose_auto_trade_block(
                 snap = spreads.get(preset_id)
                 if snap is None:
                     continue
-                spread = snap.mid_spread
-                if _mode_satisfied(config, preset_id, active, spread, lane):
+                spread = snap.executable_spread("open", active)
+                if _mode_satisfied(config, preset_id, active, snap, lane):
                     continue
                 th = (
                     config.auto_contraction_threshold_lane(preset_id, lane)
@@ -255,20 +264,21 @@ def diagnose_auto_trade_block(
         snap = spreads.get(preset_id)
         if snap is None:
             continue
-        spread = snap.mid_spread
         for lane in _lanes_for_preset(preset_id):
             if _mode_enabled(config, preset_id, HedgeMode.CONTRACTION.value, lane) and not _mode_satisfied(
-                config, preset_id, HedgeMode.CONTRACTION.value, spread, lane
+                config, preset_id, HedgeMode.CONTRACTION.value, snap, lane
             ):
                 th = config.auto_contraction_threshold_lane(preset_id, lane)
+                spread = snap.executable_spread("open", HedgeMode.CONTRACTION.value)
                 if spread < th - RESET_MARGIN:
                     lane_text = _lane_label(lane)
                     prefix = f"{lane_text}" if lane_text else "Maker"
                     return f"自动下单：{label} {prefix}点差 {spread:+.3f} 未达收缩阈值 ≥ {th:.3f}"
             if _mode_enabled(config, preset_id, HedgeMode.EXPANSION.value, lane) and not _mode_satisfied(
-                config, preset_id, HedgeMode.EXPANSION.value, spread, lane
+                config, preset_id, HedgeMode.EXPANSION.value, snap, lane
             ):
                 th = config.auto_expansion_threshold_lane(preset_id, lane)
+                spread = snap.executable_spread("open", HedgeMode.EXPANSION.value)
                 if spread > th + RESET_MARGIN:
                     lane_text = _lane_label(lane)
                     prefix = f"{lane_text}" if lane_text else "Maker"
@@ -300,18 +310,16 @@ def evaluate_auto_trades(
             _reset_preset(state, preset_id)
             continue
 
-        spread = snap.mid_spread
-
         for lane in _lanes_for_preset(preset_id):
             modes = _open_modes_for_evaluation(
-                config, preset_id, spread, state, positions, lane
+                config, preset_id, snap, state, positions, lane
             )
             order_mode = auto_trade_order_mode(preset_id, lane)
 
             for mode in (HedgeMode.CONTRACTION.value, HedgeMode.EXPANSION.value):
                 key = (preset_id, mode, lane)
                 if mode not in modes:
-                    if _mode_reset(config, preset_id, mode, spread, lane) or not _mode_enabled(
+                    if _mode_reset(config, preset_id, mode, snap, lane) or not _mode_enabled(
                         config, preset_id, mode, lane
                     ):
                         state.since[key] = None
@@ -325,15 +333,18 @@ def evaluate_auto_trades(
                 key = (preset_id, mode, lane)
                 if state.since.get(key) is None:
                     state.since[key] = now
-                if not _mode_satisfied(config, preset_id, mode, spread, lane):
+                if not _mode_satisfied(config, preset_id, mode, snap, lane):
                     state.since[key] = None
                     continue
+
+                # 该方向的可执行点差（实际成交差价），用于风控比较与日志展示
+                eff_spread = snap.executable_spread("open", mode)
 
                 # 已放宽：达到设定阈值即加仓，不再因低于持仓成本而拦截。
                 # 若现价差确实劣于持仓平均入场差价，附注提示便于知晓（不阻止下单）。
                 add_note = ""
                 if active is not None:
-                    ok, _reason = spread_allows_add(preset_id, positions, spread, mode)
+                    ok, _reason = spread_allows_add(preset_id, positions, eff_spread, mode)
                     if not ok:
                         entry = _entry_spread_for(preset_id, positions)
                         if entry is not None:
@@ -355,7 +366,7 @@ def evaluate_auto_trades(
                         mode,
                         order_mode,
                         (
-                            f"[自动下单] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
+                            f"[自动下单] {label} 点差 {eff_spread:+.3f} {op} {thresh:.3f}，"
                             f"已满足 · {mlabel}开仓{mode_text}{add_note}"
                         ),
                     )
@@ -389,18 +400,23 @@ def _close_mode_enabled(config: AppConfig, preset_id: str, mode: str, lane: str)
 
 
 def _close_mode_satisfied(
-    config: AppConfig, preset_id: str, mode: str, spread: float, lane: str
+    config: AppConfig, preset_id: str, mode: str, snap: SpreadSnapshot, lane: str
 ) -> bool:
-    """点差是否满足平仓阈值（平仓阈值方向与开仓相反：收缩仓在点差回落时平）。"""
+    """点差是否满足平仓阈值（平仓阈值方向与开仓相反：收缩仓在点差回落时平）。
+
+    用「可执行点差」判断：平仓两腿吃 bid/ask 方向与开仓相反，公式随之不同。
+    """
+    spread = snap.executable_spread("close", mode)
     if mode == HedgeMode.CONTRACTION.value:
         return spread <= config.auto_close_contraction_threshold_lane(preset_id, lane)
     return spread >= config.auto_close_expansion_threshold_lane(preset_id, lane)
 
 
 def _close_mode_reset(
-    config: AppConfig, preset_id: str, mode: str, spread: float, lane: str
+    config: AppConfig, preset_id: str, mode: str, snap: SpreadSnapshot, lane: str
 ) -> bool:
     """点差是否已回到不该平仓的一侧（出迟滞带），需重置平仓计时。"""
+    spread = snap.executable_spread("close", mode)
     if mode == HedgeMode.CONTRACTION.value:
         return spread > config.auto_close_contraction_threshold_lane(preset_id, lane) + RESET_MARGIN
     return spread < config.auto_close_expansion_threshold_lane(preset_id, lane) - RESET_MARGIN
@@ -446,8 +462,6 @@ def evaluate_auto_closes(
             _reset_close_preset(state, preset_id)
             continue
 
-        spread = snap.mid_spread
-
         for lane in _lanes_for_preset(preset_id):
             if not _close_mode_enabled(config, preset_id, mode, lane):
                 state.close_since[(preset_id, mode, lane)] = None
@@ -455,17 +469,18 @@ def evaluate_auto_closes(
 
             key = (preset_id, mode, lane)
 
-            if _close_mode_reset(config, preset_id, mode, spread, lane):
+            if _close_mode_reset(config, preset_id, mode, snap, lane):
                 state.close_since[key] = None
                 continue
 
-            if not _close_mode_satisfied(config, preset_id, mode, spread, lane):
+            if not _close_mode_satisfied(config, preset_id, mode, snap, lane):
                 state.close_since[key] = None
                 continue
 
             if state.close_since.get(key) is None:
                 state.close_since[key] = now
 
+            eff_spread = snap.executable_spread("close", mode)
             mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
             if mode == HedgeMode.CONTRACTION.value:
                 thresh = config.auto_close_contraction_threshold_lane(preset_id, lane)
@@ -482,7 +497,7 @@ def evaluate_auto_closes(
                     mode,
                     order_mode,
                     (
-                        f"[自动平仓] {label} 点差 {spread:+.3f} {op} {thresh:.3f}，"
+                        f"[自动平仓] {label} 点差 {eff_spread:+.3f} {op} {thresh:.3f}，"
                         f"已满足 · {mlabel}平仓{mode_text}"
                     ),
                 )

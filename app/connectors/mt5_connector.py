@@ -533,6 +533,34 @@ class MT5Connector(QObject):
                 return result
         return result
 
+    @staticmethod
+    def _volume_decimals(step: float) -> int:
+        """根据 MT5 volume_step 推断保留小数位，避免 0.009999 这类浮点量下单失败。"""
+        text = f"{step:.8f}".rstrip("0").rstrip(".")
+        if "." not in text:
+            return 0
+        return len(text.split(".", 1)[1])
+
+    def _normalize_mt5_volume(self, volume: float, info, *, cap: float | None = None) -> float:
+        """把按 BA 成交量换算出来的 MT5 手数对齐到品种 volume_step。
+
+        BA 可能成交 0.996，而配置比例换算得到 0.00996 手；Exness 常见最小步进是
+        0.01 手，直接发送 0.00996 会失败。这里按最近步进归一化，必要时受当前持仓量 cap 限制。
+        """
+        volume = max(0.0, float(volume))
+        if volume <= 1e-12:
+            return 0.0
+        step = float(getattr(info, "volume_step", 0.01) or 0.01)
+        min_volume = float(getattr(info, "volume_min", step) or step)
+        step = max(step, 1e-8)
+        decimals = self._volume_decimals(step)
+        normalized = round(volume / step) * step
+        if normalized < min_volume and volume >= min_volume * 0.5:
+            normalized = min_volume
+        if cap is not None:
+            normalized = min(normalized, max(0.0, float(cap)))
+        return round(normalized, decimals)
+
     def open_hedge_leg(
         self,
         preset_id: str,
@@ -626,9 +654,19 @@ class MT5Connector(QObject):
             info = mt5.symbol_info(symbol_mt5)
             if not tick or not info:
                 return LegResult(platform="MT5", success=False, message="无法获取 Exness 报价")
+            order_lots = self._normalize_mt5_volume(float(lots), info)
+            if order_lots <= 0:
+                return LegResult(
+                    platform="MT5",
+                    success=False,
+                    message=(
+                        f"Exness {hedge_action_label('open', mode, adding=adding)}失败: "
+                        f"换算手数 {float(lots):g} 低于品种最小手数/步进，无法精确开仓"
+                    ),
+                )
             # 对冲账户加仓会新增独立票据，目标按同方向「总手数」累加
             before_total = self._live_volume_total(symbol_mt5, mt5_side)
-            target_lots = before_total + float(lots)
+            target_lots = before_total + order_lots
             if use_limit:
                 if mt5_side == Side.BUY:
                     order_type = mt5.ORDER_TYPE_BUY_LIMIT
@@ -639,7 +677,7 @@ class MT5Connector(QObject):
                 request = {
                     "action": mt5.TRADE_ACTION_PENDING,
                     "symbol": symbol_mt5,
-                    "volume": float(lots),
+                    "volume": order_lots,
                     "type": order_type,
                     "price": price,
                     "magic": 260604,
@@ -657,7 +695,7 @@ class MT5Connector(QObject):
                 request = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol_mt5,
-                    "volume": float(lots),
+                    "volume": order_lots,
                     "type": order_type,
                     "price": price,
                     "deviation": 30,
@@ -707,7 +745,7 @@ class MT5Connector(QObject):
                     mode,
                     oid,
                     adding=adding,
-                    lots=str(lots),
+                    lots=str(order_lots),
                 ),
             )
             return LegResult(
@@ -715,7 +753,7 @@ class MT5Connector(QObject):
                 success=True,
                 message=f"{'加仓' if adding else '开仓'}{hedge_mode_word(mode)}成功",
                 order_id=oid,
-                filled_quantity=float(lots),
+                filled_quantity=order_lots,
             )
 
         try:
@@ -787,15 +825,32 @@ class MT5Connector(QObject):
             # 部分平仓按预算 trade_lots 跨票据依次平，直到平满预算。
             close_side_obj = Side.BUY if raw_positions[0].type == mt5.ORDER_TYPE_BUY else Side.SELL
             initial_total = sum(float(p.volume) for p in raw_positions)
-            budget = initial_total if close_all else float(trade_lots)
-            target_remaining = 0.0 if close_all else max(0.0, initial_total - float(trade_lots))
+            if close_all:
+                trade_budget = initial_total
+            else:
+                requested = min(float(trade_lots), initial_total)
+                trade_budget = self._normalize_mt5_volume(requested, info, cap=initial_total)
+                if trade_budget <= 0:
+                    return LegResult(
+                        platform="MT5",
+                        success=False,
+                        message=(
+                            f"Exness {action_label}失败: 换算手数 {float(trade_lots):g} "
+                            "低于品种最小手数/步进，无法精确平仓"
+                        ),
+                    )
+            budget = trade_budget
+            target_remaining = 0.0 if close_all else max(0.0, initial_total - trade_budget)
 
             last_oid = ""
             closed_total = 0.0
             for pos in raw_positions:
                 if budget <= 1e-9:
                     break
-                lots_to_close = float(pos.volume) if close_all else min(float(pos.volume), budget)
+                raw_lots_to_close = float(pos.volume) if close_all else min(float(pos.volume), budget)
+                lots_to_close = self._normalize_mt5_volume(
+                    raw_lots_to_close, info, cap=float(pos.volume)
+                )
                 if lots_to_close <= 0:
                     continue
                 # 平仓统一走市价成交（TRADE_ACTION_DEAL + position 票据）。
@@ -860,6 +915,7 @@ class MT5Connector(QObject):
                 success=True,
                 message=f"{action_label}成功",
                 order_id=last_oid,
+                filled_quantity=closed_total,
             )
 
         try:

@@ -215,7 +215,9 @@ def test_cancel_all_open_orders_cancels_pending():
     count = conn.cancel_all_open_orders()
 
     assert count == 1
-    client.futures_cancel_all_open_orders.assert_called_once_with(symbol="XAUUSDT")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAUUSDT")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAGUSDT")
+    assert client.futures_cancel_all_open_orders.call_count == 2
     print("  ✓ 手动撤单：撤销委托中的挂单")
 
 
@@ -229,8 +231,10 @@ def test_cancel_all_open_orders_noop_without_pending():
     count = conn.cancel_all_open_orders()
 
     assert count == 0
-    client.futures_cancel_all_open_orders.assert_not_called()
-    print("  ✓ 手动撤单：无挂单时不调用撤单接口")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAUUSDT")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAGUSDT")
+    assert client.futures_cancel_all_open_orders.call_count == 2
+    print("  ✓ 手动撤单：无本地挂单时仍兜底调用撤单接口")
 
 
 def test_cancel_all_open_orders_skips_when_not_live():

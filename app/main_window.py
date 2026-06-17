@@ -840,10 +840,11 @@ class MainWindow(QMainWindow):
             self.engine.sync_config(self.config)
             self._manual_trade_notify = True
             if action == "开仓":
-                self.engine.open_hedge(preset_id, mode, order_mode)
+                started = self.engine.open_hedge(preset_id, mode, order_mode)
             else:
-                self.engine.close_hedge(preset_id, mode, order_mode)
-            if self.engine.is_trading:
+                started = self.engine.close_hedge(preset_id, mode, order_mode)
+            # 用返回值判断是否已受理，不读 is_trading：秒成交时后台可能已重置 _trading=False。
+            if started:
                 def _persist_config() -> None:
                     self.config = self._merge_config()
                     dlg.apply_ratio_to(self.config)
@@ -971,11 +972,15 @@ class MainWindow(QMainWindow):
         if self.engine.is_trading or self._pending_auto_trade is not None:
             self._append_log(LogLevel.INFO, "自动下单：上一笔交易尚未完成，已跳过")
             return
-        self.engine.open_hedge(preset_id, mode, order_mode)
-        # 仅在交易确实启动后才置位，避免前置校验失败(未发 trade_finished)时把标志永久卡死。
-        if self.engine.is_trading:
-            self._pending_auto_trade = ("open", preset_id, mode, order_mode)
+        # 必须在 open_hedge 之前乐观置位：市价/秒成交时后台线程可能在本函数返回前就
+        # 完成并 emit trade_finished，若等调用后再读 is_trading 会读到 False 而漏置位，
+        # 导致 trade_finished 误判非自动交易、不取消勾选 → 下一拍重复委托(委托2单)。
+        self._pending_auto_trade = ("open", preset_id, mode, order_mode)
+        if self.engine.open_hedge(preset_id, mode, order_mode):
             save_config_async(self.config)
+        else:
+            # 前置校验失败/未启动(不会发 trade_finished)：撤销置位，避免永久卡死
+            self._pending_auto_trade = None
 
     def _execute_auto_close(self, preset_id: str, mode: str, order_mode: str) -> None:
         if not self._ensure_license("自动平仓", fast=True):
@@ -987,9 +992,10 @@ class MainWindow(QMainWindow):
         if self.engine.is_trading or self._pending_auto_trade is not None:
             self._append_log(LogLevel.INFO, "自动平仓：上一笔交易尚未完成，已跳过")
             return
-        self.engine.close_hedge(preset_id, mode, order_mode)
-        if self.engine.is_trading:
-            self._pending_auto_trade = ("close", preset_id, mode, order_mode)
+        # 必须在 close_hedge 之前乐观置位，理由同 _execute_auto_open（防秒成交漏置位重复委托）。
+        self._pending_auto_trade = ("close", preset_id, mode, order_mode)
+        if not self.engine.close_hedge(preset_id, mode, order_mode):
+            self._pending_auto_trade = None
 
     def _disable_auto_open(
         self, preset_id: str, mode: str, order_mode: str, outcome: str = "success"
@@ -1269,13 +1275,15 @@ class MainWindow(QMainWindow):
         self.silver_actions.update_open_orders(orders)
         for preset_id, strip in (("xau", self.gold_actions), ("xag", self.silver_actions)):
             preset = find_preset(preset_id)
-            ba_pending = [
-                o
-                for o in orders
-                if o.platform == "BA"
-                and o.symbol == preset.symbol_ba
-                and o.remaining_quantity > 0
-            ]
+            ba_pending_by_id = {}
+            for o in orders:
+                if (
+                    o.platform == "BA"
+                    and o.symbol == preset.symbol_ba
+                    and o.remaining_quantity > 0
+                ):
+                    ba_pending_by_id[str(o.order_id)] = o
+            ba_pending = list(ba_pending_by_id.values())
             pending_qty = sum(o.remaining_quantity for o in ba_pending)
             strip.auto_trade_settings.set_pending_order(bool(ba_pending), pending_qty)
 

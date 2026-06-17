@@ -325,13 +325,16 @@ def close_hedge(
         )
         if mt5_legs:
             mt5_success = all(leg.success for leg in mt5_legs)
+            failed_msgs = "; ".join(
+                leg.message for leg in mt5_legs if not leg.success and leg.message
+            )
             mt5_leg = LegResult(
                 platform="MT5",
                 success=mt5_success,
                 message=(
                     f"Exness 已按 BA 实际成交分批平 {sum(leg.filled_quantity for leg in mt5_legs):g} 手"
                     if mt5_success
-                    else "Exness 分批平对冲失败，请立即检查单边敞口"
+                    else f"Exness 分批平对冲失败：{failed_msgs or '请立即检查单边敞口'}"
                 ),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
                 needs_reconciliation=not mt5_success,
