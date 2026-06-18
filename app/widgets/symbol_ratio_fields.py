@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig
+from app.core.symbols import preset_display_name
 from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox
 
 
@@ -61,7 +62,7 @@ class SymbolRatioFields(QFrame):
                 hdr.setToolTip("每次对冲在 Exness 下多少手，最小 0.01；双击数字框可编辑")
             grid.addWidget(hdr, 0, col)
 
-        sym = QLabel("黄金" if preset_id == "xau" else "SPCXUSDT")
+        sym = QLabel(preset_display_name(preset_id))
         sym.setObjectName("fieldLabel")
         sym.setProperty("symbolTag", "true")
         sym.style().unpolish(sym)

@@ -10,7 +10,7 @@ from app.core.liquidation import (
     resolve_position_liquidation_price,
 )
 from app.core.models import AppConfig, Position, Quote, Side
-from app.core.symbols import WATCHED_PRESETS, find_preset
+from app.core.symbols import active_preset_ids, find_preset
 
 
 def _display_liquidation_price(platform: str, pos: Position, leverage: int) -> float:
@@ -51,7 +51,7 @@ def _aggregate_platform(
     """跨所有受监控品种聚合某平台的持仓（盈亏求和、强平距离取最小、爆仓价取均值）。"""
     detail = PlatformDetail(platform=platform)
     matched: list[tuple[Position, str]] = []
-    for preset_id in WATCHED_PRESETS:
+    for preset_id in active_preset_ids():
         preset = find_preset(preset_id)
         sym = preset.symbol_ba if platform == "BA" else preset.symbol_mt5
         pos = next((p for p in positions if p.platform == platform and p.symbol == sym), None)

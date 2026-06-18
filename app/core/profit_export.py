@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from app.core.hedge_trade_report import FIELD_LABELS, HedgeTradeReport
+from app.core.hedge_trade_report import FIELD_LABELS, HedgeTradeReport, product_label_for_preset
 from app.core.paths import exports_dir
 from app.core.xlsx_writer import CellSpec, write_styled_xlsx
 
@@ -13,7 +13,7 @@ EXPORT_DIR = exports_dir()
 
 
 def export_filename(symbol_filter: str) -> str:
-    sym = {"all": "全部", "xau": "黄金", "xag": "SPCXUSDT"}.get(symbol_filter, symbol_filter)
+    sym = "全部" if symbol_filter == "all" else product_label_for_preset(symbol_filter)
     stamp = date.today().isoformat()
     return f"利润明细_{sym}_{stamp}.xlsx"
 

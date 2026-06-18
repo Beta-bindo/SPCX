@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.core.models import AppConfig, OpenOrder, Position
-from app.core.symbols import find_preset
+from app.core.symbols import active_preset_ids, find_preset, preset_display_name
 from app.core.trading_service import detect_hedge_mode
 
 
@@ -48,7 +48,8 @@ def build_preset_position(positions: list[Position], preset_id: str) -> str:
 
 def build_position_summary(positions: list[Position]) -> str:
     parts: list[str] = []
-    for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
+    for preset_id in active_preset_ids():
+        label = preset_display_name(preset_id)
         pos = build_preset_position(positions, preset_id)
         parts.append(f"{label}:{pos}")
     return " | ".join(parts)
@@ -93,7 +94,8 @@ def build_preset_open_orders(orders: list[OpenOrder], preset_id: str) -> str:
 
 def build_open_orders_summary(orders: list[OpenOrder]) -> str:
     parts: list[str] = []
-    for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
+    for preset_id in active_preset_ids():
+        label = preset_display_name(preset_id)
         detail = build_preset_open_orders(orders, preset_id)
         parts.append(f"{label}:{detail}")
     return " | ".join(parts)

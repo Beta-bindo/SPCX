@@ -25,7 +25,7 @@ from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrd
 from app.core.order_mode import resolve_execution_flags
 from app.core.mt5_terminal import find_mt5_terminal, mt5_terminal_hint
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
-from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_mt5_symbols
+from app.core.symbols import find_preset, resolve_symbols, watched_mt5_symbols
 from app.core.trade_result import LegResult
 from app.core.app_log import (
     LogLevel,
@@ -1089,10 +1089,10 @@ class MT5Connector(QObject):
             return LegResult(platform="MT5", success=False, message=msg)
 
     def _start_demo(self) -> None:
-        """启动模拟行情：定时生成黄金/SPCXUSDT的虚拟报价。"""
+        """启动模拟行情：定时生成所选品种的虚拟报价。"""
         self._set_state(ConnectionState.SIMULATED)
         self.account_received.emit(AccountSnapshot(platform="MT5", is_live=False))
-        self._log(LogLevel.DEBUG, "Exness 模拟行情 · 黄金 + SPCXUSDT（非真实价格）")
+        self._log(LogLevel.DEBUG, f"Exness 模拟行情 · {', '.join(watched_mt5_symbols())}（非真实价格）")
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
         interval_ms = max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))

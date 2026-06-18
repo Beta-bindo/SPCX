@@ -29,6 +29,7 @@ from app.core.hedge_trade_report import (
     product_label_for_preset,
 )
 from app.core.profit_export import export_profit_xlsx
+from app.core.symbols import active_preset_ids
 from app.widgets.date_range_picker import DateRangePicker
 from app.widgets.table_pagination import TablePagination
 
@@ -174,9 +175,8 @@ class ProfitCalculatorDialog(QDialog):
     def _populate_symbol_combo(self) -> None:
         self.symbol_combo.clear()
         self.symbol_combo.addItem("全部", "all")
-        self.symbol_combo.addItem(product_label_for_preset("xau"), "xau")
-        if product_label_for_preset("xag") != product_label_for_preset("xau"):
-            self.symbol_combo.addItem(product_label_for_preset("xag"), "xag")
+        for preset_id in active_preset_ids():
+            self.symbol_combo.addItem(product_label_for_preset(preset_id), preset_id)
 
     def _date_range(self) -> tuple[date, date]:
         return self.date_range.get_range()

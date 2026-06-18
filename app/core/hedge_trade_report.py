@@ -7,7 +7,7 @@ from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
 
 from app.core.models import AppConfig
-from app.core.symbols import find_preset
+from app.core.symbols import active_preset_ids, find_preset, preset_display_name
 
 
 BA_REBATE_TYPES = {"COMMISSION_REBATE", "API_REBATE", "FEE_RETURN"}
@@ -106,10 +106,7 @@ def _format_ms(ms: int) -> str:
 
 
 def product_label_for_preset(preset_id: str) -> str:
-    preset = find_preset(preset_id)
-    if preset.symbol_ba == "XAUUSDT":
-        return "黄金"
-    return preset.symbol_ba or preset.label or preset_id.upper()
+    return preset_display_name(preset_id)
 
 
 def _product_for_ba_symbol(symbol: str) -> str:
@@ -129,7 +126,7 @@ def _product_for_mt5_symbol(symbol: str) -> str:
 
 
 def _symbols_for_filter(symbol_filter: str) -> tuple[list[str], list[str]]:
-    presets = ("xau", "xag") if symbol_filter == "all" else (symbol_filter,)
+    presets = tuple(active_preset_ids()) if symbol_filter == "all" else (symbol_filter,)
     ba_symbols: list[str] = []
     mt5_symbols: list[str] = []
     for preset_id in presets:

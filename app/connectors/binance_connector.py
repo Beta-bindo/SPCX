@@ -40,7 +40,7 @@ from app.core.exchange_utils import (
 from app.core.models import AccountSnapshot, AppConfig, ConnectionState, GoldOrderMode, OpenOrder, OrderBook, OrderBookLevel, Position, Quote, Side
 from app.core.order_mode import resolve_execution_flags
 from app.core.demo_market import demo_tick_time, generate_all_demo_pairs
-from app.core.symbols import WATCHED_PRESETS, find_preset, resolve_symbols, watched_ba_symbols
+from app.core.symbols import active_preset_ids, find_preset, preset_display_name, resolve_symbols, watched_ba_symbols
 from app.core.trade_result import LegResult
 from app.connectors.binance_ws_stream import BinanceWsStream, WS_STALE_SEC
 from app.connectors.binance_user_stream import BinanceUserStream
@@ -433,7 +433,7 @@ class BinanceConnector(QObject):
     def _pending_order_block_message(
         self, preset_id: str, action: str, order_mode: str
     ) -> str:
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         mode_label = "Maker" if order_mode == GoldOrderMode.MAKER.value else "限价"
         action_label = "开仓" if action == "open" else "平仓"
         return f"{label}已有 BA 委托未完成，已拦截新的 {mode_label}{action_label}"
@@ -2329,14 +2329,14 @@ class BinanceConnector(QObject):
         self._emit_demo_quotes()
         self._log(
             LogLevel.DEBUG,
-            f"BA 模拟行情 · 黄金 + SPCXUSDT · 刷新间隔 {self.config.ba_refresh_interval_sec:.1f}s",
+            f"BA 模拟行情 · {', '.join(watched_ba_symbols())} · 刷新间隔 {self.config.ba_refresh_interval_sec:.1f}s",
         )
 
     def _emit_demo_quotes(self) -> None:
         t = demo_tick_time(time.time(), self.config.ba_refresh_interval_sec)
         self._record_latency(random.uniform(3, 12))
         pairs = generate_all_demo_pairs(t)
-        for preset_id in WATCHED_PRESETS:
+        for preset_id in active_preset_ids():
             ba, _ = pairs[preset_id]
             symbol = ba.symbol
             preset = find_preset(preset_id)

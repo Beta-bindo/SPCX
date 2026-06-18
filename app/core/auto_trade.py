@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from app.core.models import AppConfig, HedgeMode, SpreadSnapshot
 from app.core.order_mode import auto_trade_order_mode
+from app.core.symbols import active_preset_ids, preset_display_name
 from app.core.trading_service import (
     detect_hedge_mode,
     position_entry_spread,
@@ -24,6 +25,11 @@ from app.core.trading_service import (
 RESET_MARGIN = 0.03   # 迟滞带：点差需回落超过此值才重置计时，避免临界抖动
 LANE_MAKER = "maker"
 LANE_MARKET = "market"
+
+
+def _active_filter(preset_ids: tuple[str, ...]) -> tuple[str, ...]:
+    active = set(active_preset_ids())
+    return tuple(pid for pid in preset_ids if pid in active)
 
 
 def is_spread_threshold_hint(message: str) -> bool:
@@ -203,6 +209,7 @@ def diagnose_auto_trade_block(
 
     覆盖：引擎未启动、已有持仓导致反向冲突、点差未达阈值等常见情形，便于排障。
     """
+    preset_ids = _active_filter(preset_ids)
     if not engine_running:
         for preset_id in preset_ids:
             for lane in _lanes_for_preset(preset_id):
@@ -213,7 +220,7 @@ def diagnose_auto_trade_block(
         return None
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         active = detect_hedge_mode(preset_id, positions)
         if active is not None:
             opposing = (
@@ -303,10 +310,11 @@ def evaluate_auto_trades(
     返回每项为 (品种, 对冲模式, 下单模式, 日志文案)。会就地推进/重置 state 中的计时器，
     并在触发后写入冷却时间；每个品种本轮至多触发一次。
     """
+    preset_ids = _active_filter(preset_ids)
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         active = detect_hedge_mode(preset_id, positions)
         snap = spreads.get(preset_id)
         if snap is None:
@@ -450,10 +458,11 @@ def evaluate_auto_closes(
 
     仅对已存在对冲持仓的品种生效；同样遵循即时触发、迟滞重置与冷却。
     """
+    preset_ids = _active_filter(preset_ids)
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         mode = detect_hedge_mode(preset_id, positions)
         if mode is None:
             _reset_close_preset(state, preset_id)

@@ -47,7 +47,7 @@ from app.core.pnl_calculator import (
     estimate_trade_fees,
 )
 from app.core.risk import build_risk_snapshot
-from app.core.symbols import WATCHED_PRESETS, find_preset, watched_ba_symbols
+from app.core.symbols import active_preset_ids, find_preset, preset_display_name, watched_ba_symbols
 from app.core.app_log import LogLevel, should_log
 from app.core.trade_result import HedgeTradeResult
 from app.core.trading_service import close_hedge, open_hedge, position_entry_spread
@@ -350,7 +350,7 @@ class SpreadEngine(QObject):
         if min_open_spread is None and max_open_spread is None:
             return True, ""
         snap = self._spreads.get(preset_id)
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         mlabel = "收缩" if mode == "contraction" else "扩张"
         if snap is None:
             return False, f"自动开仓{mlabel}取消：{label}缺少最新点差"
@@ -471,7 +471,7 @@ class SpreadEngine(QObject):
                 )
                 record_trade_anchor(preset_id, mode, "open", row.order_time)
                 append_trade_record(row, preset_id=preset_id, mode=mode, action="open")
-                label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+                label = preset_display_name(preset_id)
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
@@ -632,7 +632,7 @@ class SpreadEngine(QObject):
                 row.net_profit = f"{net_pnl:+.2f}"
                 record_trade_anchor(preset_id, mode, "close", row.order_time)
                 append_trade_record(row, preset_id=preset_id, mode=mode, action="close")
-                label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+                label = preset_display_name(preset_id)
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
@@ -657,7 +657,7 @@ class SpreadEngine(QObject):
     def _log_remaining_positions(self, preset_id: str) -> None:
         """平仓后把该品种两端剩余持仓打印到日志，便于核对是否平干净。"""
         preset = find_preset(preset_id)
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         try:
             ba_pos = next(
                 (p for p in self.binance.get_positions() if p.symbol == preset.symbol_ba),
@@ -991,7 +991,7 @@ class SpreadEngine(QObject):
 
     def _rebuild_spreads_now(self) -> None:
         """重建所有受监控品种的点差快照，剔除异常值后重判告警并推送 UI。"""
-        for preset_id in WATCHED_PRESETS:
+        for preset_id in active_preset_ids():
             preset = find_preset(preset_id)
             ba = self._ba_quotes.get(preset.symbol_ba)
             mt5 = self._mt5_quotes.get(preset.symbol_mt5)

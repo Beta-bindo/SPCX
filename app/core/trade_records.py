@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.paths import user_data_dir
+from app.core.symbols import active_preset_ids
 
 _lock = threading.Lock()
 _MAX_RECORDS = 2000
@@ -85,7 +86,7 @@ def load_trade_records(
 ) -> list[dict]:
     """读取日期/品种范围内的本地订单号锚点。"""
     out: list[dict] = []
-    wanted = {"xau", "xag"} if symbol_filter == "all" else {symbol_filter}
+    wanted = set(active_preset_ids()) if symbol_filter == "all" else {symbol_filter}
     start_dt = datetime.combine(start, datetime.min.time())
     end_dt = datetime.combine(end, datetime.max.time())
     with _lock:

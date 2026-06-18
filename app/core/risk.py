@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from app.core.liquidation import resolve_position_liq_buffer
 from app.core.models import AppConfig, Position, Quote, RiskSnapshot
-from app.core.symbols import WATCHED_PRESETS, find_preset
+from app.core.symbols import active_preset_ids, find_preset
 
 
 def _platform_spread(quote: Quote) -> float:
@@ -70,7 +70,7 @@ def build_risk_snapshot(
     mt5_spreads = []
     xau_ba = xau_mt5 = xag_ba = xag_mt5 = float("inf")
 
-    for preset_id in WATCHED_PRESETS:
+    for preset_id in active_preset_ids():
         preset = find_preset(preset_id)
         ba_q = ba_quotes.get(preset.symbol_ba)
         mt5_q = mt5_quotes.get(preset.symbol_mt5)

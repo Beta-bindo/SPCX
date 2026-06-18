@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AppConfig, GoldOrderMode, HedgeMode, Position, Quote
+from app.core.symbols import preset_display_name
 from app.widgets.symbol_alert_settings import ClickToEditDoubleSpinBox
 from app.widgets.symbol_ratio_fields import SymbolRatioFields
 from app.widgets.symbol_trade_panel import SYMBOL_ICON
@@ -63,7 +64,7 @@ class TradeConfirmDialog(QWidget):
         self._user_positioned = False
         self._auto_positioning = False
 
-        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        label = preset_display_name(preset_id)
         self.setWindowTitle(f"{label}对冲交易")
         self.setMinimumWidth(380)
 

@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.core.alert_tones import AlertTonePlayer
 from app.core.models import AppConfig, RiskSnapshot, SpreadSnapshot
+from app.core.symbols import active_preset_ids, preset_display_name
 
 
 class AlertSoundKind(str, Enum):
@@ -69,7 +70,8 @@ class AlertService(QObject):
         pending_messages: list[tuple[str, str, AlertSoundKind]] = []
 
         # 逐品种检查点差是否越界
-        for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
+        for preset_id in active_preset_ids():
+            label = preset_display_name(preset_id)
             if not config.spread_alerts_on(preset_id):
                 continue
             snap = spreads.get(preset_id)
@@ -91,10 +93,10 @@ class AlertService(QObject):
 
         # 逐品种、逐平台检查爆仓缓冲是否低于阈值
         liq_map = [
-            ("xau", "xau_ba_liq", risk.xau_ba_liq, config.xau_ba_liq_alert, "黄金 BA 爆仓缓冲"),
-            ("xau", "xau_mt5_liq", risk.xau_mt5_liq, config.xau_mt5_liq_alert, "黄金 Exness 爆仓缓冲"),
-            ("xag", "xag_ba_liq", risk.xag_ba_liq, config.xag_ba_liq_alert, "SPCXUSDT BA 爆仓缓冲"),
-            ("xag", "xag_mt5_liq", risk.xag_mt5_liq, config.xag_mt5_liq_alert, "SPCXUSDT Exness 爆仓缓冲"),
+            ("xau", "xau_ba_liq", risk.xau_ba_liq, config.xau_ba_liq_alert, f"{preset_display_name('xau')} BA 爆仓缓冲"),
+            ("xau", "xau_mt5_liq", risk.xau_mt5_liq, config.xau_mt5_liq_alert, f"{preset_display_name('xau')} Exness 爆仓缓冲"),
+            ("xag", "xag_ba_liq", risk.xag_ba_liq, config.xag_ba_liq_alert, f"{preset_display_name('xag')} BA 爆仓缓冲"),
+            ("xag", "xag_mt5_liq", risk.xag_mt5_liq, config.xag_mt5_liq_alert, f"{preset_display_name('xag')} Exness 爆仓缓冲"),
         ]
         for preset_id, key, distance, threshold, name in liq_map:
             if not config.liq_alerts_on(preset_id):

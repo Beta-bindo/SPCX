@@ -1,4 +1,4 @@
-"""主窗口：组织三栏布局（黄金/中栏汇总/SPCXUSDT），连接 SpreadEngine 与各 UI 组件。
+"""主窗口：组织两个可选品种槽位与中栏汇总，连接 SpreadEngine 与各 UI 组件。
 
 负责：行情/持仓/盈亏的展示刷新、手动与自动对冲下单的入口与回执、告警与连接状态、
 主题与布局切换、授权门禁校验，以及配置的加载/保存。
@@ -60,6 +60,7 @@ from app.core.symbols import (
     apply_selected_symbols,
     find_preset,
     normalize_selected_symbols,
+    preset_display_name,
     selected_symbols_text,
 )
 
@@ -145,7 +146,7 @@ class MainWindow(QMainWindow):
         self._columns_splitter.setChildrenCollapsible(False)
 
         self.gold_panel = SymbolTradePanel("xau", "黄金 · 币安盘口", parent=self._columns_splitter)
-        self.silver_panel = SymbolTradePanel("xag", "SPCXUSDT · 币安盘口", parent=self._columns_splitter)
+        self.silver_panel = SymbolTradePanel("xag", "品种 2 · 币安盘口", parent=self._columns_splitter)
         self.gold_actions = SymbolActionStrip("xau", parent=self._columns_splitter)
         self.silver_actions = SymbolActionStrip("xag", parent=self._columns_splitter)
         for strip in (self.gold_actions, self.silver_actions):
@@ -315,7 +316,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_demo_seed_positions(self) -> None:
         self.engine.refresh_positions()
-        self.status_bar.showMessage("演示持仓已载入 · 请查看黄金/SPCXUSDT告警与「补对冲」", 12000)
+        self.status_bar.showMessage("演示持仓已载入 · 请查看所选品种告警与「补对冲」", 12000)
 
     def _sync_monitor_buttons(self) -> None:
         running = self.engine.is_running
@@ -1024,7 +1025,7 @@ class MainWindow(QMainWindow):
                 return
             order_mode = dlg.gold_order_mode()
             dlg.apply_ratio_to(self.config)
-            sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
+            sym = preset_display_name(preset_id)
             self.status_bar.showMessage(f"正在提交{sym}{action}...")
             self.engine.sync_config(self.config)
             self._manual_trade_notify = True
@@ -1119,10 +1120,10 @@ class MainWindow(QMainWindow):
         if not is_spread_threshold_hint(message):
             self._append_log(LogLevel.INFO, message)
         if preset_id is None:
-            if "黄金" in message:
-                preset_id = "xau"
-            elif "SPCXUSDT" in message:
-                preset_id = "xag"
+            for candidate in ("xau", "xag"):
+                if preset_display_name(candidate) in message:
+                    preset_id = candidate
+                    break
         if preset_id == "xau":
             targets = (self.gold_actions,)
         elif preset_id == "xag":
@@ -1344,7 +1345,7 @@ class MainWindow(QMainWindow):
         self.config = self._merge_config()
         # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
         save_config_async(self.config)
-        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        sym = preset_display_name(preset_id)
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
         if outcome == "success":
@@ -1384,7 +1385,7 @@ class MainWindow(QMainWindow):
         self.config = self._merge_config()
         # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
         save_config_async(self.config)
-        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        sym = preset_display_name(preset_id)
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
         if outcome == "success":
@@ -1457,7 +1458,7 @@ class MainWindow(QMainWindow):
         ):
             return
         timeout_sec = max(1.0, float(self.config.ba_maker_timeout_sec))
-        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        sym = preset_display_name(preset_id)
         self._append_log(
             LogLevel.INFO,
             f"{sym}自动 Maker 委托等待 {timeout_sec:.0f}s 未成交，已自动撤单",
@@ -1794,7 +1795,7 @@ class MainWindow(QMainWindow):
 
         self._last_trade_preset_id = preset_id
         label = "开仓" if action == "open" else "平仓"
-        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
+        sym = preset_display_name(preset_id)
         om = order_mode_log_label(preset_id, order_mode)
         self.gold_actions.set_trade_buttons_enabled(False)
         self.silver_actions.set_trade_buttons_enabled(False)
@@ -1862,7 +1863,7 @@ class MainWindow(QMainWindow):
                     self._restore_auto_maker_checkboxes(preset_id_p, restore_snapshot) > 0
                 )
                 if restored_auto_checkbox:
-                    sym = "黄金" if preset_id_p == "xau" else "SPCXUSDT"
+                    sym = preset_display_name(preset_id_p)
                     self._append_log(
                         LogLevel.INFO,
                         f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",
@@ -2040,10 +2041,10 @@ class MainWindow(QMainWindow):
         if snap is not None and snap.is_live:
             spot_balance = snap.cash_balance
             futures_available = snap.free_margin
-        from app.core.symbols import WATCHED_PRESETS, find_preset
+        from app.core.symbols import active_preset_ids, find_preset
 
         symbol_options = []
-        for pid in WATCHED_PRESETS:
+        for pid in active_preset_ids():
             preset = find_preset(pid)
             symbol_options.append((f"{preset.label}（{preset.symbol_ba}）", preset.symbol_ba))
         dlg = BalanceTransferDialog(

@@ -7,7 +7,7 @@ import random
 import time
 
 from app.core.models import Quote
-from app.core.symbols import WATCHED_PRESETS, find_preset
+from app.core.symbols import active_preset_ids, find_preset
 
 # Max |bid spread| we accept when rebuilding; beyond this is almost always stale/mixed quotes.
 SANITY_MAX_SPREAD = {"xau": 25.0, "xag": 8.0}
@@ -59,7 +59,7 @@ def generate_demo_pair(preset_id: str, t: float) -> tuple[Quote, Quote]:
 
 
 def generate_all_demo_pairs(t: float) -> dict[str, tuple[Quote, Quote]]:
-    return {preset_id: generate_demo_pair(preset_id, t) for preset_id in WATCHED_PRESETS}
+    return {preset_id: generate_demo_pair(preset_id, t) for preset_id in active_preset_ids()}
 
 
 def spread_is_sane(preset_id: str, mid_spread: float) -> bool:
