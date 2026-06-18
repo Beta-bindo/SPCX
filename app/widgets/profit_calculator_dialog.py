@@ -26,6 +26,7 @@ from app.core.hedge_trade_report import (
     FIELD_ORDER,
     HedgeTradeReport,
     HedgeTradeRow,
+    product_label_for_preset,
 )
 from app.core.profit_export import export_profit_xlsx
 from app.widgets.date_range_picker import DateRangePicker
@@ -83,9 +84,7 @@ class ProfitCalculatorDialog(QDialog):
         product_label.setObjectName("fieldLabel")
         self.symbol_combo = QComboBox()
         self.symbol_combo.setFixedWidth(140)
-        self.symbol_combo.addItem("全部", "all")
-        self.symbol_combo.addItem("黄金", "xau")
-        self.symbol_combo.addItem("SPCXUSDT", "xag")
+        self._populate_symbol_combo()
         self.symbol_combo.setCurrentIndex(0)
 
         self.calc_btn = QPushButton("查询")
@@ -172,6 +171,13 @@ class ProfitCalculatorDialog(QDialog):
             trade_recorded_signal.connect(self._on_trade_recorded)
         self.refresh_soon()
 
+    def _populate_symbol_combo(self) -> None:
+        self.symbol_combo.clear()
+        self.symbol_combo.addItem("全部", "all")
+        self.symbol_combo.addItem(product_label_for_preset("xau"), "xau")
+        if product_label_for_preset("xag") != product_label_for_preset("xau"):
+            self.symbol_combo.addItem(product_label_for_preset("xag"), "xag")
+
     def _date_range(self) -> tuple[date, date]:
         return self.date_range.get_range()
 
@@ -246,6 +252,7 @@ class ProfitCalculatorDialog(QDialog):
         self.calc_btn.setEnabled(True)
         self.calc_btn.setText("查询")
         self._last_report = report
+        self._normalize_report_products(report)
         count = report.row_count
         self.count_lbl.setText(f"笔数 {count}")
         self.ba_pnl_lbl.setText(f"BA盈亏 ${report.ba_pnl:+.2f}")
@@ -260,6 +267,14 @@ class ProfitCalculatorDialog(QDialog):
         self.pagination.reset_page()
         self.pagination.set_total(len(self._all_rows))
         self._render_page()
+
+    def _normalize_report_products(self, report: HedgeTradeReport) -> None:
+        label_xau = product_label_for_preset("xau")
+        label_xag = product_label_for_preset("xag")
+        legacy = {"黄金": label_xau, "SPCXUSDT": label_xag}
+        for row in report.rows:
+            if row.product in legacy:
+                row.product = legacy[row.product]
 
     def _on_trade_recorded(self, record) -> None:
         """有新的成交上报行时，自动刷新已打开的计算器。"""

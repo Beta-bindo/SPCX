@@ -40,7 +40,7 @@ def normalize_selected_symbols(raw: str | None) -> list[str]:
             result.append(symbol)
         if len(result) >= len(WATCHED_PRESETS):
             break
-    return result or ["XAUUSDT", "SPCXUSDT"]
+    return result or ["SPCXUSDT"]
 
 
 def selected_symbols_text(symbols: list[str]) -> str:

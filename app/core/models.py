@@ -433,7 +433,7 @@ class AppConfig:
     # —— 界面布局与日志 ——
     layout_mode: str = LayoutMode.DUAL.value
     single_symbol_preset: str = "xau"
-    selected_symbols: str = "XAUUSDT,SPCXUSDT"
+    selected_symbols: str = "SPCXUSDT"
     log_level: str = "normal"
     xau_panel_sections: str = DEFAULT_PANEL_SECTIONS
     xag_panel_sections: str = DEFAULT_PANEL_SECTIONS

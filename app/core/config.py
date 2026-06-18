@@ -58,6 +58,8 @@ def _migrate_legacy(data: dict) -> dict:
         data["connection_mode"] = ConnectionMode.LIVE_BOTH.value
     if "symbol_preset" not in data:
         data["symbol_preset"] = "xau"
+    if data.get("selected_symbols") in (None, "", "XAUUSDT,SPCXUSDT"):
+        data["selected_symbols"] = "SPCXUSDT"
     if "xau_ba_qty_map" not in data and "xau_ba_quantity" in data:
         data.setdefault("xau_ba_qty_map", data.get("xau_ba_quantity", 500))
         data.setdefault("xau_mt5_lot_map", 1.0)
@@ -217,7 +219,7 @@ def load_config() -> AppConfig:
             ),
             layout_mode=data.get("layout_mode", "dual"),
             single_symbol_preset=data.get("single_symbol_preset", "xau"),
-            selected_symbols=data.get("selected_symbols", "XAUUSDT,SPCXUSDT"),
+            selected_symbols=data.get("selected_symbols", "SPCXUSDT"),
             log_level=normalize_log_level(data.get("log_level", LOG_LEVEL_DEFAULT)),
             xau_panel_sections=serialize_panel_sections(
                 parse_panel_sections(

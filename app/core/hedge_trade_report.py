@@ -105,11 +105,18 @@ def _format_ms(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def product_label_for_preset(preset_id: str) -> str:
+    preset = find_preset(preset_id)
+    if preset.symbol_ba == "XAUUSDT":
+        return "黄金"
+    return preset.symbol_ba or preset.label or preset_id.upper()
+
+
 def _product_for_ba_symbol(symbol: str) -> str:
     for preset_id in ("xau", "xag"):
         preset = find_preset(preset_id)
         if preset.symbol_ba == symbol:
-            return "黄金" if preset_id == "xau" else "SPCXUSDT"
+            return product_label_for_preset(preset_id)
     return ""
 
 
@@ -117,7 +124,7 @@ def _product_for_mt5_symbol(symbol: str) -> str:
     for preset_id in ("xau", "xag"):
         preset = find_preset(preset_id)
         if preset.symbol_mt5 == symbol:
-            return "黄金" if preset_id == "xau" else "SPCXUSDT"
+            return product_label_for_preset(preset_id)
     return ""
 
 
@@ -419,7 +426,7 @@ def build_row_from_settlement(
     order_time: str | None = None,
 ) -> HedgeTradeRow:
     """由实盘成交结算上下文构造一行（字段取得到就填，否则 --）。"""
-    product = "黄金" if preset_id == "xau" else "SPCXUSDT" if preset_id == "xag" else ""
+    product = product_label_for_preset(preset_id) if preset_id in ("xau", "xag") else ""
     direction = _mode_label(mode) or "--"
     settled = order_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sort_ms = 0
