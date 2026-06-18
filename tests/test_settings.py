@@ -707,6 +707,36 @@ def test_auto_close_opposite_mode_locked_by_position_direction():
     print("  ✓ 持仓方向锁定反向自动平仓")
 
 
+def test_auto_threshold_inputs_editable_only_when_unchecked():
+    app = QApplication.instance() or QApplication(sys.argv)
+    gold = SymbolAutoTradeSettings("xau")
+    silver = SymbolAutoTradeSettings("xag")
+
+    pairs = [
+        (gold.contraction_enabled, gold.contraction_threshold),
+        (gold.market_expansion_enabled, gold.market_expansion_threshold),
+        (gold.close_contraction_enabled, gold.close_contraction_threshold),
+        (gold.market_close_expansion_enabled, gold.market_close_expansion_threshold),
+        (silver.contraction_enabled, silver.contraction_threshold),
+        (silver.close_expansion_enabled, silver.close_expansion_threshold),
+    ]
+
+    for check, spin in pairs:
+        check.setChecked(False)
+        assert spin.isEnabled()
+        assert not spin.is_locked()
+        check.setChecked(True)
+        assert spin.isEnabled()
+        assert spin.is_locked()
+        check.setChecked(False)
+        assert spin.isEnabled()
+        assert not spin.is_locked()
+
+    gold.deleteLater()
+    silver.deleteLater()
+    print("  ✓ 自动下单阈值输入框仅未勾选时可编辑")
+
+
 def main() -> int:
     errors: list[str] = []
     tests = [
@@ -738,6 +768,7 @@ def main() -> int:
         test_connection_dialog_demo_mode_allows_credentials,
         test_ui_flat_sections_exist,
         test_auto_close_opposite_mode_locked_by_position_direction,
+        test_auto_threshold_inputs_editable_only_when_unchecked,
     ]
     for fn in tests:
         try:

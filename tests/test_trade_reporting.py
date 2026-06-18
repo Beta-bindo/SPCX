@@ -284,6 +284,76 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(row.ex_open_price, "4264.2000")
         self.assertNotEqual(row.ex_open_price, "9999.0000")
 
+    def test_official_report_pairs_nearby_ex_when_anchor_lacks_ex_order(self):
+        class _BA:
+            def fetch_account_trade_history(self, symbols, start_ms, end_ms):
+                return [
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7132553716",
+                        "side": "BUY",
+                        "price": "4321.12",
+                        "qty": "1",
+                        "quoteQty": "4321.12",
+                        "realizedPnl": "0",
+                        "commission": "0",
+                        "time": 1781741128000,
+                    }
+                ]
+
+            def fetch_order_history_rows(self, symbols, start_ms, end_ms):
+                return []
+
+            def fetch_income_history_rows(self, symbols, start_ms, end_ms):
+                return []
+
+        class _MT5:
+            def fetch_history_deals(self, symbols, start, end):
+                return [
+                    {
+                        "symbol": "XAUUSD",
+                        "order": "21237373",
+                        "entry": "0",
+                        "price": "4319.791",
+                        "volume": "0.01",
+                        "profit": "0",
+                        "commission": "0",
+                        "fee": "0",
+                        "swap": "0",
+                        "time_msc": 1781741128500,
+                    }
+                ]
+
+        anchors = [
+            {
+                "preset_id": "xau",
+                "mode": "expansion",
+                "action": "open",
+                "ba_order_no": "7132553716",
+                "ex_order_no": "--",
+                "product": "黄金",
+                "order_time": "2026-06-18 00:05:28",
+                "record_key": "7132553716|--|2026-06-18 00:05:28",
+            }
+        ]
+
+        cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BOTH.value)
+        report = fetch_hedge_trade_report(
+            _BA(),
+            _MT5(),
+            cfg,
+            date(2026, 6, 18),
+            date(2026, 6, 18),
+            "xau",
+            anchors=anchors,
+        )
+
+        self.assertEqual(len(report.rows), 1)
+        row = report.rows[0]
+        self.assertEqual(row.ba_order_no, "7132553716")
+        self.assertEqual(row.ex_order_no, "21237373")
+        self.assertEqual(row.ex_open_price, "4319.7910")
+
     def test_trade_records_persist_order_id_anchors(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trade_records.json"

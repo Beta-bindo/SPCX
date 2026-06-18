@@ -164,6 +164,19 @@ def _weighted_filled_price(legs: list[LegResult]) -> float:
     return total_notional / total_qty if total_qty > 0 else 0.0
 
 
+def _aggregate_order_ids(legs: list[LegResult]) -> str:
+    """合并分批成交的订单号，供利润计算器按官方历史精确回查。"""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for leg in legs:
+        for part in str(leg.order_id or "").replace(";", ",").split(","):
+            oid = part.strip()
+            if oid and oid not in seen:
+                ids.append(oid)
+                seen.add(oid)
+    return ",".join(ids)
+
+
 def _aggregate_known_fee(legs: list[LegResult]) -> tuple[float, bool]:
     """聚合同一平台多笔成交的真实费用。"""
     known = [leg for leg in legs if leg.fee_known]
@@ -314,6 +327,7 @@ def open_hedge(
                     if mt5_success
                     else "Exness 分批补对冲失败，请立即检查单边敞口"
                 ),
+                order_id=_aggregate_order_ids(mt5_legs),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
                 filled_price=_weighted_filled_price(mt5_legs),
                 fee=mt5_fee,
@@ -452,6 +466,7 @@ def close_hedge(
                     if mt5_success
                     else f"Exness 分批平对冲失败：{failed_msgs or '请立即检查单边敞口'}"
                 ),
+                order_id=_aggregate_order_ids(mt5_legs),
                 filled_quantity=sum(leg.filled_quantity for leg in mt5_legs),
                 filled_price=_weighted_filled_price(mt5_legs),
                 fee=mt5_fee,

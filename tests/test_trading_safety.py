@@ -13,11 +13,16 @@ class _FakeConnector:
         *,
         needs_reconciliation: bool = False,
         open_filled: float | None = None,
+        order_id: str = "",
+        fill_deltas: list[float] | None = None,
     ) -> None:
         self.platform = platform
         self.open_success = open_success
         self.needs_reconciliation = needs_reconciliation
         self.open_filled = open_filled
+        self.order_id = order_id
+        self.fill_deltas = fill_deltas or []
+        self.config = AppConfig(xau_trade_lots=1.0, xau_ba_qty_map=500.0, xau_mt5_lot_map=1.0)
         self.close_calls = 0
 
     def get_positions(self, force=False):
@@ -39,16 +44,21 @@ class _FakeConnector:
                 success=False,
                 message="BA Maker 开仓点差回落，未成交部分已撤单",
             )
+        if self.open_success and on_fill_delta is not None:
+            for delta in self.fill_deltas:
+                on_fill_delta(delta)
         return LegResult(
             platform=self.platform,
             success=self.open_success,
             message="opened" if self.open_success else "failed",
+            order_id=self.order_id,
             needs_reconciliation=self.needs_reconciliation,
             filled_quantity=(
                 self.open_filled
                 if self.open_filled is not None
                 else 1.0 if self.open_success else 0.0
             ),
+            filled_price=4319.791 if self.platform == "MT5" else 4321.12,
         )
 
     def close_hedge_leg(
@@ -181,6 +191,30 @@ def test_open_hedge_maker_spread_guard_cancels_before_ba_fill():
     assert mt5.close_calls == 0
     assert "点差回落" in result.legs[0].message
     assert "跳过" in result.legs[1].message
+
+
+def test_open_hedge_maker_aggregates_mt5_order_ids_for_profit_report():
+    ba = _FakeConnector(
+        "BA",
+        open_success=True,
+        open_filled=500.0,
+        order_id="7132553716",
+        fill_deltas=[500.0],
+    )
+    mt5 = _FakeConnector(
+        "MT5",
+        open_success=True,
+        open_filled=1.0,
+        order_id="21237373",
+    )
+
+    result = open_hedge(
+        ba, mt5, "xau", HedgeMode.EXPANSION.value, GoldOrderMode.MAKER.value
+    )
+
+    assert result.success is True
+    assert result.legs[1].order_id == "21237373"
+    assert result.legs[1].filled_price == 4319.791
 
 
 def test_open_hedge_skips_rollback_for_unconfirmed_order_without_fill():
@@ -347,6 +381,7 @@ def main() -> int:
     test_open_hedge_rolls_back_mt5_when_binance_fails_market()
     test_open_hedge_skips_mt5_when_binance_fails_maker()
     test_open_hedge_maker_spread_guard_cancels_before_ba_fill()
+    test_open_hedge_maker_aggregates_mt5_order_ids_for_profit_report()
     test_open_hedge_skips_rollback_for_unconfirmed_order_without_fill()
     test_open_hedge_skips_rollback_when_opposite_status_unknown()
     test_close_hedge_restores_ba_when_mt5_fails_after_maker_fill()

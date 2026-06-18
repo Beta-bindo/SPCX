@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import date
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -37,12 +37,30 @@ class ProfitCalculatorDialog(QDialog):
 
     # 后台线程查询完成后，跨线程把报表投递回主线程渲染（QueuedConnection）。
     _report_ready = Signal(object)
+    _DEFAULT_COL_WIDTHS = {
+        "ba_order_no": 104,
+        "ex_order_no": 104,
+        "product": 58,
+        "direction": 58,
+        "ba_qty": 78,
+        "ex_qty": 78,
+        "ba_open_price": 132,
+        "ba_close_price": 132,
+        "ba_pnl": 86,
+        "ex_open_price": 132,
+        "ex_close_price": 132,
+        "ba_charges": 86,
+        "ba_commission": 92,
+        "order_time": 150,
+        "net_profit": 86,
+    }
 
     def __init__(self, parent=None, *, engine=None, trade_recorded_signal=None):
         super().__init__(parent)
         self._engine = engine
         self._querying = False
         self._query_seq = 0
+        self._refresh_scheduled = False
         self.setWindowTitle("利润计算器")
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.resize(1080, 640)
@@ -125,7 +143,7 @@ class ProfitCalculatorDialog(QDialog):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
         hdr.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         hdr.setMinimumHeight(36)
@@ -152,7 +170,7 @@ class ProfitCalculatorDialog(QDialog):
         self._report_ready.connect(self._apply_report)
         if trade_recorded_signal is not None:
             trade_recorded_signal.connect(self._on_trade_recorded)
-        self._calculate()
+        self.refresh_soon()
 
     def _date_range(self) -> tuple[date, date]:
         return self.date_range.get_range()
@@ -169,6 +187,22 @@ class ProfitCalculatorDialog(QDialog):
         self._headers = headers or list(FIELD_ORDER)
         self.table.setColumnCount(len(self._headers))
         self.table.setHorizontalHeaderLabels(self._header_labels(self._headers))
+        for idx, field in enumerate(self._headers):
+            width = self._DEFAULT_COL_WIDTHS.get(field)
+            if width:
+                self.table.setColumnWidth(idx, width)
+
+    def refresh_soon(self) -> None:
+        """让窗口先显示出来，再进入官方历史查询，减少打开瞬间卡顿。"""
+        if self._refresh_scheduled:
+            return
+        self._refresh_scheduled = True
+
+        def _run() -> None:
+            self._refresh_scheduled = False
+            self._calculate()
+
+        QTimer.singleShot(0, _run)
 
     def _calculate(self) -> None:
         """后台线程查询 BA/EX 官方历史成交，避免同步 HTTP 卡死 UI 主线程。"""
@@ -187,11 +221,12 @@ class ProfitCalculatorDialog(QDialog):
         engine = self._engine
 
         self.calc_btn.setEnabled(False)
-        self._all_rows = []
-        self._empty_message = "正在查询官方历史成交…"
-        self._set_headers(list(FIELD_ORDER))
-        self.pagination.set_total(0)
-        self._render_page()
+        self.calc_btn.setText("查询中…")
+        if not self._all_rows:
+            self._empty_message = "正在查询官方历史成交…"
+            self._set_headers(list(FIELD_ORDER))
+            self.pagination.set_total(0)
+            self._render_page()
 
         def _work() -> None:
             try:
@@ -209,6 +244,7 @@ class ProfitCalculatorDialog(QDialog):
         """主线程渲染查询结果（由 _report_ready 投递）。"""
         self._querying = False
         self.calc_btn.setEnabled(True)
+        self.calc_btn.setText("查询")
         self._last_report = report
         count = report.row_count
         self.count_lbl.setText(f"笔数 {count}")

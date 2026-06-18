@@ -1618,11 +1618,11 @@ class MainWindow(QMainWindow):
             )
             dlg.setWindowModality(Qt.WindowModality.NonModal)
             self._profit_calculator_dialog = dlg
-        else:
-            dlg._calculate()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+        if dlg is not None:
+            dlg.refresh_soon()
 
     def _on_positions(self, positions, summary) -> None:
         self.gold_actions.update_positions(positions, summary, self.config)

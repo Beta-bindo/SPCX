@@ -17,9 +17,9 @@ QFrame#card {
 }
 
 QFrame#pnlDetailPanel {
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
 }
 
 QFrame#configPanel {
@@ -272,6 +272,8 @@ QFrame#pnlDetailPanel QLabel#fieldLabel,
 QFrame#pnlDetailPanel QLabel#platformTag,
 QFrame#pnlDetailPanel QLabel#positionValue,
 QFrame#pnlDetailPanel QLabel#pnlTotal {
+    background-color: transparent;
+    border: none;
     font-size: 10px;
     font-weight: 400;
     color: #475569;
@@ -530,6 +532,8 @@ QFrame#pnlDetailPanel QLabel#fieldLabel,
 QFrame#pnlDetailPanel QLabel#platformTag,
 QFrame#pnlDetailPanel QLabel#positionValue,
 QFrame#pnlDetailPanel QLabel#pnlTotal {
+    background-color: transparent;
+    border: none;
     font-size: 10px;
     padding: 0;
     margin: 0;

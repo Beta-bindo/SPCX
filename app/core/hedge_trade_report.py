@@ -646,6 +646,33 @@ def _find_order(
     return None
 
 
+def _find_nearby_mt5(
+    mt5_rows: list[tuple[dict, int, str]],
+    *,
+    product: str,
+    action: str,
+    anchor_ms: int,
+    used_mt5: set[str],
+) -> tuple[dict, int, str] | None:
+    """订单号缺失时，按同品种/同开平/时间窗口兜底匹配 EX 官方成交。"""
+    if anchor_ms <= 0:
+        return None
+    want_close = action == "close"
+    best: tuple[dict, int, str] | None = None
+    best_diff = PAIR_WINDOW_MS + 1
+    for raw, ms, prod in mt5_rows:
+        oid = _clean_order_no(raw.get("order"))
+        if oid in used_mt5 or prod != product:
+            continue
+        if bool(raw.get("_report_is_close")) != want_close:
+            continue
+        diff = abs(ms - anchor_ms)
+        if diff <= PAIR_WINDOW_MS and diff < best_diff:
+            best = (raw, ms, prod)
+            best_diff = diff
+    return best
+
+
 def _anchor_action(anchor: dict, ba_raw: dict | None, mt5_raw: dict | None) -> str:
     action = _as_text(anchor.get("action")).lower()
     if action in {"open", "close"}:
@@ -766,6 +793,19 @@ def _rows_from_anchors(
         seen.add(key)
         ba_match = _find_order(ba_by_order, anchor.get("ba_order_no"))
         mt5_match = _find_order(mt5_by_order, anchor.get("ex_order_no"))
+        action = _anchor_action(
+            anchor,
+            ba_match[0] if ba_match else None,
+            mt5_match[0] if mt5_match else None,
+        )
+        if mt5_match is None and ba_match is not None:
+            mt5_match = _find_nearby_mt5(
+                mt5_rows,
+                product=ba_match[2],
+                action=action,
+                anchor_ms=ba_match[1],
+                used_mt5=used_mt5,
+            )
         if ba_match is None and mt5_match is None:
             out.append(_row_from_anchor(anchor, None, None))
             continue
@@ -775,6 +815,10 @@ def _rows_from_anchors(
                 used_ba.add(oid)
         for oid in _split_order_ids(anchor.get("ex_order_no")):
             if oid in mt5_by_order:
+                used_mt5.add(oid)
+        if mt5_match is not None:
+            oid = _clean_order_no(mt5_match[0].get("order"))
+            if oid:
                 used_mt5.add(oid)
     return out, used_ba, used_mt5
 

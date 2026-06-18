@@ -88,6 +88,7 @@ class SymbolAutoTradeSettings(QFrame):
         self.status_label.setObjectName("fieldHint")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
+        self._sync_threshold_edit_states()
 
     def _build_trade_block(self, open_title: str, close_title: str, lane: str) -> QHBoxLayout:
         """构建一条通道的开仓列 + 平仓列（各含收缩/扩张两行），并按通道保存控件引用。"""
@@ -249,6 +250,7 @@ class SymbolAutoTradeSettings(QFrame):
         row.addWidget(threshold)
         row.addWidget(self._field_label(action_text))
         row.addStretch()
+        enabled.toggled.connect(lambda _checked: self._sync_threshold_edit_states())
         return row, enabled, threshold
 
     def _lane_widgets(self, lane: str) -> tuple:
@@ -346,10 +348,36 @@ class SymbolAutoTradeSettings(QFrame):
             if hasattr(widget, "lock"):
                 yield widget
 
-    def lock_all_spins(self) -> None:
-        """收起所有数字框的编辑态。"""
-        for spin in self.iter_spin_widgets():
+    def _set_spin_locked(self, spin, locked: bool) -> None:
+        if hasattr(spin, "_apply_lock"):
+            spin._apply_lock(locked)
+        elif locked and hasattr(spin, "lock"):
             spin.lock()
+
+    def _sync_threshold_edit_states(self) -> None:
+        """阈值输入框：勾选后锁定，取消勾选后可直接编辑。"""
+        for lane in ("maker", "market"):
+            widgets = self._lane_widgets(lane)
+            if not widgets:
+                continue
+            for enabled, threshold in (
+                (widgets[0], widgets[2]),
+                (widgets[1], widgets[3]),
+                (widgets[4], widgets[6]),
+                (widgets[5], widgets[7]),
+            ):
+                if not enabled.isEnabled():
+                    threshold.setEnabled(False)
+                    self._set_spin_locked(threshold, True)
+                    continue
+                threshold.setEnabled(True)
+                self._set_spin_locked(threshold, enabled.isChecked())
+
+    def lock_all_spins(self) -> None:
+        """按勾选状态刷新阈值编辑态；Maker 等待时间仍按点击编辑规则锁定。"""
+        self._sync_threshold_edit_states()
+        if self.preset_id == "xau":
+            self.maker_timeout_sec.lock()
 
     def apply_ui_scale(self, font_pt: int, check_px: int) -> None:
         """应用板块字体与勾选框尺寸（仅作用于本自动交易板块）。"""
@@ -403,6 +431,7 @@ class SymbolAutoTradeSettings(QFrame):
             self.close_contraction_threshold.setValue(config.xag_auto_close_contraction_threshold)
             self.close_expansion_threshold.setValue(config.xag_auto_close_expansion_threshold)
             self.hold_sec.setValue(0.0)
+        self._sync_threshold_edit_states()
 
     def apply_to(self, config: AppConfig) -> None:
         """把控件值写回配置。"""
@@ -559,3 +588,4 @@ class SymbolAutoTradeSettings(QFrame):
                     enabled.blockSignals(False)
                     enabled.setEnabled(False)
                     threshold.setEnabled(False)
+        self._sync_threshold_edit_states()
