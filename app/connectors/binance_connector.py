@@ -150,6 +150,10 @@ class BinanceConnector(QObject):
         super().__init__(parent)
         self.config = config
         self._client: Optional[object] = None
+        # 后台只读 Client：独立 requests.Session + 独立串行锁，与下单热路径(_client/_api)
+        # 物理隔离。Maker 等待会让下单 Client 长期持锁，若持仓/账户/委托/listenKey 等保活
+        # 查询共用同一把锁，就会在交易期间被整段饿死 → UI 表现为「卡死」。分离后保活照常。
+        self._read_client: Optional[object] = None
         self._state = ConnectionState.DISCONNECTED
         self._last_latency_ms: float | None = None
         self._order_books: dict[str, OrderBook] = {}
@@ -159,7 +163,8 @@ class BinanceConnector(QObject):
         self._demo_timer: Optional[QTimer] = None
         self._poll_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._api = ApiClient()
+        self._api = ApiClient()        # 下单热路径串行锁
+        self._read_api = ApiClient()   # 后台只读查询串行锁（与下单互不阻塞）
         self._demo_positions: dict[str, Position] = {}      # 模拟模式下的虚拟持仓
         self._effective_proxy_host: str | None = None
         self._effective_proxy_port: int | None = None
@@ -314,6 +319,49 @@ class BinanceConnector(QObject):
         if not self._client:
             return None
         return getattr(self._client, "session", None)
+
+    @property
+    def _rclient(self):
+        """后台只读查询用的 Client：优先独立读 Client，未就绪时回退下单 Client。"""
+        return self._read_client or self._client
+
+    def _read_session(self) -> requests.Session | None:
+        client = self._rclient
+        if not client:
+            return None
+        return getattr(client, "session", None)
+
+    def _run_ba_read(self, fn, *, log_failures: bool = True):
+        """后台只读查询统一入口：走独立读锁 + 独立 Session，绝不与下单热路径抢锁。
+
+        语义与 _run_ba_api 一致（同样的网络重试与错误友好化），只是改用 _read_api
+        串行化。这样即便下单 Maker 等待长期持有 _api 锁，持仓/账户/委托/listenKey
+        等保活查询仍能照常刷新，UI 不再被交易过程卡死。
+        """
+        session = self._read_session()
+
+        def _call():
+            return self._read_api.run(fn)
+
+        try:
+            return run_with_network_retry(_call, session=session)
+        except Exception as exc:
+            if HAS_BINANCE and isinstance(exc, BinanceAPIException):
+                code = getattr(exc, "code", None)
+                if code in (-1003, 418):
+                    self._log(
+                        LogLevel.ERROR,
+                        f"BA 请求过于频繁 (code={code})，已暂停重试。"
+                        "请加大行情刷新间隔(建议≥1.0s)并避免多开客户端",
+                    )
+                    raise
+            if log_failures and is_transient_network_error(exc):
+                self._log(
+                    LogLevel.DEBUG,
+                    "BA 网络/SSL 暂时失败，已自动重试仍不通。"
+                    "请检查 Clash 是否运行、代理端口是否为 7897",
+                )
+            raise
 
     def _run_ba_api(self, fn, *, log_failures: bool = True, priority: bool = False):
         """统一执行币安 API 调用：经 ApiClient 串行化 + 网络重试，并友好化常见错误。
@@ -542,7 +590,7 @@ class BinanceConnector(QObject):
             return None
 
         def _fetch() -> tuple[float, float] | None:
-            fn = getattr(self._client, "futures_commission_rate", None)
+            fn = getattr(self._rclient, "futures_commission_rate", None)
             if fn is None:
                 return None
             raw = fn(symbol=symbol)
@@ -554,7 +602,7 @@ class BinanceConnector(QObject):
             return maker, taker
 
         try:
-            return self._run_ba_api(_fetch, log_failures=False)
+            return self._run_ba_read(_fetch, log_failures=False)
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA 费率读取失败 {symbol}: {exc}")
             return None
@@ -614,6 +662,7 @@ class BinanceConnector(QObject):
             return []
 
         def _fetch() -> list[dict]:
+            client = self._rclient
             out: list[dict] = []
             max_span_ms = 7 * 24 * 60 * 60 * 1000 - 1
             for symbol in symbols:
@@ -622,7 +671,7 @@ class BinanceConnector(QObject):
                     window_end = min(end_ms, window_start + max_span_ms)
                     cursor = window_start
                     while cursor <= window_end:
-                        rows = self._client.futures_account_trades(
+                        rows = client.futures_account_trades(
                             symbol=symbol,
                             startTime=cursor,
                             endTime=window_end,
@@ -640,7 +689,7 @@ class BinanceConnector(QObject):
                     window_start = window_end + 1
             return out
 
-        return self._run_ba_api(_fetch, log_failures=False) or []
+        return self._run_ba_read(_fetch, log_failures=False) or []
 
     @staticmethod
     def _maker_price_from_book(
@@ -783,8 +832,8 @@ class BinanceConnector(QObject):
         orders: list[OpenOrder] = []
         for symbol in watched_ba_symbols():
             try:
-                raw_orders = self._run_ba_api(
-                    lambda s=symbol: self._client.futures_get_open_orders(symbol=s),
+                raw_orders = self._run_ba_read(
+                    lambda s=symbol: self._rclient.futures_get_open_orders(symbol=s),
                     log_failures=False,
                 ) or []
             except Exception:
@@ -1113,7 +1162,8 @@ class BinanceConnector(QObject):
         watched = set(watched_ba_symbols())
 
         def _fetch() -> list[Position]:
-            rows = self._client.futures_position_information()
+            client = self._rclient
+            rows = client.futures_position_information()
             if watched:
                 rows = [row for row in rows if str(row.get("symbol", "")) in watched]
             cross_buffer: float | None = None
@@ -1133,7 +1183,7 @@ class BinanceConnector(QObject):
                 try:
                     from app.core.liquidation import ba_cross_account_liq_buffer
 
-                    account = self._client.futures_account()
+                    account = client.futures_account()
                     leverage_map = self._extract_account_leverage(account)
                     if need_cross:
                         cross_buffer = ba_cross_account_liq_buffer(
@@ -1147,7 +1197,7 @@ class BinanceConnector(QObject):
                 rows, cross_account_buffer=cross_buffer, leverage_map=leverage_map
             )
 
-        return self._run_ba_api(_fetch, log_failures=False)
+        return self._run_ba_read(_fetch, log_failures=False)
 
     def _extract_account_leverage(self, account: dict) -> dict[str, int]:
         """从 futures_account 的 positions 提取各交易对真实杠杆并刷新缓存。"""
@@ -1174,7 +1224,8 @@ class BinanceConnector(QObject):
             return AccountSnapshot(platform="BA", currency="USDT", is_live=False)
 
         def _fetch() -> AccountSnapshot:
-            account = self._client.futures_account()
+            client = self._rclient
+            account = client.futures_account()
             # 顺带刷新各交易对真实杠杆缓存（V3 持仓接口不再带 leverage）
             try:
                 self._extract_account_leverage(account)
@@ -1187,7 +1238,7 @@ class BinanceConnector(QObject):
             # 现货钱包 USDT 余额（best-effort：API Key 无现货读权限时回退 0）
             cash = 0.0
             try:
-                spot = self._client.get_asset_balance(asset="USDT")
+                spot = client.get_asset_balance(asset="USDT")
                 if spot:
                     cash = float(spot.get("free", 0) or 0) + float(spot.get("locked", 0) or 0)
             except Exception:
@@ -1205,7 +1256,7 @@ class BinanceConnector(QObject):
             )
 
         try:
-            snap = self._run_ba_api(_fetch, log_failures=False)
+            snap = self._run_ba_read(_fetch, log_failures=False)
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA 账户资金读取失败: {exc}")
             return None
@@ -1223,13 +1274,14 @@ class BinanceConnector(QObject):
         start_ms: int,
         end_ms: int,
     ) -> float:
-        if not self._client:
+        client = self._rclient
+        if not client:
             return 0.0
         total = 0.0
         for income_type in income_types:
             cursor = start_ms
             while cursor < end_ms:
-                rows = self._client.futures_income_history(
+                rows = client.futures_income_history(
                     symbol=symbol,
                     incomeType=income_type,
                     startTime=cursor,
@@ -1256,7 +1308,7 @@ class BinanceConnector(QObject):
             return self._fetch_income_sum(symbol, ("FUNDING_FEE",), start_ms, end_ms)
 
         try:
-            result = self._run_ba_api(_fetch, log_failures=False)
+            result = self._run_ba_read(_fetch, log_failures=False)
         except Exception:
             return 0.0
         return float(result or 0.0)
@@ -1272,7 +1324,7 @@ class BinanceConnector(QObject):
             return self._fetch_income_sum(symbol, self._BA_REBATE_INCOME_TYPES, start_ms, end_ms)
 
         try:
-            result = self._run_ba_api(_fetch, log_failures=False)
+            result = self._run_ba_read(_fetch, log_failures=False)
         except Exception:
             return 0.0
         return float(result or 0.0)
@@ -1290,12 +1342,13 @@ class BinanceConnector(QObject):
         types = income_types or ("FUNDING_FEE",) + self._BA_REBATE_INCOME_TYPES
 
         def _fetch() -> list[dict]:
+            client = self._rclient
             out: list[dict] = []
             for symbol in symbols:
                 for income_type in types:
                     cursor = start_ms
                     while cursor <= end_ms:
-                        rows = self._client.futures_income_history(
+                        rows = client.futures_income_history(
                             symbol=symbol,
                             incomeType=income_type,
                             startTime=cursor,
@@ -1313,7 +1366,7 @@ class BinanceConnector(QObject):
                         cursor = next_cursor
             return out
 
-        return self._run_ba_api(_fetch, log_failures=False) or []
+        return self._run_ba_read(_fetch, log_failures=False) or []
 
     def transfer_spot_futures(self, amount: float, to_futures: bool) -> tuple[bool, str]:
         """现货钱包 ↔ U 本位合约钱包划转（USDT）。
@@ -2374,17 +2427,17 @@ class BinanceConnector(QObject):
 
     def _create_listen_key(self) -> str | None:
         """申请（或刷新）listenKey；供启动与重连时调用。失败返回 None。"""
-        if not self._client:
+        if not self._rclient:
             return None
 
         def _do() -> str | None:
-            fn = getattr(self._client, "futures_stream_get_listen_key", None)
+            fn = getattr(self._rclient, "futures_stream_get_listen_key", None)
             if fn is None:
                 return None
             return fn()
 
         try:
-            key = self._run_ba_api(_do, log_failures=False)
+            key = self._run_ba_read(_do, log_failures=False)
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA listenKey 申请失败: {exc}")
             return None
@@ -2396,11 +2449,11 @@ class BinanceConnector(QObject):
 
     def _keepalive_listen_key(self) -> None:
         """续期 listenKey，避免 60 分钟后自动失效。"""
-        if not self._client or not self._listen_key:
+        if not self._rclient or not self._listen_key:
             return
 
         def _do():
-            fn = getattr(self._client, "futures_stream_keepalive", None)
+            fn = getattr(self._rclient, "futures_stream_keepalive", None)
             if fn is None:
                 return None
             try:
@@ -2409,7 +2462,7 @@ class BinanceConnector(QObject):
                 return fn(self._listen_key)
 
         try:
-            self._run_ba_api(_do, log_failures=False)
+            self._run_ba_read(_do, log_failures=False)
             self._listen_key_at = time.monotonic()
         except Exception as exc:
             self._log(LogLevel.DEBUG, f"BA listenKey 续期失败: {exc}")
@@ -2426,12 +2479,12 @@ class BinanceConnector(QObject):
         target = key if key is not None else self._listen_key
         if key is None:
             self._listen_key = None
-        if not self._client or not target:
+        if not self._rclient or not target:
             return
 
         def _do():
             for name in ("futures_stream_close", "futures_stream_close_listen_key"):
-                fn = getattr(self._client, name, None)
+                fn = getattr(self._rclient, name, None)
                 if fn is None:
                     continue
                 try:
@@ -2441,7 +2494,7 @@ class BinanceConnector(QObject):
             return None
 
         try:
-            self._run_ba_api(_do, log_failures=False)
+            self._run_ba_read(_do, log_failures=False)
         except Exception:
             pass
 
@@ -2479,7 +2532,7 @@ class BinanceConnector(QObject):
         # 释放 listenKey 走后台线程，避免网络慢时阻塞"停止监控"/退出
         key = self._listen_key
         self._listen_key = None
-        if key and self._client:
+        if key and self._rclient:
             threading.Thread(
                 target=self._close_listen_key,
                 args=(key,),
@@ -2642,9 +2695,10 @@ class BinanceConnector(QObject):
     def _fetch_watched_quotes(self, watched: set[str]) -> list[Quote]:
         """按 symbol 拉 bookTicker（兜底路径，权重低于全市场）。"""
         now = time.time()
+        client = self._rclient
         out: list[Quote] = []
         for symbol in sorted(watched):
-            raw = self._client.futures_orderbook_ticker(symbol=symbol)
+            raw = client.futures_orderbook_ticker(symbol=symbol)
             item = raw if isinstance(raw, dict) else {}
             bid = float(item.get("bidPrice", 0) or 0)
             ask = float(item.get("askPrice", 0) or 0)
@@ -2660,7 +2714,7 @@ class BinanceConnector(QObject):
 
     def _fetch_one_depth(self, symbol: str) -> None:
         """拉取单个交易对的 10 档盘口并同步顶档报价。"""
-        book = self._client.futures_order_book(symbol=symbol, limit=10)
+        book = self._rclient.futures_order_book(symbol=symbol, limit=10)
         new_book = OrderBook(
             bids=[OrderBookLevel(float(p), float(q)) for p, q in book["bids"][:10]],
             asks=[OrderBookLevel(float(p), float(q)) for p, q in book["asks"][:10]],
@@ -2738,6 +2792,12 @@ class BinanceConnector(QObject):
         """后台主循环：建连→ping→读取元数据/杠杆→循环拉取报价与盘口直到停止。"""
         try:
             self._client = self._create_client()
+            # 独立读 Client：与下单 Client 各自一条 requests.Session，互不串扰。
+            # 创建失败不致命——_rclient 会回退到下单 Client（退化为旧的共享行为）。
+            try:
+                self._read_client = self._create_client()
+            except Exception:
+                self._read_client = None
             self._run_ba_api(self._client.futures_ping, log_failures=False)
             self._set_state(ConnectionState.CONNECTED)
             symbols = watched_ba_symbols()
@@ -2793,7 +2853,7 @@ class BinanceConnector(QObject):
                             return self._fetch_watched_quotes(watched)
 
                         started = time.perf_counter()
-                        quotes = self._run_ba_api(_poll_quotes, log_failures=False)
+                        quotes = self._run_ba_read(_poll_quotes, log_failures=False)
                         self._record_latency((time.perf_counter() - started) * 1000)
                         for q in quotes:
                             self.quote_received.emit(q)
