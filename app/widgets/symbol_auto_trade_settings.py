@@ -366,10 +366,6 @@ class SymbolAutoTradeSettings(QFrame):
                 (widgets[4], widgets[6]),
                 (widgets[5], widgets[7]),
             ):
-                if not enabled.isEnabled():
-                    threshold.setEnabled(False)
-                    self._set_spin_locked(threshold, True)
-                    continue
                 threshold.setEnabled(True)
                 self._set_spin_locked(threshold, enabled.isChecked())
 
@@ -572,7 +568,6 @@ class SymbolAutoTradeSettings(QFrame):
                     enabled.setChecked(False)
                     enabled.blockSignals(False)
                     enabled.setEnabled(False)
-                    threshold.setEnabled(False)
 
             # Maker 委托存在时，同品种不允许再挂第二张 BA 委托：
             # 禁止该通道的自动开仓与自动平仓（收缩/扩张）。
@@ -587,5 +582,4 @@ class SymbolAutoTradeSettings(QFrame):
                     enabled.setChecked(False)
                     enabled.blockSignals(False)
                     enabled.setEnabled(False)
-                    threshold.setEnabled(False)
         self._sync_threshold_edit_states()

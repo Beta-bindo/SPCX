@@ -700,8 +700,10 @@ def test_auto_close_opposite_mode_locked_by_position_direction():
     assert not panel.market_close_expansion_enabled.isChecked()
     assert not panel.close_expansion_enabled.isEnabled()
     assert not panel.market_close_expansion_enabled.isEnabled()
-    assert not panel.close_expansion_threshold.isEnabled()
-    assert not panel.market_close_expansion_threshold.isEnabled()
+    assert panel.close_expansion_threshold.isEnabled()
+    assert not panel.close_expansion_threshold.is_locked()
+    assert panel.market_close_expansion_threshold.isEnabled()
+    assert not panel.market_close_expansion_threshold.is_locked()
 
     panel.deleteLater()
     print("  ✓ 持仓方向锁定反向自动平仓")
