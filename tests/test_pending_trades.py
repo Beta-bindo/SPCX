@@ -26,36 +26,32 @@ def _clean_pending(tmp_path, monkeypatch):
     clear_pending()
 
 
-def test_enqueue_dedupes_by_settlement_key():
+def test_enqueue_dedupes_by_record_key():
     trade = {
-        "settled_at": "2026-06-10T12:00:00",
-        "preset_id": "xau",
-        "mode": "contraction",
-        "ba_pnl": 1.0,
-        "mt5_pnl": 2.0,
-        "ba_fee": 0.1,
-        "mt5_fee": 0.2,
-        "net_pnl": 2.7,
+        "ba_order_no": "7001",
+        "ex_order_no": "8001",
+        "product": "黄金",
+        "direction": "收缩",
+        "ba_open_price": "4257.1000",
+        "ex_open_price": "4255.2000",
+        "order_time": "2026-06-10 12:00:00",
+        "record_key": "7001|8001|2026-06-10 12:00:00",
     }
     enqueue_trades([trade, trade])
     assert len(load_pending()) == 1
 
 
-def test_enqueue_keeps_distinct_official_rows():
+def test_enqueue_keeps_distinct_order_rows():
     base = {
-        "report_source": "official",
-        "settled_at": "2026-06-10 12:00:00",
-        "preset_id": "xau",
-        "mode": "contraction",
-        "action": "open",
-        "official_platform": "BA",
-        "official_record_type": "userTrades",
+        "product": "黄金",
+        "direction": "收缩",
+        "order_time": "2026-06-10 12:00:00",
     }
     enqueue_trades(
         [
-            {**base, "official_key": "BA|userTrades|XAUUSDT|1"},
-            {**base, "official_key": "BA|userTrades|XAUUSDT|2"},
-            {**base, "official_key": "BA|userTrades|XAUUSDT|2"},
+            {**base, "ba_order_no": "7001", "ex_order_no": "8001"},
+            {**base, "ba_order_no": "7002", "ex_order_no": "8002"},
+            {**base, "ba_order_no": "7002", "ex_order_no": "8002"},
         ]
     )
     assert len(load_pending()) == 2
@@ -63,14 +59,10 @@ def test_enqueue_keeps_distinct_official_rows():
 
 def test_remove_trades():
     trade = {
-        "settled_at": "2026-06-10T12:00:00",
-        "preset_id": "xau",
-        "mode": "contraction",
-        "ba_pnl": 1.0,
-        "mt5_pnl": 2.0,
-        "ba_fee": 0.1,
-        "mt5_fee": 0.2,
-        "net_pnl": 2.7,
+        "ba_order_no": "7001",
+        "ex_order_no": "8001",
+        "order_time": "2026-06-10 12:00:00",
+        "record_key": "7001|8001|2026-06-10 12:00:00",
     }
     enqueue_trades([trade])
     remove_trades([trade])
@@ -97,14 +89,14 @@ def test_upload_works_with_pending_token(tmp_path, monkeypatch):
     with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
         client = LicenseClient()
     trade = {
-        "settled_at": "2026-06-10T12:00:00",
-        "preset_id": "xau",
-        "mode": "contraction",
-        "ba_pnl": 1.0,
-        "mt5_pnl": 2.0,
-        "ba_fee": 0.1,
-        "mt5_fee": 0.2,
-        "net_pnl": 2.7,
+        "ba_order_no": "7001",
+        "ex_order_no": "8001",
+        "product": "黄金",
+        "direction": "收缩",
+        "ba_open_price": "4257.1000",
+        "ex_open_price": "4255.2000",
+        "order_time": "2026-06-10 12:00:00",
+        "record_key": "7001|8001|2026-06-10 12:00:00",
     }
 
     class _Resp:
@@ -138,14 +130,14 @@ def test_upload_failure_enqueues(tmp_path, monkeypatch):
     with patch("app.core.license.client.get_device_id", return_value=TEST_DEVICE_ID):
         client = LicenseClient()
     trade = {
-        "settled_at": "2026-06-10T12:00:00",
-        "preset_id": "xau",
-        "mode": "contraction",
-        "ba_pnl": 1.0,
-        "mt5_pnl": 2.0,
-        "ba_fee": 0.1,
-        "mt5_fee": 0.2,
-        "net_pnl": 2.7,
+        "ba_order_no": "7001",
+        "ex_order_no": "8001",
+        "product": "黄金",
+        "direction": "收缩",
+        "ba_open_price": "4257.1000",
+        "ex_open_price": "4255.2000",
+        "order_time": "2026-06-10 12:00:00",
+        "record_key": "7001|8001|2026-06-10 12:00:00",
     }
 
     import requests

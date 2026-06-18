@@ -39,6 +39,7 @@ from app.core.hedge_trade_report import (
     fetch_hedge_trade_report,
 )
 from app.core.trade_anchor import funding_period_start, hedge_sides, record_trade_anchor
+from app.core.trade_records import append_trade_record, load_trade_records
 from app.core.pnl_calculator import (
     PnlSummary,
     build_spread_snapshot,
@@ -459,16 +460,17 @@ class SpreadEngine(QObject):
                     ex_order_no=str(mt5_leg.order_id) if mt5_leg and mt5_leg.order_id else "",
                     ba_qty=actual_ba_qty,
                     ex_qty=actual_mt5_qty,
-                    ba_open_spread=actual_spread,
-                    ba_close_spread=None,
-                    ex_open_spread=actual_spread,
-                    ex_close_spread=None,
+                    ba_open_price=actual_ba_price,
+                    ba_close_price=None,
+                    ex_open_price=actual_ex_price,
+                    ex_close_price=None,
                     ba_pnl=None,
                     ex_pnl=None,
                     ba_charges=None,
                     ba_commission=ba_fee if ba_fee else None,
                 )
                 record_trade_anchor(preset_id, mode, "open", row.order_time)
+                append_trade_record(row, preset_id=preset_id, mode=mode, action="open")
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
@@ -618,10 +620,10 @@ class SpreadEngine(QObject):
                     ex_order_no=str(mt5_leg.order_id) if mt5_leg and mt5_leg.order_id else "",
                     ba_qty=close_ba_qty or ba_qty_cfg,
                     ex_qty=close_mt5_qty or mt5_qty_cfg,
-                    ba_open_spread=entry_spread,
-                    ba_close_spread=actual_spread,
-                    ex_open_spread=entry_spread,
-                    ex_close_spread=actual_spread,
+                    ba_open_price=None,
+                    ba_close_price=actual_ba_price,
+                    ex_open_price=None,
+                    ex_close_price=actual_ex_price,
                     ba_pnl=ba_pnl,
                     ex_pnl=mt5_pnl,
                     ba_charges=ba_charges if ba_charges else None,
@@ -629,6 +631,7 @@ class SpreadEngine(QObject):
                 )
                 row.net_profit = f"{net_pnl:+.2f}"
                 record_trade_anchor(preset_id, mode, "close", row.order_time)
+                append_trade_record(row, preset_id=preset_id, mode=mode, action="close")
                 label = "黄金" if preset_id == "xau" else "白银"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
@@ -933,10 +936,11 @@ class SpreadEngine(QObject):
     def last_summary(self) -> PnlSummary:
         return self._last_summary
 
-    def fetch_official_profit_report(
+    def fetch_hedge_trade_report(
         self, start: date, end: date, symbol_filter: str = "all"
     ) -> HedgeTradeReport:
         """利润计算器：从 BA/EX 官方历史成交拉取对冲报表。"""
+        anchors = load_trade_records(start, end, symbol_filter)
         return fetch_hedge_trade_report(
             self.binance,
             self.mt5,
@@ -944,6 +948,7 @@ class SpreadEngine(QObject):
             start,
             end,
             symbol_filter,
+            anchors=anchors,
         )
 
     @property

@@ -195,7 +195,7 @@ class ProfitCalculatorDialog(QDialog):
 
         def _work() -> None:
             try:
-                report = engine.fetch_official_profit_report(start, end, symbol)
+                report = engine.fetch_hedge_trade_report(start, end, symbol)
             except Exception as exc:  # noqa: BLE001
                 report = HedgeTradeReport()
                 report.errors.append(f"查询失败: {exc}")

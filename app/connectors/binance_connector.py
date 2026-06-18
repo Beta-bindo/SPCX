@@ -691,6 +691,36 @@ class BinanceConnector(QObject):
 
         return self._run_ba_read(_fetch, log_failures=False) or []
 
+    def fetch_order_history_rows(
+        self, symbols: list[str], start_ms: int, end_ms: int
+    ) -> list[dict]:
+        """读取 BA 官方订单历史（futures_get_all_orders 原始字段）。"""
+        if not self.config.use_live_ba or not self._client or start_ms >= end_ms:
+            return []
+
+        def _fetch() -> list[dict]:
+            client = self._rclient
+            fn = getattr(client, "futures_get_all_orders", None)
+            if fn is None:
+                return []
+            out: list[dict] = []
+            max_span_ms = 7 * 24 * 60 * 60 * 1000 - 1
+            for symbol in symbols:
+                window_start = start_ms
+                while window_start <= end_ms:
+                    window_end = min(end_ms, window_start + max_span_ms)
+                    rows = fn(
+                        symbol=symbol,
+                        startTime=window_start,
+                        endTime=window_end,
+                        limit=1000,
+                    ) or []
+                    out.extend(dict(row) for row in rows)
+                    window_start = window_end + 1
+            return out
+
+        return self._run_ba_read(_fetch, log_failures=False) or []
+
     @staticmethod
     def _maker_price_from_book(
         bid: float,

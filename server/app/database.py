@@ -56,11 +56,11 @@ def init_db() -> None:
                 direction TEXT NOT NULL DEFAULT '',
                 ba_qty TEXT NOT NULL DEFAULT '',
                 ex_qty TEXT NOT NULL DEFAULT '',
-                ba_open_spread TEXT NOT NULL DEFAULT '',
-                ba_close_spread TEXT NOT NULL DEFAULT '',
+                ba_open_price TEXT NOT NULL DEFAULT '',
+                ba_close_price TEXT NOT NULL DEFAULT '',
                 ba_pnl TEXT NOT NULL DEFAULT '',
-                ex_open_spread TEXT NOT NULL DEFAULT '',
-                ex_close_spread TEXT NOT NULL DEFAULT '',
+                ex_open_price TEXT NOT NULL DEFAULT '',
+                ex_close_price TEXT NOT NULL DEFAULT '',
                 ba_charges TEXT NOT NULL DEFAULT '',
                 ba_commission TEXT NOT NULL DEFAULT '',
                 order_time TEXT NOT NULL DEFAULT '',
@@ -137,11 +137,11 @@ _NEW_TRADE_COLUMNS = {
     "direction",
     "ba_qty",
     "ex_qty",
-    "ba_open_spread",
-    "ba_close_spread",
+    "ba_open_price",
+    "ba_close_price",
     "ba_pnl",
-    "ex_open_spread",
-    "ex_close_spread",
+    "ex_open_price",
+    "ex_close_price",
     "ba_charges",
     "ba_commission",
     "order_time",
@@ -153,9 +153,6 @@ _NEW_TRADE_COLUMNS = {
 
 def _create_trade_indexes(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS idx_trades_event")
-    conn.execute("DROP INDEX IF EXISTS idx_trades_ledger_event")
-    conn.execute("DROP INDEX IF EXISTS idx_trades_official_event")
-    conn.execute("DROP INDEX IF EXISTS idx_trades_settled")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_device ON trades(device_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_order_time ON trades(order_time)")
     conn.execute(
@@ -170,10 +167,9 @@ def _migrate_trades(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
     if not cols:
         return
-    if cols == _NEW_TRADE_COLUMNS or "record_key" in cols and "report_source" not in cols:
+    if cols == _NEW_TRADE_COLUMNS:
         _create_trade_indexes(conn)
         return
-    # 旧表结构（ledger/official 混合格式）整体废弃，按新字段重建；历史数据由客户端重新上报。
     conn.execute("DROP TABLE IF EXISTS trades")
     conn.executescript(
         """
@@ -186,11 +182,11 @@ def _migrate_trades(conn: sqlite3.Connection) -> None:
             direction TEXT NOT NULL DEFAULT '',
             ba_qty TEXT NOT NULL DEFAULT '',
             ex_qty TEXT NOT NULL DEFAULT '',
-            ba_open_spread TEXT NOT NULL DEFAULT '',
-            ba_close_spread TEXT NOT NULL DEFAULT '',
+            ba_open_price TEXT NOT NULL DEFAULT '',
+            ba_close_price TEXT NOT NULL DEFAULT '',
             ba_pnl TEXT NOT NULL DEFAULT '',
-            ex_open_spread TEXT NOT NULL DEFAULT '',
-            ex_close_spread TEXT NOT NULL DEFAULT '',
+            ex_open_price TEXT NOT NULL DEFAULT '',
+            ex_close_price TEXT NOT NULL DEFAULT '',
             ba_charges TEXT NOT NULL DEFAULT '',
             ba_commission TEXT NOT NULL DEFAULT '',
             order_time TEXT NOT NULL DEFAULT '',

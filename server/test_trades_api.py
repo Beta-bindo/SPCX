@@ -59,11 +59,11 @@ def _sample_trade(**overrides) -> TradeItem:
         "direction": "收缩",
         "ba_qty": "500",
         "ex_qty": "1",
-        "ba_open_spread": "+3.125",
-        "ba_close_spread": "--",
+        "ba_open_price": "4257.1000",
+        "ba_close_price": "--",
         "ba_pnl": "--",
-        "ex_open_spread": "+3.125",
-        "ex_close_spread": "--",
+        "ex_open_price": "4255.2000",
+        "ex_close_price": "--",
         "ba_charges": "--",
         "ba_commission": "-0.2500",
         "order_time": "2026-06-10 12:00:00",
@@ -111,7 +111,7 @@ class ServerTradeApiTests(unittest.TestCase):
                 self.assertEqual(data["ex_order_no"], "12345")
                 self.assertEqual(data["product"], "黄金")
                 self.assertEqual(data["direction"], "收缩")
-                self.assertEqual(data["ba_open_spread"], "+3.125")
+                self.assertEqual(data["ba_open_price"], "4257.1000")
                 self.assertEqual(data["net_profit"], "-0.2500")
 
     def test_trade_upload_dedupes_by_record_key(self):
@@ -169,17 +169,7 @@ class ServerTradeApiTests(unittest.TestCase):
                 CREATE TABLE trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     device_id TEXT NOT NULL,
-                    settled_at TEXT NOT NULL,
-                    preset_id TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    ba_pnl REAL NOT NULL DEFAULT 0,
-                    mt5_pnl REAL NOT NULL DEFAULT 0,
-                    ba_fee REAL NOT NULL DEFAULT 0,
-                    mt5_fee REAL NOT NULL DEFAULT 0,
-                    net_pnl REAL NOT NULL DEFAULT 0,
-                    uploaded_at TEXT NOT NULL,
-                    report_source TEXT NOT NULL DEFAULT 'ledger',
-                    UNIQUE(device_id, settled_at, preset_id, mode)
+                    stale_col TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
@@ -197,8 +187,7 @@ class ServerTradeApiTests(unittest.TestCase):
                     cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
             self.assertIn("ba_order_no", cols)
             self.assertIn("record_key", cols)
-            self.assertNotIn("report_source", cols)
-            self.assertNotIn("net_pnl", cols)
+            self.assertNotIn("stale_col", cols)
 
     def test_nolicense_register_auto_approves(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,8 +21,8 @@ def _sample_row(**kwargs) -> HedgeTradeRow:
         ex_order_no="8001",
         ba_qty=500.0,
         ex_qty=1.0,
-        ba_open_spread=3.0,
-        ba_close_spread=1.5,
+        ba_open_price=3.0,
+        ba_close_price=1.5,
         ba_pnl=10.0,
         ex_pnl=-3.0,
         ba_charges=-2.5,
@@ -70,13 +70,13 @@ def test_build_row_from_settlement_open():
         ex_order_no="8001",
         ba_qty=500.0,
         ex_qty=1.0,
-        ba_open_spread=3.125,
+        ba_open_price=3.125,
         ba_commission=0.25,
     )
     assert row.product == "黄金"
     assert row.direction == "收缩"
-    assert row.ba_close_spread == "--"
-    assert row.ba_open_spread == "+3.125"
+    assert row.ba_close_price == "--"
+    assert row.ba_open_price == "3.1250"
     assert row.record_key
     payload = row.to_payload()
     assert payload["product"] == "黄金"

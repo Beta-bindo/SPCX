@@ -342,8 +342,8 @@ def upload_trades(
                     """
                     INSERT OR IGNORE INTO trades (
                         device_id, ba_order_no, ex_order_no, product, direction,
-                        ba_qty, ex_qty, ba_open_spread, ba_close_spread, ba_pnl,
-                        ex_open_spread, ex_close_spread, ba_charges, ba_commission,
+                        ba_qty, ex_qty, ba_open_price, ba_close_price, ba_pnl,
+                        ex_open_price, ex_close_price, ba_charges, ba_commission,
                         order_time, net_profit, record_key, uploaded_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -355,11 +355,11 @@ def upload_trades(
                         trade.direction,
                         trade.ba_qty,
                         trade.ex_qty,
-                        trade.ba_open_spread,
-                        trade.ba_close_spread,
+                        trade.ba_open_price,
+                        trade.ba_close_price,
                         trade.ba_pnl,
-                        trade.ex_open_spread,
-                        trade.ex_close_spread,
+                        trade.ex_open_price,
+                        trade.ex_close_price,
                         trade.ba_charges,
                         trade.ba_commission,
                         trade.order_time,

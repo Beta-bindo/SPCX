@@ -438,7 +438,7 @@ def export_trades(
     header = [
         "用户", "联系方式", "机器码",
         "BA订单号", "EX订单号", "产品", "方向", "BA数量", "EX数量",
-        "BA开仓点数", "平仓点数", "BA盈亏", "EX开仓点数", "EX平仓点数",
+        "BA开仓成交价", "BA平仓成交价", "BA盈亏", "EX开仓成交价", "EX平仓成交价",
         "BA资费", "BA手续费", "下单时间", "净利润", "上报时间",
     ]
 
@@ -480,11 +480,11 @@ def export_trades(
                             item.get("direction") or "",
                             item.get("ba_qty") or "",
                             item.get("ex_qty") or "",
-                            item.get("ba_open_spread") or "",
-                            item.get("ba_close_spread") or "",
+                            item.get("ba_open_price") or "",
+                            item.get("ba_close_price") or "",
                             item.get("ba_pnl") or "",
-                            item.get("ex_open_spread") or "",
-                            item.get("ex_close_spread") or "",
+                            item.get("ex_open_price") or "",
+                            item.get("ex_close_price") or "",
                             item.get("ba_charges") or "",
                             item.get("ba_commission") or "",
                             item.get("order_time") or "",

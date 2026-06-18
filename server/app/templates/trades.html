@@ -120,11 +120,11 @@ const TRADE_LIST_COLUMNS = [
   { key: 'direction', label: '方向' },
   { key: 'ba_qty', label: 'BA数量' },
   { key: 'ex_qty', label: 'EX数量' },
-  { key: 'ba_open_spread', label: 'BA开仓点数' },
-  { key: 'ba_close_spread', label: '平仓点数' },
+  { key: 'ba_open_price', label: 'BA开仓成交价' },
+  { key: 'ba_close_price', label: 'BA平仓成交价' },
   { key: 'ba_pnl', label: 'BA盈亏' },
-  { key: 'ex_open_spread', label: 'EX开仓点数' },
-  { key: 'ex_close_spread', label: 'EX平仓点数' },
+  { key: 'ex_open_price', label: 'EX开仓成交价' },
+  { key: 'ex_close_price', label: 'EX平仓成交价' },
   { key: 'ba_charges', label: 'BA资费' },
   { key: 'ba_commission', label: 'BA手续费' },
   { key: 'order_time', label: '下单时间' },
@@ -147,10 +147,10 @@ function renderTradeCell(key, t) {
     case 'direction':
     case 'ba_qty':
     case 'ex_qty':
-    case 'ba_open_spread':
-    case 'ba_close_spread':
-    case 'ex_open_spread':
-    case 'ex_close_spread':
+    case 'ba_open_price':
+    case 'ba_close_price':
+    case 'ex_open_price':
+    case 'ex_close_price':
     case 'ba_charges':
     case 'ba_commission':
       return esc(t[key] || '--');

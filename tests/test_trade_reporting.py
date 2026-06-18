@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,8 +19,13 @@ from app.core.license.client import LicenseClient, LicenseError
 from app.core.license.pending_trades import clear_pending, enqueue_trades, load_pending
 from app.core.license.service import LicenseService
 from app.core.license.store import LicenseState, load_license, save_license
-from app.core.models import AppConfig
-from app.core.hedge_trade_report import HedgeTradeRow, build_row_from_settlement
+from app.core.models import AppConfig, ConnectionMode
+from app.core.hedge_trade_report import (
+    HedgeTradeRow,
+    build_row_from_settlement,
+    fetch_hedge_trade_report,
+)
+from app.core.trade_records import append_trade_record, load_trade_records
 from app.core.pnl_calculator import estimate_trade_fees
 from app.core.spread_engine import SpreadEngine
 from app.core.trade_result import HedgeTradeResult, LegResult
@@ -37,7 +43,7 @@ class TradeReportingTests(unittest.TestCase):
             ex_order_no="8001",
             ba_qty=500.0,
             ex_qty=1.0,
-            ba_open_spread=3.125,
+            ba_open_price=3.125,
             ba_commission=0.25,
             order_time="2026-06-10 12:00:00",
         )
@@ -46,7 +52,7 @@ class TradeReportingTests(unittest.TestCase):
         self.assertEqual(payload["ex_order_no"], "8001")
         self.assertEqual(payload["product"], "黄金")
         self.assertEqual(payload["direction"], "收缩")
-        self.assertEqual(payload["ba_open_spread"], "+3.125")
+        self.assertEqual(payload["ba_open_price"], "3.1250")
         self.assertEqual(payload["ba_commission"], "-0.2500")
         self.assertTrue(payload["record_key"])
 
@@ -69,6 +75,233 @@ class TradeReportingTests(unittest.TestCase):
         )
         payload = row.to_payload()
         self.assertEqual(payload["ba_commission"], f"{-abs(ba_fee):+.4f}")
+
+    def test_official_report_fill_prices_match_order_and_deal_history(self):
+        class _BA:
+            def fetch_account_trade_history(self, symbols, start_ms, end_ms):
+                return [
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7112786180",
+                        "id": "1",
+                        "side": "BUY",
+                        "price": "4257.00",
+                        "qty": "0.4",
+                        "quoteQty": "1702.8",
+                        "realizedPnl": "0",
+                        "commission": "0.6",
+                        "time": 1781741128000,
+                    },
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7112786180",
+                        "id": "2",
+                        "side": "BUY",
+                        "price": "4257.1666667",
+                        "qty": "0.6",
+                        "quoteQty": "2554.3",
+                        "realizedPnl": "0",
+                        "commission": "1.10284",
+                        "time": 1781741129000,
+                    },
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7113000000",
+                        "id": "3",
+                        "side": "SELL",
+                        "price": "4260.50",
+                        "qty": "1",
+                        "quoteQty": "4260.5",
+                        "realizedPnl": "7.01499998",
+                        "commission": "1.7042",
+                        "time": 1781741228000,
+                    },
+                ]
+
+            def fetch_order_history_rows(self, symbols, start_ms, end_ms):
+                return [
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7112786180",
+                        "avgPrice": "4257.10",
+                        "reduceOnly": "false",
+                        "side": "BUY",
+                    },
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "7113000000",
+                        "avgPrice": "4260.50",
+                        "reduceOnly": "true",
+                        "side": "SELL",
+                    },
+                ]
+
+            def fetch_income_history_rows(self, symbols, start_ms, end_ms):
+                return []
+
+        class _MT5:
+            def fetch_history_deals(self, symbols, start, end):
+                return [
+                    {
+                        "symbol": "XAUUSD",
+                        "order": "21212149",
+                        "ticket": "9001",
+                        "entry": "0",
+                        "price": "4255.20",
+                        "volume": "0.01",
+                        "profit": "0",
+                        "commission": "0",
+                        "fee": "0",
+                        "swap": "0",
+                        "time_msc": 1781741128500,
+                    },
+                    {
+                        "symbol": "XAUUSD",
+                        "order": "21213000",
+                        "ticket": "9002",
+                        "entry": "1",
+                        "price": "4258.30",
+                        "volume": "0.01",
+                        "profit": "-2",
+                        "commission": "-0.1",
+                        "fee": "0",
+                        "swap": "0",
+                        "time_msc": 1781741228500,
+                    },
+                ]
+
+        cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BOTH.value)
+        report = fetch_hedge_trade_report(
+            _BA(),
+            _MT5(),
+            cfg,
+            date(2026, 6, 18),
+            date(2026, 6, 18),
+            "xau",
+        )
+
+        open_row = next(row for row in report.rows if row.ba_order_no == "7112786180")
+        close_row = next(row for row in report.rows if row.ba_order_no == "7113000000")
+        self.assertEqual(open_row.ba_open_price, "4257.1000")
+        self.assertEqual(open_row.ex_open_price, "4255.2000")
+        self.assertEqual(open_row.ba_close_price, "--")
+        self.assertEqual(open_row.ex_close_price, "--")
+        self.assertEqual(open_row.direction, "扩张")
+        self.assertEqual(close_row.ba_close_price, "4260.5000")
+        self.assertEqual(close_row.ex_close_price, "4258.3000")
+        self.assertEqual(close_row.direction, "扩张")
+
+    def test_official_report_prefers_saved_order_id_anchor(self):
+        class _BA:
+            def fetch_account_trade_history(self, symbols, start_ms, end_ms):
+                return [
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "BA1",
+                        "side": "SELL",
+                        "price": "4266.00",
+                        "qty": "1",
+                        "quoteQty": "4266",
+                        "realizedPnl": "0",
+                        "commission": "1",
+                        "time": 1781741128000,
+                    }
+                ]
+
+            def fetch_order_history_rows(self, symbols, start_ms, end_ms):
+                return [
+                    {
+                        "symbol": "XAUUSDT",
+                        "orderId": "BA1",
+                        "avgPrice": "4266.00",
+                        "reduceOnly": "false",
+                        "side": "SELL",
+                    }
+                ]
+
+            def fetch_income_history_rows(self, symbols, start_ms, end_ms):
+                return []
+
+        class _MT5:
+            def fetch_history_deals(self, symbols, start, end):
+                return [
+                    {
+                        "symbol": "XAUUSD",
+                        "order": "EX_WRONG_NEAR_TIME",
+                        "entry": "0",
+                        "price": "9999.00",
+                        "volume": "0.01",
+                        "profit": "0",
+                        "commission": "0",
+                        "fee": "0",
+                        "swap": "0",
+                        "time_msc": 1781741128500,
+                    },
+                    {
+                        "symbol": "XAUUSD",
+                        "order": "EX_TARGET",
+                        "entry": "0",
+                        "price": "4264.20",
+                        "volume": "0.01",
+                        "profit": "0",
+                        "commission": "0",
+                        "fee": "0",
+                        "swap": "0",
+                        "time_msc": 1781741190000,
+                    },
+                ]
+
+        anchors = [
+            {
+                "preset_id": "xau",
+                "mode": "contraction",
+                "action": "open",
+                "ba_order_no": "BA1",
+                "ex_order_no": "EX_TARGET",
+                "product": "黄金",
+                "direction": "收缩",
+                "ba_qty": "1",
+                "ex_qty": "0.01",
+                "order_time": "2026-06-18 00:05:28",
+                "record_key": "BA1|EX_TARGET|2026-06-18 00:05:28",
+            }
+        ]
+
+        cfg = AppConfig(connection_mode=ConnectionMode.LIVE_BOTH.value)
+        report = fetch_hedge_trade_report(
+            _BA(),
+            _MT5(),
+            cfg,
+            date(2026, 6, 18),
+            date(2026, 6, 18),
+            "xau",
+            anchors=anchors,
+        )
+
+        row = next(row for row in report.rows if row.ba_order_no == "BA1")
+        self.assertEqual(row.ex_order_no, "EX_TARGET")
+        self.assertEqual(row.ba_open_price, "4266.0000")
+        self.assertEqual(row.ex_open_price, "4264.2000")
+        self.assertNotEqual(row.ex_open_price, "9999.0000")
+
+    def test_trade_records_persist_order_id_anchors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trade_records.json"
+            with patch("app.core.trade_records._path", lambda: path):
+                row = build_row_from_settlement(
+                    preset_id="xau",
+                    mode="contraction",
+                    action="open",
+                    ba_order_no="7001",
+                    ex_order_no="8001",
+                    order_time="2026-06-18 12:00:00",
+                )
+                append_trade_record(row, preset_id="xau", mode="contraction", action="open")
+                saved = load_trade_records(date(2026, 6, 18), date(2026, 6, 18), "xau")
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0]["ba_order_no"], "7001")
+                self.assertEqual(saved[0]["ex_order_no"], "8001")
+                self.assertEqual(saved[0]["action"], "open")
 
     def test_actual_trade_prices_prefer_filled_prices(self):
         result = HedgeTradeResult(
@@ -357,7 +590,7 @@ class TradeReportingTests(unittest.TestCase):
                     preset_id="xau",
                     mode="contraction",
                     action="open",
-                    ba_open_spread=3.0,
+                    ba_open_price=3.0,
                     ba_order_no="7001",
                     ex_order_no="8001",
                     order_time="2026-06-10 12:00:00",
@@ -379,7 +612,7 @@ class TradeReportingTests(unittest.TestCase):
                     count = client.flush_pending_trades()
                 self.assertEqual(count, 1)
                 self.assertEqual(load_pending(), [])
-                self.assertEqual(posted[0]["trades"][0]["ba_open_spread"], "+3.000")
+                self.assertEqual(posted[0]["trades"][0]["ba_open_price"], "3.0000")
 
     def test_ensure_approved_allows_cached_token_when_server_down(self):
         with tempfile.TemporaryDirectory() as tmp:
