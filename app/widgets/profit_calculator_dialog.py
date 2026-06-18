@@ -85,7 +85,7 @@ class ProfitCalculatorDialog(QDialog):
         self.symbol_combo.setFixedWidth(140)
         self.symbol_combo.addItem("全部", "all")
         self.symbol_combo.addItem("黄金", "xau")
-        self.symbol_combo.addItem("白银", "xag")
+        self.symbol_combo.addItem("SPCXUSDT", "xag")
         self.symbol_combo.setCurrentIndex(0)
 
         self.calc_btn = QPushButton("查询")

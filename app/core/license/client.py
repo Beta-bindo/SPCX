@@ -156,10 +156,14 @@ class LicenseClient:
         position_summary: str = "",
         xau_position: str = "",
         xag_position: str = "",
+        spcx_position: str = "",
         open_orders_summary: str = "",
         xau_open_orders: str = "",
         xag_open_orders: str = "",
+        spcx_open_orders: str = "",
     ) -> LicenseState:
+        spcx_position = spcx_position or xag_position
+        spcx_open_orders = spcx_open_orders or xag_open_orders
         payload = {
             "device_id": self.state.device_id,
             "app_version": APP_VERSION,
@@ -167,9 +171,11 @@ class LicenseClient:
             "mt5_account": mt5_account,
             "position_summary": position_summary,
             "xau_position": xau_position,
+            "spcx_position": spcx_position,
             "xag_position": xag_position,
             "open_orders_summary": open_orders_summary,
             "xau_open_orders": xau_open_orders,
+            "spcx_open_orders": spcx_open_orders,
             "xag_open_orders": xag_open_orders,
         }
         try:

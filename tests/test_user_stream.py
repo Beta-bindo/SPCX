@@ -298,16 +298,16 @@ def test_seed_stream_open_orders_from_rest():
     conn._client = MagicMock()
     conn.get_open_orders = lambda: [  # type: ignore[method-assign]
         OpenOrder(platform="BA", symbol="XAUUSDT", order_id="900", side=Side.SELL),
-        OpenOrder(platform="BA", symbol="XAGUSDT", order_id="901", side=Side.BUY),
+        OpenOrder(platform="BA", symbol="SPCXUSDT", order_id="901", side=Side.BUY),
     ]
 
-    conn._seed_stream_open_orders({"XAUUSDT", "XAGUSDT"})
-    assert conn._open_order_symbols == frozenset({"XAUUSDT", "XAGUSDT"})
+    conn._seed_stream_open_orders({"XAUUSDT", "SPCXUSDT"})
+    assert conn._open_order_symbols == frozenset({"XAUUSDT", "SPCXUSDT"})
 
     # 打底后由推送增量维护：其中一腿成交后该交易对应从指示灯移除
     conn._on_user_order_update(_order_event("XAUUSDT", 900, "FILLED", 500.0))
     assert "XAUUSDT" not in conn._open_order_symbols
-    assert "XAGUSDT" in conn._open_order_symbols
+    assert "SPCXUSDT" in conn._open_order_symbols
     print("  ✓ REST 打底 + 推送增量维护指示灯")
 
 

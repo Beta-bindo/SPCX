@@ -50,9 +50,11 @@ class HeartbeatRequest(BaseModel):
     mt5_account: str = Field(default="", max_length=128)
     position_summary: str = Field(default="", max_length=1024)
     xau_position: str = Field(default="", max_length=256)
+    spcx_position: str = Field(default="", max_length=256)
     xag_position: str = Field(default="", max_length=256)
     open_orders_summary: str = Field(default="", max_length=1024)
     xau_open_orders: str = Field(default="", max_length=256)
+    spcx_open_orders: str = Field(default="", max_length=256)
     xag_open_orders: str = Field(default="", max_length=256)
 
 

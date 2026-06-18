@@ -56,7 +56,7 @@ def run_ratio_tests(r: Report) -> None:
     r.check("黄金 Exness 手数", cfg.mt5_lot_for("xau") == 2.0)
 
     cfg2 = AppConfig(xag_ba_qty_map=5000, xag_mt5_lot_map=1, xag_trade_lots=0.5)
-    r.check("白银 BA 数量配比", cfg2.ba_quantity_for("xag") == 2500.0)
+    r.check("SPCXUSDT BA 数量配比", cfg2.ba_quantity_for("xag") == 2500.0)
 
     cfg3 = AppConfig(xau_mt5_lot_map=0)
     r.check("零手数映射防除零", cfg3.ba_quantity_for("xau") > 0)

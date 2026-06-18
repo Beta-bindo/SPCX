@@ -1,6 +1,6 @@
 """单品种自动交易设置：按收缩/扩张配置自动开/平仓的点差阈值与触发条件。
 
-黄金支持 Maker 与市价两条"通道"（lane），白银仅市价。每条通道含开仓/平仓各两个方向。
+黄金支持 Maker 与市价两条"通道"（lane），SPCXUSDT仅市价。每条通道含开仓/平仓各两个方向。
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _maker_timeout_spin(value: float):
 
 
 class SymbolAutoTradeSettings(QFrame):
-    """收缩/扩张自动开平仓：黄金 Maker+市价；白银仅市价。"""
+    """收缩/扩张自动开平仓：黄金 Maker+市价；SPCXUSDT仅市价。"""
 
     manual_cancel_requested = Signal()  # 点击「撤销委托」按钮，请求撤销全部未成交委托
 
@@ -256,7 +256,7 @@ class SymbolAutoTradeSettings(QFrame):
     def _lane_widgets(self, lane: str) -> tuple:
         """返回某通道的 8 个控件，顺序固定：
         (开收缩启用, 开扩张启用, 开收缩阈值, 开扩张阈值,
-         平收缩启用, 平扩张启用, 平收缩阈值, 平扩张阈值)。白银无 maker 通道返回空元组。
+         平收缩启用, 平扩张启用, 平收缩阈值, 平扩张阈值)。SPCXUSDT无 maker 通道返回空元组。
         """
         if lane == "maker":
             if self.preset_id != "xau":
@@ -296,7 +296,7 @@ class SymbolAutoTradeSettings(QFrame):
     def open_checkbox(self, lane: str, mode: str):
         """返回某通道某方向（收缩/扩张）的"自动开仓"勾选框。
 
-        统一通过 _lane_widgets 取，避免白银（无 maker、市价勾选框沿用非前缀命名）
+        统一通过 _lane_widgets 取，避免SPCXUSDT（无 maker、市价勾选框沿用非前缀命名）
         与黄金市价（market_ 前缀命名）之间的命名差异导致取错控件。通道无效返回 None。
         """
         widgets = self._lane_widgets(lane)
@@ -308,7 +308,7 @@ class SymbolAutoTradeSettings(QFrame):
         """返回某通道某方向（收缩/扩张）的"自动平仓"勾选框。
 
         与 open_checkbox 对称，统一通过 _lane_widgets 取（索引 4=平收缩、5=平扩张），
-        避免黄金/白银命名差异取错控件。通道无效返回 None。
+        避免黄金/SPCXUSDT命名差异取错控件。通道无效返回 None。
         """
         widgets = self._lane_widgets(lane)
         if not widgets:

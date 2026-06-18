@@ -159,6 +159,8 @@ def heartbeat(
     authorization: Optional[str] = Header(default=None),
 ) -> HeartbeatResponse:
     now = _utc_now()
+    spcx_position = body.spcx_position or body.xag_position
+    spcx_open_orders = body.spcx_open_orders or body.xag_open_orders
     # 仅当请求携带与该设备匹配的有效令牌时，才接受账号/持仓/委托等敏感字段写入，
     # 否则任何人都能用 device_id 伪造覆盖他人数据。无令牌时只刷新在线时间。
     authed = False
@@ -195,9 +197,11 @@ def heartbeat(
                         ex_account_status = ?,
                         position_summary = ?,
                         xau_position = ?,
+                        spcx_position = ?,
                         xag_position = ?,
                         open_orders_summary = ?,
                         xau_open_orders = ?,
+                        spcx_open_orders = ?,
                         xag_open_orders = ?
                     WHERE device_id = ?
                     """,
@@ -209,10 +213,12 @@ def heartbeat(
                         ex_account_status,
                         body.position_summary,
                         body.xau_position,
-                        body.xag_position,
+                        spcx_position,
+                        body.xag_position or spcx_position,
                         body.open_orders_summary,
                         body.xau_open_orders,
-                        body.xag_open_orders,
+                        spcx_open_orders,
+                        body.xag_open_orders or spcx_open_orders,
                         body.device_id,
                     ),
                 )

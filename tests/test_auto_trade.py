@@ -794,10 +794,10 @@ def test_auto_trade_hint_routes_to_matching_symbol_panel():
     _set_checked_no_signal(auto_gold.contraction_enabled, True)
     _set_checked_no_signal(auto_silver.contraction_enabled, True)
 
-    window._auto_trade_hint("自动下单：白银 市价点差 -0.007 未达收缩阈值 ≥ 0.080")
+    window._auto_trade_hint("自动下单：SPCXUSDT 市价点差 -0.007 未达收缩阈值 ≥ 0.080")
 
     assert auto_gold.status_label.text() == ""
-    assert "白银" in auto_silver.status_label.text()
+    assert "SPCXUSDT" in auto_silver.status_label.text()
     window.close()
     print("  ✓ 自动下单诊断提示只显示在对应品种板块")
 

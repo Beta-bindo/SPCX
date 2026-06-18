@@ -12,7 +12,7 @@ const MODE_LABELS = {
 
 const PRESET_LABELS = {
   xau: '黄金',
-  xag: '白银',
+  xag: 'SPCXUSDT',
 };
 
 function statusLabel(status) {

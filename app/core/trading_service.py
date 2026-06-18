@@ -369,7 +369,7 @@ def open_hedge(
         )
         mt5_leg.compensated = rollback.success
         mt5_leg.compensation_message = rollback.message
-    label = "黄金" if preset_id == "xau" else "白银"
+    label = "黄金" if preset_id == "xau" else "SPCXUSDT"
     mlabel = _mode_label(mode)
     om_label = order_mode_log_label(preset_id, order_mode)
     verb = "加仓" if had_position else "开仓"
@@ -494,7 +494,7 @@ def close_hedge(
     success = all(leg.success for leg in legs)
     if not success:
         _restore_closed_legs(binance, mt5, preset_id, mode, ba, mt5_leg)
-    label = "黄金" if preset_id == "xau" else "白银"
+    label = "黄金" if preset_id == "xau" else "SPCXUSDT"
     mlabel = _mode_label(mode)
     om_label = order_mode_log_label(preset_id, order_mode)
     if success:

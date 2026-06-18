@@ -69,7 +69,7 @@ class AlertService(QObject):
         pending_messages: list[tuple[str, str, AlertSoundKind]] = []
 
         # 逐品种检查点差是否越界
-        for preset_id, label in (("xau", "黄金"), ("xag", "白银")):
+        for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
             if not config.spread_alerts_on(preset_id):
                 continue
             snap = spreads.get(preset_id)
@@ -93,8 +93,8 @@ class AlertService(QObject):
         liq_map = [
             ("xau", "xau_ba_liq", risk.xau_ba_liq, config.xau_ba_liq_alert, "黄金 BA 爆仓缓冲"),
             ("xau", "xau_mt5_liq", risk.xau_mt5_liq, config.xau_mt5_liq_alert, "黄金 Exness 爆仓缓冲"),
-            ("xag", "xag_ba_liq", risk.xag_ba_liq, config.xag_ba_liq_alert, "白银 BA 爆仓缓冲"),
-            ("xag", "xag_mt5_liq", risk.xag_mt5_liq, config.xag_mt5_liq_alert, "白银 Exness 爆仓缓冲"),
+            ("xag", "xag_ba_liq", risk.xag_ba_liq, config.xag_ba_liq_alert, "SPCXUSDT BA 爆仓缓冲"),
+            ("xag", "xag_mt5_liq", risk.xag_mt5_liq, config.xag_mt5_liq_alert, "SPCXUSDT Exness 爆仓缓冲"),
         ]
         for preset_id, key, distance, threshold, name in liq_map:
             if not config.liq_alerts_on(preset_id):

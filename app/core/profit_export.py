@@ -13,7 +13,7 @@ EXPORT_DIR = exports_dir()
 
 
 def export_filename(symbol_filter: str) -> str:
-    sym = {"all": "全部", "xau": "黄金", "xag": "白银"}.get(symbol_filter, symbol_filter)
+    sym = {"all": "全部", "xau": "黄金", "xag": "SPCXUSDT"}.get(symbol_filter, symbol_filter)
     stamp = date.today().isoformat()
     return f"利润明细_{sym}_{stamp}.xlsx"
 

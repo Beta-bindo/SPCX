@@ -71,7 +71,7 @@ def test_mt5_deal_charges_sum_commission_fee_swap():
     deals = [
         SimpleNamespace(symbol="XAUUSD", order=11, profit=1.20, commission=-0.50, fee=-0.10, swap=0.20),
         SimpleNamespace(symbol="XAUUSD", order=12, profit=-0.10, commission=-0.30, fee=0.0, swap=-0.05),
-        SimpleNamespace(symbol="XAGUSD", order=11, profit=99.0, commission=-99.0, fee=0.0, swap=0.0),
+        SimpleNamespace(symbol="SPCXUSDT", order=11, profit=99.0, commission=-99.0, fee=0.0, swap=0.0),
     ]
     mt5_mod.mt5 = SimpleNamespace(history_deals_get=lambda _start, _end: deals)
 

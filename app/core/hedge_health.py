@@ -60,7 +60,7 @@ def analyze_hedge_health(
     → 数量不齐（warn，需传入 config 才检测）→ 正常对冲。
     """
     preset = find_preset(preset_id)
-    label = "黄金" if preset_id == "xau" else "白银"
+    label = "黄金" if preset_id == "xau" else "SPCXUSDT"
     ba_pos = next(
         (p for p in positions if p.platform == "BA" and p.symbol == preset.symbol_ba and p.quantity > 0),
         None,

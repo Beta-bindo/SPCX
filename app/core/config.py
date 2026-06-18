@@ -22,6 +22,7 @@ from app.core.models import (
 )
 from app.core.app_log import LOG_LEVEL_DEFAULT, normalize_log_level
 from app.core.secret_store import protect_secret, unprotect_secret
+from app.core.symbols import apply_selected_symbols
 
 CONFIG_DIR = Path.home() / ".xau_assistant"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -62,7 +63,7 @@ def _migrate_legacy(data: dict) -> dict:
         data.setdefault("xau_mt5_lot_map", 1.0)
         data.setdefault("xau_trade_lots", data.get("xau_mt5_lot_size", 1.0))
     if "xag_ba_qty_map" not in data and "xag_ba_quantity" in data:
-        data.setdefault("xag_ba_qty_map", data.get("xag_ba_quantity", 5000))
+        data.setdefault("xag_ba_qty_map", data.get("xag_ba_quantity", 1.0))
         data.setdefault("xag_mt5_lot_map", 1.0)
         data.setdefault("xag_trade_lots", data.get("xag_mt5_lot_size", 1.0))
     if "xau_spread_alert_min" not in data and "alert_ba_spread" in data:
@@ -116,12 +117,12 @@ def load_config() -> AppConfig:
             ba_quantity=float(data.get("ba_quantity", 500.0)),
             xau_ba_quantity=float(data.get("xau_ba_quantity", data.get("xau_ba_qty_map", 500.0))),
             xau_mt5_lot_size=float(data.get("xau_mt5_lot_size", data.get("xau_trade_lots", 1.0))),
-            xag_ba_quantity=float(data.get("xag_ba_quantity", data.get("xag_ba_qty_map", 5000.0))),
+            xag_ba_quantity=float(data.get("xag_ba_quantity", data.get("xag_ba_qty_map", 1.0))),
             xag_mt5_lot_size=float(data.get("xag_mt5_lot_size", data.get("xag_trade_lots", 1.0))),
             xau_ba_qty_map=float(data.get("xau_ba_qty_map", 500.0)),
             xau_mt5_lot_map=float(data.get("xau_mt5_lot_map", 1.0)),
             xau_trade_lots=float(data.get("xau_trade_lots", 1.0)),
-            xag_ba_qty_map=float(data.get("xag_ba_qty_map", 5000.0)),
+            xag_ba_qty_map=float(data.get("xag_ba_qty_map", 1.0)),
             xag_mt5_lot_map=float(data.get("xag_mt5_lot_map", 1.0)),
             xag_trade_lots=float(data.get("xag_trade_lots", 1.0)),
             ba_fee_rate=float(data.get("ba_fee_rate", 0.0004)),
@@ -216,6 +217,7 @@ def load_config() -> AppConfig:
             ),
             layout_mode=data.get("layout_mode", "dual"),
             single_symbol_preset=data.get("single_symbol_preset", "xau"),
+            selected_symbols=data.get("selected_symbols", "XAUUSDT,SPCXUSDT"),
             log_level=normalize_log_level(data.get("log_level", LOG_LEVEL_DEFAULT)),
             xau_panel_sections=serialize_panel_sections(
                 parse_panel_sections(
@@ -237,6 +239,7 @@ def load_config() -> AppConfig:
         cfg.xag_ba_quantity = cfg.ba_quantity_for("xag")
         cfg.xau_mt5_lot_size = cfg.mt5_lot_for("xau")
         cfg.xag_mt5_lot_size = cfg.mt5_lot_for("xag")
+        apply_selected_symbols(cfg.selected_symbols)
         return _apply_build_connection_mode(cfg)
     except (json.JSONDecodeError, OSError, ValueError):
         return _apply_build_connection_mode(AppConfig())
@@ -245,6 +248,7 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig) -> None:
     """将 AppConfig 序列化写入磁盘（敏感字段加密、中文不转义）。"""
     ensure_config_dir()
+    apply_selected_symbols(config.selected_symbols)
     config.xau_ba_quantity = config.ba_quantity_for("xau")
     config.xag_ba_quantity = config.ba_quantity_for("xag")
     config.xau_mt5_lot_size = config.mt5_lot_for("xau")
@@ -333,6 +337,7 @@ def save_config(config: AppConfig) -> None:
         "xau_auto_market_close_expansion_threshold": config.xau_auto_market_close_expansion_threshold,
         "layout_mode": config.layout_mode,
         "single_symbol_preset": config.single_symbol_preset,
+        "selected_symbols": config.selected_symbols,
         "log_level": normalize_log_level(config.log_level),
         "xau_panel_sections": config.xau_panel_sections,
         "xag_panel_sections": config.xag_panel_sections,

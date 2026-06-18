@@ -433,7 +433,7 @@ class BinanceConnector(QObject):
     def _pending_order_block_message(
         self, preset_id: str, action: str, order_mode: str
     ) -> str:
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         mode_label = "Maker" if order_mode == GoldOrderMode.MAKER.value else "限价"
         action_label = "开仓" if action == "open" else "平仓"
         return f"{label}已有 BA 委托未完成，已拦截新的 {mode_label}{action_label}"
@@ -2318,7 +2318,7 @@ class BinanceConnector(QObject):
         return lev
 
     def _start_demo(self) -> None:
-        """启动模拟行情：用定时器周期性生成黄金/白银的虚拟报价与盘口。"""
+        """启动模拟行情：用定时器周期性生成黄金/SPCXUSDT的虚拟报价与盘口。"""
         self._emit_ws_mode("off")
         self._emit_open_orders(frozenset())  # 模拟模式无真实挂单
         self.account_received.emit(AccountSnapshot(platform="BA", currency="USDT", is_live=False))
@@ -2329,7 +2329,7 @@ class BinanceConnector(QObject):
         self._emit_demo_quotes()
         self._log(
             LogLevel.DEBUG,
-            f"BA 模拟行情 · 黄金 + 白银 · 刷新间隔 {self.config.ba_refresh_interval_sec:.1f}s",
+            f"BA 模拟行情 · 黄金 + SPCXUSDT · 刷新间隔 {self.config.ba_refresh_interval_sec:.1f}s",
         )
 
     def _emit_demo_quotes(self) -> None:
@@ -2772,7 +2772,7 @@ class BinanceConnector(QObject):
             self._fetch_one_depth(symbol)
 
     def _build_demo_book(self, mid: float, is_gold: bool) -> OrderBook:
-        """围绕中价生成 10 档模拟盘口（黄金/白银档距不同）。"""
+        """围绕中价生成 10 档模拟盘口（黄金/SPCXUSDT档距不同）。"""
         step = 0.05 if is_gold else 0.002
         bids, asks = [], []
         for i in range(10):

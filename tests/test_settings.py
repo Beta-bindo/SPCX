@@ -458,8 +458,8 @@ def test_per_symbol_alert_independent():
     alerts.evaluate(cfg, spreads, RiskSnapshot())
     assert len(fired) == 1
     assert "黄金" in fired[0]
-    assert "白银" not in fired[0]
-    print("  ✓ 各品种点差告警独立（仅黄金开启时白银不响）")
+    assert "SPCXUSDT" not in fired[0]
+    print("  ✓ 各品种点差告警独立（仅黄金开启时SPCXUSDT不响）")
 
 
 def test_disabling_alert_stops_active_beep():
@@ -516,7 +516,7 @@ def test_main_window_alert_checkboxes_do_not_sync():
     assert not gold.isChecked()
     assert silver.isChecked()
     window.close()
-    print("  ✓ 黄金/白银点差勾选互不同步")
+    print("  ✓ 黄金/SPCXUSDT点差勾选互不同步")
 
 
 def test_spread_alert_reenters_warning_edge():

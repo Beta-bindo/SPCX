@@ -151,14 +151,14 @@ class SymbolActionStrip(QFrame):
         root.addWidget(self._left_col, 0)
         root.addStretch(1)
 
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = find_preset(preset_id).label
         self._title_row = QWidget(self)
         title_layout = QHBoxLayout(self._title_row)
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(6)
-        title = QLabel(f"{self._icon} {label}")
-        title.setObjectName("fieldLabel")
-        title_layout.addWidget(title)
+        self.title_label = QLabel(f"{self._icon} {label}")
+        self.title_label.setObjectName("fieldLabel")
+        title_layout.addWidget(self.title_label)
         title_layout.addStretch(1)
         self.sections_btn = QPushButton("板块")
         self.sections_btn.setObjectName("ghostButton")
@@ -326,6 +326,9 @@ class SymbolActionStrip(QFrame):
 
         self.refresh_positions_btn.clicked.connect(self.position_refresh_requested.emit)
         self.apply_panel_ui_scale()
+
+    def refresh_symbol_label(self) -> None:
+        self.title_label.setText(f"{self._icon} {find_preset(self.preset_id).label}")
 
     def attach_monitor_buttons(self, start_btn, stop_btn) -> None:
         """把外部的启用/停止监控按钮放到对冲入口按钮左侧。"""

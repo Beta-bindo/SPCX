@@ -170,7 +170,7 @@ def admin_verify_password_route(
     return {"ok": True}
 
 
-_PRODUCT_FILTER = {"xau": "黄金", "xag": "白银"}
+_PRODUCT_FILTER = {"xau": "黄金", "xag": "SPCXUSDT"}
 _DIRECTION_FILTER = {"contraction": "收缩", "expansion": "扩张"}
 
 

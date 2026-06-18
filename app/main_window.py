@@ -1,4 +1,4 @@
-"""主窗口：组织三栏布局（黄金/中栏汇总/白银），连接 SpreadEngine 与各 UI 组件。
+"""主窗口：组织三栏布局（黄金/中栏汇总/SPCXUSDT），连接 SpreadEngine 与各 UI 组件。
 
 负责：行情/持仓/盈亏的展示刷新、手动与自动对冲下单的入口与回执、告警与连接状态、
 主题与布局切换、授权门禁校验，以及配置的加载/保存。
@@ -10,7 +10,7 @@ import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QShowEvent
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -55,6 +56,12 @@ from app.widgets.log_panel import LogPanel
 from app.widgets.profit_calculator_dialog import ProfitCalculatorDialog
 from app.widgets.symbol_trade_panel import BOOK_PANEL_WIDTH, SymbolActionStrip, SymbolTradePanel
 from app.widgets.trade_confirm_dialog import TradeConfirmDialog
+from app.core.symbols import (
+    apply_selected_symbols,
+    find_preset,
+    normalize_selected_symbols,
+    selected_symbols_text,
+)
 
 
 AUTO_MAKER_RETRY_COOLDOWN_SEC = 2.0  # Maker 自动委托未成交撤单后的重试冷却（秒）
@@ -64,6 +71,7 @@ class MainWindow(QMainWindow):
     """应用主窗口：装配三栏 UI、引擎与各类信号，并承载交易/告警/配置交互。"""
 
     _monitor_start_checked = Signal(bool, str)
+    _symbol_options_loaded = Signal(object)
 
     def __init__(
         self,
@@ -89,6 +97,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(640, 480)
 
         self.config = load_config()
+        apply_selected_symbols(self.config.selected_symbols)
         self.engine = SpreadEngine(self.config)
         self._auto_trade_state = AutoTradeState()
         self._auto_trade_hint_last: dict[str, float] = {}
@@ -109,6 +118,8 @@ class MainWindow(QMainWindow):
         self._profit_calculator_dialog: ProfitCalculatorDialog | None = None
         self._monitor_buttons_on_header = True
         self._pending_demo_start = False
+        self._symbol_options_cache: list[str] = []
+        self._symbol_options_refreshing = False
         self._demo_start_scheduled = False
         self._ui_bootstrapping = True
         self._last_open_orders_log = ""
@@ -134,7 +145,7 @@ class MainWindow(QMainWindow):
         self._columns_splitter.setChildrenCollapsible(False)
 
         self.gold_panel = SymbolTradePanel("xau", "黄金 · 币安盘口", parent=self._columns_splitter)
-        self.silver_panel = SymbolTradePanel("xag", "白银 · 币安盘口", parent=self._columns_splitter)
+        self.silver_panel = SymbolTradePanel("xag", "SPCXUSDT · 币安盘口", parent=self._columns_splitter)
         self.gold_actions = SymbolActionStrip("xau", parent=self._columns_splitter)
         self.silver_actions = SymbolActionStrip("xag", parent=self._columns_splitter)
         for strip in (self.gold_actions, self.silver_actions):
@@ -190,6 +201,7 @@ class MainWindow(QMainWindow):
 
         self._wire_signals()
         self._monitor_start_checked.connect(self._on_monitor_start_checked)
+        self._symbol_options_loaded.connect(self._on_symbol_options_loaded)
         self.gold_actions.load_settings_from(self.config)
         self.silver_actions.load_settings_from(self.config)
 
@@ -303,7 +315,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_demo_seed_positions(self) -> None:
         self.engine.refresh_positions()
-        self.status_bar.showMessage("演示持仓已载入 · 请查看黄金/白银告警与「补对冲」", 12000)
+        self.status_bar.showMessage("演示持仓已载入 · 请查看黄金/SPCXUSDT告警与「补对冲」", 12000)
 
     def _sync_monitor_buttons(self) -> None:
         running = self.engine.is_running
@@ -357,10 +369,14 @@ class MainWindow(QMainWindow):
         self.layout_mode_btn.clicked.connect(self._on_layout_mode_toggled)
         row.addWidget(self.layout_mode_btn)
 
-        self.symbol_switch_btn = QPushButton("🥈 切换白银", parent=host)
-        self._style_toolbar_btn(self.symbol_switch_btn)
-        self.symbol_switch_btn.clicked.connect(self._on_symbol_switch)
-        row.addWidget(self.symbol_switch_btn)
+        self.symbol_select_btn = QPushButton("", parent=host)
+        self._style_toolbar_btn(self.symbol_select_btn)
+        self.symbol_select_btn.setToolTip("选择最多 2 个 BA 与 EX 都支持的品种")
+        self.symbol_select_menu = QMenu(self.symbol_select_btn)
+        self.symbol_select_btn.setMenu(self.symbol_select_menu)
+        self.symbol_select_btn.clicked.connect(self._start_symbol_options_refresh)
+        self.symbol_select_menu.aboutToShow.connect(self._on_symbol_menu_about_to_show)
+        row.addWidget(self.symbol_select_btn)
 
         self.theme_btn = QPushButton("浅色", parent=host)
         self._style_toolbar_btn(self.theme_btn, checkable=True)
@@ -407,6 +423,135 @@ class MainWindow(QMainWindow):
         btn.setCheckable(checkable)
         btn.setFixedHeight(28)
         btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    def _selected_symbols(self) -> list[str]:
+        return normalize_selected_symbols(self.config.selected_symbols)
+
+    def _sync_symbol_select_btn(self) -> None:
+        selected = self._selected_symbols()
+        text = "品种 " + " / ".join(selected)
+        self.symbol_select_btn.setText(text)
+
+    def _ba_futures_symbols(self) -> set[str]:
+        """读取 BA U 本位合约交易对；失败时返回空集合。"""
+        try:
+            client = getattr(self.engine.binance, "_read_client", None) or getattr(
+                self.engine.binance, "_client", None
+            )
+            if client is None:
+                from app.connectors.binance_connector import HAS_BINANCE, _ensure_binance_loaded
+
+                if not HAS_BINANCE or not _ensure_binance_loaded():
+                    return set()
+                client = self.engine.binance._create_client()
+            info = client.futures_exchange_info()
+            symbols = set()
+            for item in info.get("symbols", []):
+                symbol = str(item.get("symbol", "")).upper()
+                if item.get("contractType") == "PERPETUAL" and item.get("quoteAsset") == "USDT":
+                    symbols.add(symbol)
+            return symbols
+        except Exception:
+            return set()
+
+    def _ex_symbols(self) -> set[str]:
+        """读取 EX/MT5 可用交易对；失败时返回空集合。"""
+        try:
+            import MetaTrader5 as mt5
+        except Exception:
+            return set()
+        try:
+            symbols = mt5.symbols_get() or []
+            return {str(getattr(s, "name", "") or "").upper() for s in symbols if getattr(s, "name", "")}
+        except Exception:
+            return set()
+
+    def _available_common_symbols(self) -> list[str]:
+        current = self._selected_symbols()
+        ba_symbols = self._ba_futures_symbols()
+        ex_symbols = self._ex_symbols()
+        if ba_symbols and ex_symbols:
+            common = sorted(ba_symbols & ex_symbols)
+        elif ba_symbols:
+            # EX 未连接/未安装时保留当前选择，避免演示模式无选项。
+            common = sorted(ba_symbols & set(current))
+        else:
+            common = []
+        for symbol in current:
+            if symbol not in common:
+                common.insert(0, symbol)
+        return common[:200]
+
+    def _start_symbol_options_refresh(self) -> None:
+        if self._symbol_options_refreshing:
+            return
+        self._symbol_options_refreshing = True
+
+        def worker() -> None:
+            symbols = self._available_common_symbols()
+            self._symbol_options_loaded.emit(symbols)
+
+        threading.Thread(target=worker, name="symbol-options-refresh", daemon=True).start()
+
+    def _on_symbol_menu_about_to_show(self) -> None:
+        self._start_symbol_options_refresh()
+        self._render_symbol_select_menu()
+
+    def _on_symbol_options_loaded(self, symbols: object) -> None:
+        self._symbol_options_refreshing = False
+        self._symbol_options_cache = list(symbols or [])
+        self._render_symbol_select_menu()
+
+    def _render_symbol_select_menu(self) -> None:
+        self.symbol_select_menu.clear()
+        selected = set(self._selected_symbols())
+        symbols = self._symbol_options_cache or self._selected_symbols()
+        if not symbols:
+            disabled = QAction("未获取到 BA/EX 共同品种", self.symbol_select_menu)
+            disabled.setEnabled(False)
+            self.symbol_select_menu.addAction(disabled)
+            return
+        for symbol in symbols:
+            action = QAction(symbol, self.symbol_select_menu)
+            action.setCheckable(True)
+            action.setChecked(symbol in selected)
+            action.toggled.connect(lambda checked, s=symbol: self._on_symbol_option_toggled(s, checked))
+            self.symbol_select_menu.addAction(action)
+        if self._symbol_options_refreshing:
+            self.symbol_select_menu.addSeparator()
+            loading = QAction("正在刷新 BA/EX 共同品种...", self.symbol_select_menu)
+            loading.setEnabled(False)
+            self.symbol_select_menu.addAction(loading)
+
+    def _on_symbol_option_toggled(self, symbol: str, checked: bool) -> None:
+        selected = self._selected_symbols()
+        if checked:
+            if symbol not in selected:
+                if len(selected) >= 2:
+                    QMessageBox.information(self, "最多选择 2 个", "最多只能同时选择 2 个品种。")
+                    self._render_symbol_select_menu()
+                    return
+                selected.append(symbol)
+        else:
+            selected = [s for s in selected if s != symbol]
+            if not selected:
+                QMessageBox.information(self, "至少选择 1 个", "至少保留 1 个监控品种。")
+                selected = self._selected_symbols()
+                self._render_symbol_select_menu()
+                return
+        self.config.selected_symbols = selected_symbols_text(selected)
+        if self.config.single_symbol_preset == "xag" and len(selected) < 2:
+            self.config.single_symbol_preset = "xau"
+        apply_selected_symbols(self.config.selected_symbols)
+        save_config(self.config)
+        self.engine.sync_config(self.config)
+        self._sync_symbol_select_btn()
+        self.gold_actions.refresh_symbol_label()
+        self.silver_actions.refresh_symbol_label()
+        self._apply_layout_mode()
+        self._refresh_order_book()
+        self.status_bar.showMessage(f"已选择品种：{' / '.join(self._selected_symbols())}")
+        self._render_symbol_select_menu()
 
     def _sync_theme_btn(self) -> None:
         dark = self.config.theme == "dark"
@@ -571,17 +716,6 @@ class MainWindow(QMainWindow):
         self._apply_layout_mode()
         self.status_bar.showMessage("已切换为单品种模式" if single else "已切换为双品种模式")
 
-    def _on_symbol_switch(self) -> None:
-        if self.config.layout_mode != LayoutMode.SINGLE.value:
-            return
-        self.config.single_symbol_preset = (
-            "xag" if self.config.single_symbol_preset == "xau" else "xau"
-        )
-        save_config(self.config)
-        self._apply_layout_mode()
-        label = "黄金" if self.config.single_symbol_preset == "xau" else "白银"
-        self.status_bar.showMessage(f"单品种：{label}")
-
     def _column_widgets_all(self) -> tuple[QWidget, ...]:
         return (
             self.gold_panel,
@@ -594,18 +728,20 @@ class MainWindow(QMainWindow):
         """固定五列 splitter，仅切换可见性，避免单/双模式重建控件。"""
         single = self.config.layout_mode == LayoutMode.SINGLE.value
         widgets = self._column_widgets_all()
+        selected_count = len(self._selected_symbols())
         if not single:
-            for widget in widgets:
-                widget.setVisible(True)
-                widget.setMaximumWidth(16777215)
+            visibility = (True, True, selected_count >= 2, selected_count >= 2)
+            for widget, visible in zip(widgets, visibility):
+                widget.setVisible(visible)
+                widget.setMaximumWidth(16777215 if visible else 0)
             return
 
         show_xau = self.config.single_symbol_preset == "xau"
         visibility = (
             show_xau,
             show_xau,
-            not show_xau,
-            not show_xau,
+            selected_count >= 2 and not show_xau,
+            selected_count >= 2 and not show_xau,
         )
         for widget, visible in zip(widgets, visibility):
             widget.setVisible(visible)
@@ -618,6 +754,7 @@ class MainWindow(QMainWindow):
         """按实际内容宽度分配 splitter，订单簿列不撑出空白。"""
         total = max(self._columns_splitter.width(), 1)
         single = self.config.layout_mode == LayoutMode.SINGLE.value
+        selected_count = len(self._selected_symbols())
         if single:
             show_xau = self.config.single_symbol_preset == "xau"
             actions = self.gold_actions if show_xau else self.silver_actions
@@ -639,6 +776,14 @@ class MainWindow(QMainWindow):
         gold_w = BOOK_PANEL_WIDTH
         action_col_min = 280
         gold_act_w = max(self.gold_actions.minimumSizeHint().width(), action_col_min)
+        if selected_count < 2:
+            extra = max(total - gold_w - gold_act_w, 0)
+            self._columns_splitter.setStretchFactor(0, 0)
+            self._columns_splitter.setStretchFactor(1, 1)
+            self._columns_splitter.setStretchFactor(2, 0)
+            self._columns_splitter.setStretchFactor(3, 0)
+            self._columns_splitter.setSizes([gold_w, gold_act_w + extra, 0, 0])
+            return
         silver_act_w = max(self.silver_actions.minimumSizeHint().width(), action_col_min)
         silver_w = BOOK_PANEL_WIDTH
         extra = max(total - gold_w - gold_act_w - silver_act_w - silver_w, 0)
@@ -667,20 +812,21 @@ class MainWindow(QMainWindow):
             self.layout_mode_btn.setChecked(single)
             self.layout_mode_btn.setText("双品种" if single else "单品种")
             self.layout_mode_btn.blockSignals(False)
-            self.symbol_switch_btn.setVisible(single)
+            self.symbol_select_btn.setVisible(True)
+            self._sync_symbol_select_btn()
+            self.gold_actions.refresh_symbol_label()
+            self.silver_actions.refresh_symbol_label()
 
             preset = self.config.single_symbol_preset
+            selected_count = len(self._selected_symbols())
+            if selected_count < 2:
+                preset = "xau"
+                self.config.single_symbol_preset = "xau"
             show_xau = not single or preset == "xau"
-            show_xag = not single or preset == "xag"
+            show_xag = selected_count >= 2 and (not single or preset == "xag")
             self.gold_panel.set_compact(single and show_xau)
             self.silver_panel.set_compact(single and show_xag)
             self._apply_column_visibility()
-
-            if single:
-                if preset == "xau":
-                    self.symbol_switch_btn.setText("🥈 切换白银")
-                else:
-                    self.symbol_switch_btn.setText("🥇 切换黄金")
 
             self._relocate_monitor_buttons()
             self._sync_columns_sizes()
@@ -878,7 +1024,7 @@ class MainWindow(QMainWindow):
                 return
             order_mode = dlg.gold_order_mode()
             dlg.apply_ratio_to(self.config)
-            sym = "黄金" if preset_id == "xau" else "白银"
+            sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
             self.status_bar.showMessage(f"正在提交{sym}{action}...")
             self.engine.sync_config(self.config)
             self._manual_trade_notify = True
@@ -975,7 +1121,7 @@ class MainWindow(QMainWindow):
         if preset_id is None:
             if "黄金" in message:
                 preset_id = "xau"
-            elif "白银" in message:
+            elif "SPCXUSDT" in message:
                 preset_id = "xag"
         if preset_id == "xau":
             targets = (self.gold_actions,)
@@ -1096,7 +1242,7 @@ class MainWindow(QMainWindow):
     def _capture_auto_maker_restore(
         self, preset_id: str, order_mode: str
     ) -> list[tuple[str, str]]:
-        """记录 Maker 自动委托前已勾选的自动项；市价/白银不参与恢复。"""
+        """记录 Maker 自动委托前已勾选的自动项；市价/SPCXUSDT不参与恢复。"""
         if auto_trade_lane(preset_id, order_mode) != "maker":
             return []
         strip = self.gold_actions if preset_id == "xau" else self.silver_actions
@@ -1198,7 +1344,7 @@ class MainWindow(QMainWindow):
         self.config = self._merge_config()
         # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
         save_config_async(self.config)
-        sym = "黄金" if preset_id == "xau" else "白银"
+        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
         if outcome == "success":
@@ -1238,7 +1384,7 @@ class MainWindow(QMainWindow):
         self.config = self._merge_config()
         # 处于交易收尾热路径：异步落盘，避免每次（尤其 Maker 未成交重试）同步加密写盘卡顿 UI。
         save_config_async(self.config)
-        sym = "黄金" if preset_id == "xau" else "白银"
+        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
         mlabel = "收缩" if mode == HedgeMode.CONTRACTION.value else "扩张"
         lane_label = "市价" if is_market else "Maker"
         if outcome == "success":
@@ -1311,7 +1457,7 @@ class MainWindow(QMainWindow):
         ):
             return
         timeout_sec = max(1.0, float(self.config.ba_maker_timeout_sec))
-        sym = "黄金" if preset_id == "xau" else "白银"
+        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
         self._append_log(
             LogLevel.INFO,
             f"{sym}自动 Maker 委托等待 {timeout_sec:.0f}s 未成交，已自动撤单",
@@ -1648,7 +1794,7 @@ class MainWindow(QMainWindow):
 
         self._last_trade_preset_id = preset_id
         label = "开仓" if action == "open" else "平仓"
-        sym = "黄金" if preset_id == "xau" else "白银"
+        sym = "黄金" if preset_id == "xau" else "SPCXUSDT"
         om = order_mode_log_label(preset_id, order_mode)
         self.gold_actions.set_trade_buttons_enabled(False)
         self.silver_actions.set_trade_buttons_enabled(False)
@@ -1716,7 +1862,7 @@ class MainWindow(QMainWindow):
                     self._restore_auto_maker_checkboxes(preset_id_p, restore_snapshot) > 0
                 )
                 if restored_auto_checkbox:
-                    sym = "黄金" if preset_id_p == "xau" else "白银"
+                    sym = "黄金" if preset_id_p == "xau" else "SPCXUSDT"
                     self._append_log(
                         LogLevel.INFO,
                         f"自动 Maker 委托未成交已自动撤单，已恢复{sym}之前的自动勾选",

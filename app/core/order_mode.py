@@ -26,7 +26,7 @@ def resolve_execution_flags(preset_id: str, order_mode: str) -> tuple[bool, bool
 
 
 def auto_trade_order_mode(preset_id: str, lane: str) -> str:
-    """自动交易 lane → 下单模式（市价 lane 或白银一律市价，否则 Maker）。"""
+    """自动交易 lane → 下单模式（市价 lane 或SPCXUSDT一律市价，否则 Maker）。"""
     if lane == LANE_MARKET or preset_id == "xag":
         return GoldOrderMode.MARKET.value
     return GoldOrderMode.MAKER.value

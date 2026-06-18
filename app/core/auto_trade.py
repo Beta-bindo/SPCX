@@ -5,7 +5,7 @@
 - 点差回落超过 RESET_MARGIN（迟滞）则重置计时；
 - 不设触发冷却：下单成功后会自动取消勾选，人工重新勾选即视为再次授权。
 
-每个品种可有多个 lane（黄金支持 maker + market，白银仅 market），各 lane 独立计时。
+每个品种可有多个 lane（黄金支持 maker + market，SPCXUSDT仅 market），各 lane 独立计时。
 本模块只产出"下单意图"列表，实际下单由调用方（spread_engine）执行。
 """
 
@@ -51,7 +51,7 @@ class AutoTradeProgress:
 
 
 def _lanes_for_preset(preset_id: str) -> tuple[str, ...]:
-    """该品种支持的 lane：黄金支持 Maker+市价，白银仅市价。"""
+    """该品种支持的 lane：黄金支持 Maker+市价，SPCXUSDT仅市价。"""
     if preset_id == "xau":
         return (LANE_MAKER, LANE_MARKET)
     return (LANE_MARKET,)
@@ -213,7 +213,7 @@ def diagnose_auto_trade_block(
         return None
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         active = detect_hedge_mode(preset_id, positions)
         if active is not None:
             opposing = (
@@ -306,7 +306,7 @@ def evaluate_auto_trades(
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         active = detect_hedge_mode(preset_id, positions)
         snap = spreads.get(preset_id)
         if snap is None:
@@ -453,7 +453,7 @@ def evaluate_auto_closes(
     orders: list[tuple[str, str, str, str]] = []
 
     for preset_id in preset_ids:
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         mode = detect_hedge_mode(preset_id, positions)
         if mode is None:
             _reset_close_preset(state, preset_id)

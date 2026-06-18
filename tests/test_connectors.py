@@ -347,7 +347,7 @@ def test_cancel_all_open_orders_cancels_pending():
     assert count == 1
     client.futures_get_open_orders.assert_not_called()
     client.futures_cancel_all_open_orders.assert_any_call(symbol="XAUUSDT")
-    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAGUSDT")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="SPCXUSDT")
     assert client.futures_cancel_all_open_orders.call_count == 2
     print("  ✓ 手动撤单：撤销委托中的挂单")
 
@@ -402,7 +402,7 @@ def test_cancel_all_open_orders_noop_without_pending():
 
     assert count == 0
     client.futures_cancel_all_open_orders.assert_any_call(symbol="XAUUSDT")
-    client.futures_cancel_all_open_orders.assert_any_call(symbol="XAGUSDT")
+    client.futures_cancel_all_open_orders.assert_any_call(symbol="SPCXUSDT")
     assert client.futures_cancel_all_open_orders.call_count == 2
     print("  ✓ 手动撤单：无本地挂单时仍兜底调用撤单接口")
 
@@ -431,7 +431,7 @@ def test_rest_open_orders_snapshot_clears_stale_stream_order():
     conn.open_orders_changed.connect(symbols_events.append)
     conn.open_orders_detail.connect(lambda orders: detail_events.append(list(orders)))
 
-    conn._poll_open_orders({"XAUUSDT", "XAGUSDT"})
+    conn._poll_open_orders({"XAUUSDT", "SPCXUSDT"})
 
     assert conn._open_orders_cache == []
     assert conn._stream_active_orders == {}
@@ -695,7 +695,7 @@ def test_ws_depth_url_includes_depth_stream():
     from app.connectors.binance_ws_stream import BinanceWsStream
 
     stream = BinanceWsStream(
-        ["XAUUSDT", "XAGUSDT"],
+        ["XAUUSDT", "SPCXUSDT"],
         use_proxy=False,
         proxy_host="",
         proxy_port=0,
@@ -707,7 +707,7 @@ def test_ws_depth_url_includes_depth_stream():
     url = stream._build_url()
     assert "xauusdt@bookTicker" in url
     assert "xauusdt@depth20@500ms" in url
-    assert "xagusdt@depth20@500ms" in url
+    assert "spcxusdt@depth20@500ms" in url
     print("  ✓ WS 订阅 URL 含 depth20")
 
 

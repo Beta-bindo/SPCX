@@ -350,7 +350,7 @@ class SpreadEngine(QObject):
         if min_open_spread is None and max_open_spread is None:
             return True, ""
         snap = self._spreads.get(preset_id)
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         mlabel = "收缩" if mode == "contraction" else "扩张"
         if snap is None:
             return False, f"自动开仓{mlabel}取消：{label}缺少最新点差"
@@ -471,7 +471,7 @@ class SpreadEngine(QObject):
                 )
                 record_trade_anchor(preset_id, mode, "open", row.order_time)
                 append_trade_record(row, preset_id=preset_id, mode=mode, action="open")
-                label = "黄金" if preset_id == "xau" else "白银"
+                label = "黄金" if preset_id == "xau" else "SPCXUSDT"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
@@ -632,7 +632,7 @@ class SpreadEngine(QObject):
                 row.net_profit = f"{net_pnl:+.2f}"
                 record_trade_anchor(preset_id, mode, "close", row.order_time)
                 append_trade_record(row, preset_id=preset_id, mode=mode, action="close")
-                label = "黄金" if preset_id == "xau" else "白银"
+                label = "黄金" if preset_id == "xau" else "SPCXUSDT"
                 mlabel = "收缩" if mode == "contraction" else "扩张"
                 self._log(
                     LogLevel.TRADE,
@@ -657,7 +657,7 @@ class SpreadEngine(QObject):
     def _log_remaining_positions(self, preset_id: str) -> None:
         """平仓后把该品种两端剩余持仓打印到日志，便于核对是否平干净。"""
         preset = find_preset(preset_id)
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         try:
             ba_pos = next(
                 (p for p in self.binance.get_positions() if p.symbol == preset.symbol_ba),

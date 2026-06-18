@@ -61,7 +61,7 @@ class SymbolRatioFields(QFrame):
                 hdr.setToolTip("每次对冲在 Exness 下多少手，最小 0.01；双击数字框可编辑")
             grid.addWidget(hdr, 0, col)
 
-        sym = QLabel("黄金" if preset_id == "xau" else "白银")
+        sym = QLabel("黄金" if preset_id == "xau" else "SPCXUSDT")
         sym.setObjectName("fieldLabel")
         sym.setProperty("symbolTag", "true")
         sym.style().unpolish(sym)
@@ -74,7 +74,7 @@ class SymbolRatioFields(QFrame):
             mt5_val = config.xau_mt5_lot_map
             lots_val = config.xau_trade_lots
         else:
-            ba_default, mt5_default, lots_default = 5000.0, 1.0, 1.0
+            ba_default, mt5_default, lots_default = 1.0, 1.0, 1.0
             ba_val = config.xag_ba_qty_map
             mt5_val = config.xag_mt5_lot_map
             lots_val = config.xag_trade_lots

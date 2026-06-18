@@ -336,7 +336,7 @@ class AppConfig:
 
     字段按用途分组：连接凭据 / 代理、交易品种与手数、手续费参数、主题与刷新、
     点差与爆仓告警、自动交易阈值（限价与市价两条 lane）、布局等。
-    带 xau_/xag_ 前缀的字段为黄金/白银各自独立配置，通过下方 *_for(preset_id)
+    带 xau_/xag_ 前缀的字段为黄金/SPCXUSDT各自独立配置，通过下方 *_for(preset_id)
     辅助方法按当前品种取值。
     """
 
@@ -359,12 +359,12 @@ class AppConfig:
     ba_quantity: float = 0.01
     xau_ba_quantity: float = 500.0
     xau_mt5_lot_size: float = 1.0
-    xag_ba_quantity: float = 5000.0
+    xag_ba_quantity: float = 1.0
     xag_mt5_lot_size: float = 1.0
     xau_ba_qty_map: float = 500.0
     xau_mt5_lot_map: float = 1.0
     xau_trade_lots: float = 1.0
-    xag_ba_qty_map: float = 5000.0
+    xag_ba_qty_map: float = 1.0
     xag_mt5_lot_map: float = 1.0
     xag_trade_lots: float = 1.0
     # —— 手续费 / 成本参数 ——
@@ -433,6 +433,7 @@ class AppConfig:
     # —— 界面布局与日志 ——
     layout_mode: str = LayoutMode.DUAL.value
     single_symbol_preset: str = "xau"
+    selected_symbols: str = "XAUUSDT,SPCXUSDT"
     log_level: str = "normal"
     xau_panel_sections: str = DEFAULT_PANEL_SECTIONS
     xag_panel_sections: str = DEFAULT_PANEL_SECTIONS
@@ -480,9 +481,9 @@ class AppConfig:
             return self.xag_trade_lots
         return self.xau_trade_lots
 
-    # 以下一组 *_for / *_on / *_threshold 方法均为"按 preset_id 取黄金或白银对应字段"
+    # 以下一组 *_for / *_on / *_threshold 方法均为"按 preset_id 取黄金或SPCXUSDT对应字段"
     # 的便捷读取器；带 *_lane 后缀的版本进一步在限价 lane 与市价 lane 之间选择
-    # （市价 lane 仅黄金启用，白银市价相关项回退到限价 lane 或返回 0/False）。
+    # （市价 lane 仅黄金启用，SPCXUSDT市价相关项回退到限价 lane 或返回 0/False）。
     def spread_alert_min(self, preset_id: str) -> float:
         if preset_id == "xag":
             return self.xag_spread_alert_min

@@ -218,8 +218,8 @@ def test_expansion_contraction_business_loop():
     cfg = AppConfig(connection_mode=ConnectionMode.DEMO.value)
     ba = BinanceConnector(cfg)
     mt5 = MT5Connector(cfg)
-    ba._quotes["XAGUSDT"] = Quote("XAGUSDT", 67, 67.02, is_simulated=True)
-    mt5._quotes["XAGUSD"] = Quote("XAGUSD", 66.9, 67.1, is_simulated=True)
+    ba._quotes["SPCXUSDT"] = Quote("SPCXUSDT", 67, 67.02, is_simulated=True)
+    mt5._quotes["SPCXUSDT"] = Quote("SPCXUSDT", 66.9, 67.1, is_simulated=True)
     r1 = open_hedge(ba, mt5, "xag", HedgeMode.CONTRACTION.value)
     assert r1.success
     assert ba.get_positions()[0].side == Side.SELL
@@ -389,7 +389,7 @@ def test_hedge_row_labels():
         action="open",
         order_time="2026-01-01 00:00:00",
     )
-    assert row.product == "白银"
+    assert row.product == "SPCXUSDT"
     assert row.direction == "扩张"
 
 

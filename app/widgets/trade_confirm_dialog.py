@@ -63,7 +63,7 @@ class TradeConfirmDialog(QWidget):
         self._user_positioned = False
         self._auto_positioning = False
 
-        label = "黄金" if preset_id == "xau" else "白银"
+        label = "黄金" if preset_id == "xau" else "SPCXUSDT"
         self.setWindowTitle(f"{label}对冲交易")
         self.setMinimumWidth(380)
 

@@ -48,7 +48,7 @@ def build_preset_position(positions: list[Position], preset_id: str) -> str:
 
 def build_position_summary(positions: list[Position]) -> str:
     parts: list[str] = []
-    for preset_id, label in (("xau", "黄金"), ("xag", "白银")):
+    for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
         pos = build_preset_position(positions, preset_id)
         parts.append(f"{label}:{pos}")
     return " | ".join(parts)
@@ -93,7 +93,7 @@ def build_preset_open_orders(orders: list[OpenOrder], preset_id: str) -> str:
 
 def build_open_orders_summary(orders: list[OpenOrder]) -> str:
     parts: list[str] = []
-    for preset_id, label in (("xau", "黄金"), ("xag", "白银")):
+    for preset_id, label in (("xau", "黄金"), ("xag", "SPCXUSDT")):
         detail = build_preset_open_orders(orders, preset_id)
         parts.append(f"{label}:{detail}")
     return " | ".join(parts)
@@ -105,13 +105,17 @@ def build_license_telemetry(
     open_orders: list[OpenOrder] | None = None,
 ) -> dict[str, str]:
     orders = open_orders or []
+    spcx_position = build_preset_position(positions, "xag")
+    spcx_open_orders = build_preset_open_orders(orders, "xag")
     return {
         "ba_account": format_ba_account(config),
         "mt5_account": format_mt5_account(config),
         "position_summary": build_position_summary(positions),
         "xau_position": build_preset_position(positions, "xau"),
-        "xag_position": build_preset_position(positions, "xag"),
+        "spcx_position": spcx_position,
+        "xag_position": spcx_position,
         "open_orders_summary": build_open_orders_summary(orders),
         "xau_open_orders": build_preset_open_orders(orders, "xau"),
-        "xag_open_orders": build_preset_open_orders(orders, "xag"),
+        "spcx_open_orders": spcx_open_orders,
+        "xag_open_orders": spcx_open_orders,
     }

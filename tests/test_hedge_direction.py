@@ -23,8 +23,8 @@ def _setup_demo(preset_id: str) -> tuple[BinanceConnector, MT5Connector]:
         ba._quotes["XAUUSDT"] = Quote("XAUUSDT", 2650, 2650.2, is_simulated=True)
         mt5._quotes["XAUUSD"] = Quote("XAUUSD", 2649, 2649.2, is_simulated=True)
     else:
-        ba._quotes["XAGUSDT"] = Quote("XAGUSDT", 30, 30.02, is_simulated=True)
-        mt5._quotes["XAGUSD"] = Quote("XAGUSD", 29.9, 30.1, is_simulated=True)
+        ba._quotes["SPCXUSDT"] = Quote("SPCXUSDT", 30, 30.02, is_simulated=True)
+        mt5._quotes["SPCXUSDT"] = Quote("SPCXUSDT", 29.9, 30.1, is_simulated=True)
     return ba, mt5
 
 

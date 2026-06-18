@@ -44,6 +44,7 @@ def init_db() -> None:
                 auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
                 position_summary TEXT NOT NULL DEFAULT '',
                 xau_position TEXT NOT NULL DEFAULT '',
+                spcx_position TEXT NOT NULL DEFAULT '',
                 xag_position TEXT NOT NULL DEFAULT ''
             );
 
@@ -222,6 +223,7 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
             "ALTER TABLE devices ADD COLUMN position_summary TEXT NOT NULL DEFAULT ''",
         ),
         ("xau_position", "ALTER TABLE devices ADD COLUMN xau_position TEXT NOT NULL DEFAULT ''"),
+        ("spcx_position", "ALTER TABLE devices ADD COLUMN spcx_position TEXT NOT NULL DEFAULT ''"),
         ("xag_position", "ALTER TABLE devices ADD COLUMN xag_position TEXT NOT NULL DEFAULT ''"),
         (
             "open_orders_summary",
@@ -230,6 +232,10 @@ def _migrate_devices(conn: sqlite3.Connection) -> None:
         (
             "xau_open_orders",
             "ALTER TABLE devices ADD COLUMN xau_open_orders TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "spcx_open_orders",
+            "ALTER TABLE devices ADD COLUMN spcx_open_orders TEXT NOT NULL DEFAULT ''",
         ),
         (
             "xag_open_orders",

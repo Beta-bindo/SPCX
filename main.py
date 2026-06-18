@@ -35,12 +35,12 @@ def main() -> int:
     parser.add_argument(
         "--demo-seed",
         action="store_true",
-        help="演示模式载入单边对冲预览持仓（黄金仅BA、白银仅Ex）",
+        help="演示模式载入单边对冲预览持仓（黄金仅BA、SPCXUSDT仅Ex）",
     )
     parser.add_argument(
         "--demo-seed-mixed",
         action="store_true",
-        help="演示模式载入混合告警预览（黄金数量不齐、白银方向异常）",
+        help="演示模式载入混合告警预览（黄金数量不齐、SPCXUSDT方向异常）",
     )
     args = parser.parse_args()
 

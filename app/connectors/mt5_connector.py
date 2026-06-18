@@ -1089,10 +1089,10 @@ class MT5Connector(QObject):
             return LegResult(platform="MT5", success=False, message=msg)
 
     def _start_demo(self) -> None:
-        """启动模拟行情：定时生成黄金/白银的虚拟报价。"""
+        """启动模拟行情：定时生成黄金/SPCXUSDT的虚拟报价。"""
         self._set_state(ConnectionState.SIMULATED)
         self.account_received.emit(AccountSnapshot(platform="MT5", is_live=False))
-        self._log(LogLevel.DEBUG, "Exness 模拟行情 · 黄金 + 白银（非真实价格）")
+        self._log(LogLevel.DEBUG, "Exness 模拟行情 · 黄金 + SPCXUSDT（非真实价格）")
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._emit_demo_quotes)
         interval_ms = max(100, int(round(self.config.ba_refresh_interval_sec * 1000)))

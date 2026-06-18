@@ -43,7 +43,7 @@ def seed_hedge_alert_preview(binance: "BinanceConnector", mt5: "MT5Connector") -
     )
     return (
         "黄金：仅 BA 有仓（收缩单边 · 红色告警）\n"
-        "白银：仅 Ex 有仓（扩张单边 · 红色告警）\n"
+        "SPCXUSDT：仅 Ex 有仓（扩张单边 · 红色告警）\n"
         "两边均可点「补对冲」打开预填交易窗口"
     )
 
@@ -95,5 +95,5 @@ def seed_hedge_alert_mixed(binance: "BinanceConnector", mt5: "MT5Connector") -> 
     )
     return (
         "黄金：对冲数量不齐（黄色告警）\n"
-        "白银：对冲方向异常（红色告警）"
+        "SPCXUSDT：对冲方向异常（红色告警）"
     )

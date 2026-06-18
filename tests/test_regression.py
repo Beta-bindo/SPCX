@@ -42,7 +42,7 @@ def test_dual_trade_dialogs_can_coexist():
     assert gold is not silver
     assert gold.isVisible() and silver.isVisible()
     window.close()
-    print("  ✓ 黄金/白银对冲弹窗可同时存在")
+    print("  ✓ 黄金/SPCXUSDT对冲弹窗可同时存在")
 
 
 def main() -> int:
@@ -108,7 +108,8 @@ def main() -> int:
     check("持仓差价" in status, f"position spread in status: {status}")
     check(window.gold_actions.position_status.property("active") == "true", "position active")
 
-    window.symbol_switch_btn.click()
+    window.config.single_symbol_preset = "xag"
+    window._apply_layout_mode()
     QApplication.processEvents()
     QTimer.singleShot(0, lambda: None)
     QApplication.processEvents()

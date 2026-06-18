@@ -39,7 +39,7 @@ def test_export_filename():
     assert name.startswith("利润明细_全部_")
     assert name.endswith(".xlsx")
     assert export_filename("xau").startswith("利润明细_黄金_")
-    assert export_filename("xag").startswith("利润明细_白银_")
+    assert export_filename("xag").startswith("利润明细_SPCXUSDT_")
     print("  ✓ 导出文件名格式")
 
 
