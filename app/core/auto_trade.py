@@ -26,6 +26,11 @@ LANE_MAKER = "maker"
 LANE_MARKET = "market"
 
 
+def is_spread_threshold_hint(message: str) -> bool:
+    """点差未达阈值的常态提示：仅更新板块状态，不打日志（点差每 tick 变会导致刷屏）。"""
+    return message.startswith("自动下单：") and "未达" in message and "阈值" in message
+
+
 @dataclass
 class AutoTradeState:
     """自动交易的跨周期状态（计时与冷却），键为 (品种, 模式, lane) 或 (品种, lane)。"""

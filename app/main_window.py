@@ -35,6 +35,7 @@ from app.core.auto_trade import (
     diagnose_auto_trade_block,
     evaluate_auto_closes,
     evaluate_auto_trades,
+    is_spread_threshold_hint,
 )
 from app.core.license.client import LicenseError
 from app.core.license.service import LicenseService
@@ -964,10 +965,13 @@ class MainWindow(QMainWindow):
 
     def _auto_trade_hint(self, message: str, preset_id: str | None = None) -> None:
         now = time.time()
-        if self._auto_trade_hint_last.get(message, 0.0) + 15.0 > now:
+        # 点差未达阈值时文案含实时点差，不能用整句做节流 key，否则每 tick 都会打日志。
+        throttle_key = message.rsplit("点差", 1)[0] if is_spread_threshold_hint(message) else message
+        if self._auto_trade_hint_last.get(throttle_key, 0.0) + 15.0 > now:
             return
-        self._auto_trade_hint_last[message] = now
-        self._append_log(LogLevel.INFO, message)
+        self._auto_trade_hint_last[throttle_key] = now
+        if not is_spread_threshold_hint(message):
+            self._append_log(LogLevel.INFO, message)
         if preset_id is None:
             if "黄金" in message:
                 preset_id = "xau"
