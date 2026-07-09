@@ -30,6 +30,16 @@ PRESET_BY_ID = {p.id: p for p in SYMBOL_PRESETS}
 WATCHED_PRESETS = ["xau", "xag"]  # 实际监控的品种（不含 custom）
 _DYNAMIC_PRESETS: dict[str, SymbolPreset] = {}
 
+MT5_SYMBOL_BY_BA_SYMBOL: dict[str, str] = {
+    "ETHUSDT": "ETH",
+}
+
+
+def mt5_symbol_for_ba_symbol(symbol_ba: str) -> str:
+    """BA U 本位交易对映射到 EX/MT5 品种名；未配置则默认同名。"""
+    symbol = (symbol_ba or "").strip().upper()
+    return MT5_SYMBOL_BY_BA_SYMBOL.get(symbol, symbol)
+
 
 def normalize_selected_symbols(raw: str | None) -> list[str]:
     """解析配置中的监控品种，最多保留两个大写交易对。"""
@@ -55,7 +65,7 @@ def apply_selected_symbols(raw: str | None) -> None:
     for preset_id, symbol in zip(WATCHED_PRESETS, selected):
         base = base_by_id[preset_id]
         label = symbol
-        mt5_symbol = "XAUUSD" if symbol == "XAUUSDT" else symbol
+        mt5_symbol = "XAUUSD" if symbol == "XAUUSDT" else mt5_symbol_for_ba_symbol(symbol)
         demo_base = base.demo_ba_base if symbol == base.symbol_ba else 1.0
         if symbol == "XAUUSDT":
             _DYNAMIC_PRESETS[preset_id] = base

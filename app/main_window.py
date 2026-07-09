@@ -59,6 +59,7 @@ from app.widgets.trade_confirm_dialog import TradeConfirmDialog
 from app.core.symbols import (
     apply_selected_symbols,
     find_preset,
+    mt5_symbol_for_ba_symbol,
     normalize_selected_symbols,
     preset_display_name,
     selected_symbols_text,
@@ -472,7 +473,9 @@ class MainWindow(QMainWindow):
         ba_symbols = self._ba_futures_symbols()
         ex_symbols = self._ex_symbols()
         if ba_symbols and ex_symbols:
-            common = sorted(ba_symbols & ex_symbols)
+            common = sorted(
+                symbol for symbol in ba_symbols if mt5_symbol_for_ba_symbol(symbol) in ex_symbols
+            )
         elif ba_symbols:
             # EX 未连接/未安装时保留当前选择，避免演示模式无选项。
             common = sorted(ba_symbols & set(current))
